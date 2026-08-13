@@ -1,0 +1,101 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --keyboard-inset: 0px;
+  --bg: #f0fdfa;
+  --bg-accent: #ccfbf1;
+  --ink: #0f172a;
+  --brand: #0f766e;
+  --brand-soft: #14b8a6;
+  --surface: rgba(255, 255, 255, 0.82);
+  --line: rgba(15, 118, 110, 0.12);
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  font-family: Vazirmatn, Tahoma, sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(1200px 600px at 100% -10%, rgba(20, 184, 166, 0.22), transparent 55%),
+    radial-gradient(900px 500px at -10% 20%, rgba(15, 118, 110, 0.12), transparent 50%),
+    linear-gradient(180deg, #f0fdfa 0%, #f8fafc 45%, #eef2ff 100%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+#root {
+  min-height: 100dvh;
+}
+
+html.telegram-mini body {
+  padding-top: var(--tg-content-safe-area-inset-top, 0px);
+  padding-bottom: var(--tg-content-safe-area-inset-bottom, 0px);
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-brand-700 text-white shadow-soft hover:bg-brand-800;
+  }
+  .btn-ghost {
+    @apply btn bg-white/70 text-ink-800 ring-1 ring-brand-700/10 hover:bg-white;
+  }
+  .input {
+    @apply w-full rounded-2xl border border-brand-700/10 bg-white/80 px-4 py-3 text-base outline-none ring-brand-600 focus:ring-2;
+  }
+  .chip {
+    @apply inline-flex min-h-11 items-center justify-center whitespace-nowrap rounded-full px-4 text-sm font-semibold;
+  }
+  .chip-check {
+    @apply inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-full bg-white/80 px-3 text-sm font-semibold ring-1 ring-brand-700/10;
+  }
+  .chip-check-on {
+    @apply bg-brand-100 text-brand-800 ring-brand-700/25;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .more-panel > summary {
+    @apply flex min-h-11 cursor-pointer list-none items-center text-sm font-semibold;
+  }
+  .more-panel > summary::-webkit-details-marker {
+    display: none;
+  }
+  .card-surface {
+    @apply rounded-3xl bg-white/80 p-4 shadow-soft ring-1 ring-brand-700/10 backdrop-blur sm:p-5;
+  }
+  .label {
+    @apply mb-1.5 block text-xs font-medium text-ink-700/70;
+  }
+  .section-title {
+    @apply text-base font-bold text-ink-900;
+  }
+}

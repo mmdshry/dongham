@@ -1,0 +1,63 @@
+import { test, expect } from '@playwright/test';
+
+async function addMemberByName(page: import('@playwright/test').Page, name: string) {
+  await page.locator('#period-member-new').fill(name);
+  await page.getByRole('button', { name: 'افزودن به لیست' }).click();
+}
+
+test('guest can create period and expense offline-capable', async ({ page, context }) => {
+  await context.setOffline(false);
+  await page.goto('/');
+  await expect(page.getByRole('heading', { name: 'دوره‌های من' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'دوره جدید' }).click();
+  await page.locator('#period-title').fill('سفر تست');
+  await addMemberByName(page, 'سارا');
+  await addMemberByName(page, 'رضا');
+  await page.getByRole('button', { name: 'ساخت' }).click();
+
+  await page.waitForURL(/\/periods\//, { timeout: 15_000 });
+  await expect(page.getByRole('heading', { level: 1, name: 'سفر تست' })).toBeVisible({ timeout: 15_000 });
+
+  await context.setOffline(true);
+  await page.getByRole('link', { name: 'هزینه', exact: true }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'هزینه جدید' })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('button', { name: 'تاریخ هزینه' })).toBeVisible();
+  await page.locator('#exp-title').fill('ناهار');
+  await page.locator('#exp-amount').fill('300000');
+  await page.getByRole('button', { name: 'ضریب' }).click();
+  await page.getByRole('button', { name: 'ذخیره' }).click();
+
+  await expect(page.getByText('ناهار')).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('tab', { name: 'حساب' }).click();
+  await expect(page.getByText('تسویه حساب')).toBeVisible();
+  await expect(page.getByText('باید به').first()).toBeVisible();
+  await page.getByText('اشتراک‌گذاری').first().click();
+  await expect(page.getByText('شماره موبایل این عضو ثبت نشده').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'واتساپ' }).first()).toBeDisabled();
+});
+
+test('whatsapp share enables after member phone is saved', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'دوره جدید' }).click();
+  await page.locator('#period-title').fill('گروه موبایل');
+  await addMemberByName(page, 'سارا');
+  await page.getByRole('button', { name: 'ساخت' }).click();
+  await page.waitForURL(/\/periods\//, { timeout: 15_000 });
+
+  await page.getByRole('link', { name: 'هزینه', exact: true }).click();
+  await page.locator('#exp-title').fill('تاکسی');
+  await page.locator('#exp-amount').fill('100000');
+  await page.getByRole('button', { name: 'ذخیره' }).click();
+  await expect(page.getByText('تاکسی')).toBeVisible({ timeout: 15_000 });
+
+  await page.getByRole('tab', { name: 'ابزار' }).click();
+  await page.getByPlaceholder('موبایل ۰۹۱۲…').nth(1).fill('09121234567');
+  await page.getByPlaceholder('موبایل ۰۹۱۲…').nth(1).blur();
+
+  await page.getByRole('tab', { name: 'حساب' }).click();
+  await page.getByText('اشتراک‌گذاری').first().click();
+  const wa = page.getByRole('button', { name: 'واتساپ' }).first();
+  await expect(wa).toBeEnabled();
+  await expect(wa).toHaveAttribute('data-wa', /wa\.me\/989121234567/);
+});

@@ -1,0 +1,192 @@
+﻿---
+interface Props {
+  title: string;
+  description: string;
+}
+const { title, description } = Astro.props;
+const canonical = new URL(Astro.url.pathname, Astro.site);
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'Dongham',
+  applicationCategory: 'FinanceApplication',
+  operatingSystem: 'Web, Android',
+  inLanguage: 'fa',
+  description,
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'IRR' },
+};
+---
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="fa_IR" />
+    <meta property="og:url" content={canonical} />
+    <meta name="theme-color" content="#0F766E" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;800&display=swap" rel="stylesheet" />
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+  </head>
+  <body>
+    <a class="skip" href="#main">پرش به محتوا</a>
+    <header class="top">
+      <a class="logo" href="/">Dongham</a>
+      <input type="checkbox" id="nav-toggle" class="nav-toggle" />
+      <label for="nav-toggle" class="nav-btn" id="nav-btn" aria-label="منو" aria-controls="site-nav" aria-expanded="false">
+        <span></span>
+        <span></span>
+        <span></span>
+      </label>
+      <nav id="site-nav" aria-label="اصلی">
+        <a href="/features">ویژگی‌ها</a>
+        <a href="/guide">راهنما</a>
+        <a href="/about">درباره</a>
+        <a href="/privacy">حریم خصوصی</a>
+      </nav>
+    </header>
+    <main id="main" class="wrap">
+      <slot />
+    </main>
+    <footer class="foot">
+      <p>© {new Date().getFullYear()} Dongham — دونگ‌هام</p>
+    </footer>
+    <script is:inline>
+      (function () {
+        var toggle = document.getElementById('nav-toggle');
+        var btn = document.getElementById('nav-btn');
+        if (!toggle || !btn) return;
+        function sync() {
+          btn.setAttribute('aria-expanded', toggle.checked ? 'true' : 'false');
+        }
+        toggle.addEventListener('change', sync);
+        document.addEventListener('keydown', function (e) {
+          if (e.key === 'Escape' && toggle.checked) {
+            toggle.checked = false;
+            sync();
+            btn.focus();
+          }
+        });
+        sync();
+      })();
+    </script>
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    color-scheme: light;
+    --brand: #0f766e;
+    --brand-soft: #14b8a6;
+    --ink: #0f172a;
+    --muted: #475569;
+    --line: rgba(15, 118, 110, 0.12);
+    --surface: #ffffff;
+    --radius: 1rem;
+    --space: 1.25rem;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Vazirmatn, Tahoma, sans-serif;
+    color: var(--ink);
+    background: #f8fafc;
+    line-height: 1.7;
+  }
+  a { color: var(--brand); }
+  .skip {
+    position: absolute;
+    inset-inline-start: -999px;
+    background: #fff;
+    padding: .5rem 1rem;
+  }
+  .skip:focus { inset-inline-start: 1rem; top: 1rem; z-index: 10; }
+  .top {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem 1rem;
+    padding: 0.75rem var(--space);
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+    border-bottom: 1px solid var(--line);
+    background: rgba(255,255,255,.85);
+    backdrop-filter: blur(8px);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+  }
+  .logo { color: var(--brand); font-weight: 800; text-decoration: none; font-size: 1.1rem; }
+  .nav-toggle { position: absolute; opacity: 0; pointer-events: none; }
+  .nav-btn {
+    display: none;
+    width: 44px;
+    height: 44px;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 5px;
+    border-radius: 12px;
+    cursor: pointer;
+  }
+  .nav-btn span {
+    display: block;
+    width: 18px;
+    height: 2px;
+    background: var(--ink);
+    border-radius: 1px;
+  }
+  nav { display: flex; gap: 1rem; flex-wrap: wrap; }
+  nav a {
+    color: #334155;
+    text-decoration: none;
+    font-size: .95rem;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+  }
+  nav a:hover { color: var(--brand); }
+  @media (max-width: 640px) {
+    .nav-btn { display: flex; }
+    nav {
+      display: none;
+      width: 100%;
+      flex-direction: column;
+      gap: 0;
+      padding-bottom: 0.5rem;
+    }
+    nav a { padding-inline: 0.25rem; }
+    .nav-toggle:checked ~ nav { display: flex; }
+    .nav-toggle:focus-visible + .nav-btn { outline: 2px solid var(--brand); outline-offset: 2px; }
+  }
+  .wrap { width: min(960px, calc(100% - 2rem)); margin-inline: auto; }
+  .foot {
+    padding: 2rem var(--space) max(3rem, env(safe-area-inset-bottom));
+    color: #64748b;
+    font-size: .9rem;
+    text-align: center;
+  }
+  .page { padding: 2.5rem 0 4rem; max-width: 42rem; }
+  .page h1 { margin-top: 0; font-size: clamp(1.6rem, 4vw, 2.1rem); }
+  .page p { color: var(--muted); }
+  .primary, .ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: .75rem 1.2rem;
+    border-radius: var(--radius);
+    text-decoration: none;
+    font-weight: 700;
+  }
+  .primary { background: var(--brand); color: #fff; }
+  .ghost { background: rgba(255,255,255,.8); color: var(--ink); border: 1px solid var(--line); }
+</style>

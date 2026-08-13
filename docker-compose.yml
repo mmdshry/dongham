@@ -1,0 +1,14 @@
+version: '3.9'
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: dongham
+      POSTGRES_PASSWORD: dongham
+      POSTGRES_DB: dongham
+    ports:
+      - '5432:5432'
+    volumes:
+      - dongham_pg:/var/lib/postgresql/data
+volumes:
+  dongham_pg:

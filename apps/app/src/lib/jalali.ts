@@ -1,0 +1,28 @@
+/** Re-export shared Jalali helpers so existing app imports keep working. */
+export {
+  gregorianToJalali,
+  jalaliToGregorian,
+  jalaliMonthDays,
+  isoToJalaliParts,
+  jalaliPartsToIso,
+  jalaliMonthName,
+  addJalaliMonths,
+  nextRecurringAt,
+  inferCadence,
+  PERSIAN_MONTHS,
+  GREGORIAN_MONTHS_FA,
+  WEEKDAY_SHORT_FA,
+  gregorianMonthDays,
+  gregorianMonthName,
+  isoToGregorianParts,
+  gregorianPartsToIso,
+  saturdayIndex,
+  calendarMonthDays,
+  calendarMonthName,
+  isoToCalendarParts,
+  calendarPartsToIso,
+  shiftCalendarMonth,
+  calendarMonthGrid,
+  sameCalendarDay,
+} from '@dongham/ledger';
+export type { RecurringCadence, CalendarMode, CalendarCell } from '@dongham/ledger';

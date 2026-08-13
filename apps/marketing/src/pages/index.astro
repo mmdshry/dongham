@@ -1,0 +1,92 @@
+﻿---
+import Base from '../layouts/Base.astro';
+---
+<Base
+  title="دونگ‌هام | تقسیم هزینه گروهی آنلاین و آفلاین"
+  description="Dongham اپلیکیشن تقسیم هزینه برای سفر، خوابگاه و خانه — Offline-first، دعوت با QR، تسویه هوشمند، رمزنگاری محلی."
+>
+  <section class="hero">
+    <p class="brand">Dongham</p>
+    <h1>دونگ‌هام</h1>
+    <p class="lead">هزینه‌های گروهی را بدون دردسر حساب کنید — حتی بدون اینترنت.</p>
+    <div class="cta">
+      <a class="primary" href="https://app.dongham.ir">شروع وب‌اپ</a>
+      <a class="ghost" href="/features">ویژگی‌ها</a>
+    </div>
+  </section>
+
+  <section class="cards" aria-label="خلاصه قابلیت‌ها">
+    <article>
+      <h2>آفلاین</h2>
+      <p>دوره و هزینه را بدون اینترنت ثبت کنید؛ بعداً همگام می‌شود.</p>
+    </article>
+    <article>
+      <h2>تقسیم</h2>
+      <p>مساوی، ضریب، مبلغ یا درصد — با تگ و چند ارز.</p>
+    </article>
+    <article>
+      <h2>تسویه</h2>
+      <p>ببینید چه کسی به چه کسی چقدر بپردازد.</p>
+    </article>
+  </section>
+</Base>
+
+<style>
+  .hero {
+    min-height: 72dvh;
+    display: grid;
+    align-content: center;
+    gap: 1rem;
+    padding: 2.5rem 0 2rem;
+    background:
+      radial-gradient(800px 400px at 90% 10%, rgba(20,184,166,.25), transparent 60%),
+      linear-gradient(180deg, #f0fdfa, #f8fafc 70%);
+  }
+  .brand {
+    margin: 0;
+    color: var(--brand);
+    font-weight: 800;
+    letter-spacing: .04em;
+    font-size: 1.1rem;
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(2.4rem, 8vw, 4.2rem);
+    line-height: 1.08;
+  }
+  .lead {
+    margin: 0;
+    max-width: 34rem;
+    font-size: 1.1rem;
+    color: var(--muted);
+  }
+  .cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem;
+    margin-top: .25rem;
+  }
+  .cards {
+    display: grid;
+    gap: 1rem;
+    padding: 0 0 4rem;
+  }
+  .cards article {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 1.1rem 1.2rem;
+  }
+  .cards h2 {
+    margin: 0 0 .35rem;
+    font-size: 1.05rem;
+  }
+  .cards p {
+    margin: 0;
+    color: var(--muted);
+    font-size: .95rem;
+  }
+  @media (min-width: 768px) {
+    .cards { grid-template-columns: repeat(3, 1fr); }
+  }
+</style>

@@ -1,0 +1,229 @@
+import { useEffect, useId, useRef, useState } from 'react';
+import type { CalendarMode } from '../lib/jalali';
+import {
+  WEEKDAY_SHORT_FA,
+  calendarMonthGrid,
+  calendarMonthName,
+  calendarPartsToIso,
+  isoToCalendarParts,
+  sameCalendarDay,
+  shiftCalendarMonth,
+} from '../lib/jalali';
+import { formatCalendarDate, toPersianDigits } from '../lib/format';
+import { usePersianDigits } from '../lib/usePersianDigits';
+
+const STORAGE_KEY = 'dongham.calendar';
+
+function readCalendarMode(): CalendarMode {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY);
+    if (v === 'gregorian' || v === 'jalali') return v;
+  } catch {
+    /* ignore */
+  }
+  return 'jalali';
+}
+
+function writeCalendarMode(mode: CalendarMode) {
+  try {
+    localStorage.setItem(STORAGE_KEY, mode);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function JalaliDatePicker({
+  iso,
+  onChange,
+  label = 'تاریخ',
+}: {
+  iso: string;
+  onChange: (iso: string) => void;
+  label?: string;
+}) {
+  const persian = usePersianDigits();
+  const titleId = useId();
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<CalendarMode>('jalali');
+  const selected = isoToCalendarParts(iso || new Date().toISOString(), mode);
+  const [view, setView] = useState({ y: selected.y, m: selected.m });
+
+  useEffect(() => {
+    setMode(readCalendarMode());
+  }, []);
+
+  useEffect(() => {
+    const next = isoToCalendarParts(iso || new Date().toISOString(), mode);
+    setView({ y: next.y, m: next.m });
+  }, [iso, mode]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setOpen(false);
+      }
+    };
+    const onPointer = (e: PointerEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('pointerdown', onPointer);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('pointerdown', onPointer);
+    };
+  }, [open]);
+
+  const todayIso = new Date().toISOString();
+  const todayParts = isoToCalendarParts(todayIso, mode);
+  const cells = calendarMonthGrid(view.y, view.m, mode);
+  const years = Array.from({ length: 16 }, (_, i) => view.y - 8 + i);
+
+  const pick = (y: number, m: number, d: number) => {
+    onChange(calendarPartsToIso(y, m, d, mode, iso));
+    setOpen(false);
+  };
+
+  const switchMode = (next: CalendarMode) => {
+    setMode(next);
+    writeCalendarMode(next);
+  };
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <p className="label" id={titleId}>
+        {label}
+      </p>
+      <button
+        type="button"
+        className="input flex items-center justify-between gap-2 text-start"
+        aria-labelledby={titleId}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span>{formatCalendarDate(iso || todayIso, mode, persian)}</span>
+        <svg className="h-5 w-5 shrink-0 text-brand-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+          <rect x="3.5" y="5" width="17" height="15" rx="2.2" />
+          <path d="M8 3.5v4M16 3.5v4M3.5 10h17" />
+        </svg>
+      </button>
+      {open ? (
+        <>
+          <div
+            className="fixed inset-0 z-50 bg-ink-900/40 md:hidden"
+            aria-hidden
+            onClick={() => setOpen(false)}
+          />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={label}
+            className="fixed inset-x-0 bottom-0 z-[51] rounded-t-3xl bg-white p-4 shadow-soft md:absolute md:inset-auto md:top-full md:z-50 md:mt-2 md:w-full md:rounded-3xl"
+          >
+            <div className="mb-3 flex gap-1 rounded-2xl bg-brand-50 p-1">
+              <button
+                type="button"
+                className={`chip flex-1 !min-h-10 ${mode === 'jalali' ? 'bg-brand-700 text-white' : 'text-ink-800'}`}
+                onClick={() => switchMode('jalali')}
+              >
+                شمسی
+              </button>
+              <button
+                type="button"
+                className={`chip flex-1 !min-h-10 ${mode === 'gregorian' ? 'bg-brand-700 text-white' : 'text-ink-800'}`}
+                onClick={() => switchMode('gregorian')}
+              >
+                میلادی
+              </button>
+            </div>
+            <div className="mb-3 flex items-center gap-2">
+              <button
+                type="button"
+                className="btn-ghost !min-h-11 !min-w-11 !px-0"
+                aria-label="ماه قبل"
+                onClick={() => setView((v) => shiftCalendarMonth(v.y, v.m, -1))}
+              >
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                  <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+              <p className="min-w-0 flex-1 text-center text-sm font-bold">
+                {calendarMonthName(view.m, mode)}
+              </p>
+              <select
+                className="input !w-auto !min-h-11 !px-2 !py-2 text-sm"
+                aria-label={mode === 'jalali' ? 'سال شمسی' : 'سال میلادی'}
+                value={view.y}
+                onChange={(e) => setView((v) => ({ ...v, y: Number(e.target.value) }))}
+              >
+                {years.map((y) => (
+                  <option key={y} value={y}>
+                    {toPersianDigits(y, persian)}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="btn-ghost !min-h-11 !min-w-11 !px-0"
+                aria-label="ماه بعد"
+                onClick={() => setView((v) => shiftCalendarMonth(v.y, v.m, 1))}
+              >
+                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+                  <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </div>
+            <div className="grid grid-cols-7 gap-0.5 text-center text-xs text-ink-700/60">
+              {WEEKDAY_SHORT_FA.map((w) => (
+                <span key={w} className="py-1 font-semibold">
+                  {w}
+                </span>
+              ))}
+            </div>
+            <div className="grid grid-cols-7 gap-0.5">
+              {cells.map((cell) => {
+                const isSelected = sameCalendarDay(cell, selected);
+                const isToday = sameCalendarDay(cell, todayParts);
+                return (
+                  <button
+                    key={`${cell.y}-${cell.m}-${cell.d}-${cell.inMonth ? 'm' : 'x'}`}
+                    type="button"
+                    aria-current={isSelected ? 'date' : undefined}
+                    className={`min-h-11 rounded-xl text-sm tabular-nums ${
+                      isSelected
+                        ? 'bg-brand-700 font-bold text-white'
+                        : isToday
+                          ? 'bg-brand-100 font-semibold text-brand-800'
+                          : cell.inMonth
+                            ? 'text-ink-800 hover:bg-brand-50'
+                            : 'text-ink-700/35'
+                    }`}
+                    onClick={() => pick(cell.y, cell.m, cell.d)}
+                  >
+                    {toPersianDigits(cell.d, persian)}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button type="button" className="btn-ghost flex-1" onClick={() => setOpen(false)}>
+                بستن
+              </button>
+              <button
+                type="button"
+                className="btn-primary flex-1"
+                onClick={() => pick(todayParts.y, todayParts.m, todayParts.d)}
+              >
+                امروز
+              </button>
+            </div>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}

@@ -1,0 +1,13 @@
+{
+  "appId": "ir.dongham.app",
+  "appName": "Dongham",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "iconColor": "#0F766E"
+    }
+  }
+}
