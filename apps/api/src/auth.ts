@@ -1,6 +1,7 @@
 import { SignJWT, jwtVerify, createRemoteJWKSet } from 'jose';
 import bcrypt from 'bcryptjs';
 import { nanoid } from 'nanoid';
+import { normalizeEmail, normalizeIranMobile, normalizeOtpCode } from '@dongham/ledger';
 import { getDb, mutate } from './db.js';
 import type { UserRecord } from './types.js';
 
@@ -48,11 +49,15 @@ export async function verifyToken(token: string): Promise<{ userId: string; devi
 }
 
 export function findUserByPhone(phone: string): UserRecord | undefined {
-  return getDb().users.find((u) => u.phone === phone && !u.deletedAt);
+  const local = normalizeIranMobile(phone);
+  if (!local) return undefined;
+  return getDb().users.find((u) => normalizeIranMobile(u.phone) === local && !u.deletedAt);
 }
 
 export function findUserByEmail(email: string): UserRecord | undefined {
-  return getDb().users.find((u) => u.email?.toLowerCase() === email.toLowerCase() && !u.deletedAt);
+  const normalized = normalizeEmail(email);
+  if (!normalized) return undefined;
+  return getDb().users.find((u) => normalizeEmail(u.email) === normalized && !u.deletedAt);
 }
 
 export function findUserByGoogleId(googleId: string): UserRecord | undefined {
@@ -64,6 +69,12 @@ function storeOtp(phone: string, code: string) {
     db.otps = db.otps.filter((o) => o.phone !== phone);
     db.otps.push({ phone, code, expiresAt: Date.now() + 5 * 60_000 });
   });
+}
+
+export function otpProvider(): string {
+  if (process.env.OTP_PROVIDER) return process.env.OTP_PROVIDER;
+  if (process.env.SENATOR_API_KEY) return 'senator';
+  return 'mock';
 }
 
 async function sendKavenegar(phone: string, code: string): Promise<void> {
@@ -85,7 +96,7 @@ async function sendSenator(phone: string, code: string): Promise<void> {
   const template = process.env.SENATOR_TEMPLATE || '6436172580';
   const type = process.env.SENATOR_TYPE || 'private';
   const base = process.env.SENATOR_SMS_URL || 'https://api.fast-creat.ir/sms';
-  const local = /^09\d{9}$/.test(phone) ? phone : phone.replace(/^(\+98|98)/, '0');
+  const local = normalizeIranMobile(phone) || phone;
   const url = new URL(base);
   url.searchParams.set('apikey', key);
   url.searchParams.set('type', type);
@@ -93,39 +104,70 @@ async function sendSenator(phone: string, code: string): Promise<void> {
   url.searchParams.set('phone', local);
   url.searchParams.set('template', template);
   const res = await fetch(url);
-  const json = (await res.json().catch(() => ({}))) as { ok?: boolean; status?: string };
+  const json = (await res.json().catch(() => ({}))) as { ok?: boolean; status?: string; message?: string };
   if (!res.ok || !json.ok || json.status !== 'successfully') {
+    console.error('[senator sms]', json.message || json.status || res.status);
     throw new Error('ارسال پیامک ناموفق بود');
   }
 }
 
-/** Mock OTP in tests/dev; senator or kavenegar when configured. */
+/** Mock OTP in tests/dev; senator when SENATOR_API_KEY is set, or kavenegar when configured. */
 export async function sendOtp(phone: string): Promise<string> {
-  const code = String(Math.floor(100000 + Math.random() * 900000));
-  storeOtp(phone, code);
-  const provider = process.env.OTP_PROVIDER || 'mock';
-  if (provider === 'senator') {
-    await sendSenator(phone, code);
-  } else if (provider === 'kavenegar') {
-    await sendKavenegar(phone, code);
-  } else {
-    console.log(`[OTP mock] ${phone} => ${code}`);
+  const local = normalizeIranMobile(phone);
+  if (!local) throw new Error('شماره موبایل نامعتبر است');
+  const existing = getDb().otps.find((o) => o.phone === local && o.expiresAt > Date.now());
+  const code = existing?.code || String(Math.floor(100000 + Math.random() * 900000));
+  storeOtp(local, code);
+  const provider = otpProvider();
+  try {
+    if (provider === 'senator') {
+      await sendSenator(local, code);
+    } else if (provider === 'kavenegar') {
+      await sendKavenegar(local, code);
+    } else {
+      console.log(`[OTP mock] ${local} => ${code}`);
+    }
+  } catch (err) {
+    console.error('[otp send]', err instanceof Error ? err.message : err);
+    throw err;
   }
   return code;
 }
 
 export function isOtpMock(): boolean {
-  return (process.env.OTP_PROVIDER || 'mock') === 'mock';
+  return otpProvider() === 'mock';
 }
 
 export function verifyOtp(phone: string, code: string): boolean {
+  const local = normalizeIranMobile(phone);
+  const otp = normalizeOtpCode(code);
+  if (!local || !otp) return false;
   const db = getDb();
-  const row = db.otps.find((o) => o.phone === phone && o.code === code && o.expiresAt > Date.now());
+  const row = db.otps.find((o) => o.phone === local && o.code === otp && o.expiresAt > Date.now());
   if (!row) return false;
   mutate((d) => {
-    d.otps = d.otps.filter((o) => o.phone !== phone);
+    d.otps = d.otps.filter((o) => o.phone !== local);
   });
   return true;
+}
+
+export function claimListedMemberships(user: UserRecord): void {
+  const phone = normalizeIranMobile(user.phone);
+  const email = normalizeEmail(user.email);
+  if (!phone && !email) return;
+  mutate((db) => {
+    const claimedPeriods = new Set<string>();
+    for (const m of db.members) {
+      if (m.userId || m.isPot) continue;
+      if (claimedPeriods.has(m.periodId)) continue;
+      const phoneMatch = phone && normalizeIranMobile(m.phone) === phone;
+      const emailMatch = email && normalizeEmail(m.email) === email;
+      if (phoneMatch || emailMatch) {
+        m.userId = user.id;
+        claimedPeriods.add(m.periodId);
+      }
+    }
+  });
 }
 
 export function createUser(data: {
@@ -138,8 +180,8 @@ export function createUser(data: {
   const user: UserRecord = {
     id: nanoid(),
     displayName: data.displayName,
-    phone: data.phone,
-    email: data.email,
+    phone: normalizeIranMobile(data.phone) || data.phone,
+    email: normalizeEmail(data.email) || data.email,
     passwordHash: data.passwordHash,
     googleId: data.googleId,
     createdAt: new Date().toISOString(),

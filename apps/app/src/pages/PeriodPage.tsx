@@ -4,21 +4,23 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import QRCode from 'qrcode';
 import { nextRecurringAt } from '@dongham/ledger';
-import { PromptDialog } from '../components/Dialog';
+import { ConfirmDialog, PromptDialog } from '../components/Dialog';
 import { MessengerShare } from '../components/MessengerShare';
 import { MemberPicker } from '../components/MemberPicker';
+import { SyncBanner } from '../components/SyncBanner';
 import { TagPicker, uniqueTags } from '../components/TagPicker';
 import { EmptyState, Money, Shell } from '../components/ui';
+import { downloadJson } from '../lib/backup';
 import { api, ensureProfile } from '../lib/api';
 import { decryptMaybe } from '../lib/crypto';
 import { db, POT_DISPLAY_NAME, type LocalMember, type RecurringCadence } from '../lib/db';
 import { periodAnalytics } from '../lib/analytics';
-import { copyText, formatJalaliDate, formatMoney, toPersianDigits } from '../lib/format';
+import { copyText, formatJalaliDate, formatMoney, normalizeEmail, normalizeIranMobile, toPersianDigits } from '../lib/format';
 import { fetchFxRates } from '../lib/fx';
 import { loanEquivalentNow } from '../lib/goldIndex';
 import { defaultPayout } from '../lib/payout';
 import { shareCardImage, settlementPaySentence } from '../lib/share';
-import { buildPeriodSnapshot, serializeSnapshot, snapshotQrDataUrl } from '../lib/snapshot';
+import { buildPeriodSnapshot, importPeriodSnapshot, parseSnapshot, serializeSnapshot, snapshotQrDataUrl } from '../lib/snapshot';
 import {
   canConfirmPayment,
   canMarkPaid,
@@ -69,6 +71,11 @@ export function PeriodPage() {
   const [recurringCadence, setRecurringCadence] = useState<RecurringCadence>('jalaliMonthly');
   const [snapPrompt, setSnapPrompt] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [importPassOpen, setImportPassOpen] = useState(false);
+  const [importRaw, setImportRaw] = useState('');
+  const [importPass, setImportPass] = useState<string | undefined>();
+  const [overwriteOpen, setOverwriteOpen] = useState(false);
+  const [pendingImportId, setPendingImportId] = useState<string | null>(null);
 
   const period = useLiveQuery(() => db.periods.get(id), [id]);
   const members = useLiveQuery(() => db.members.where('periodId').equals(id).toArray(), [id]) || [];
@@ -191,6 +198,7 @@ export function PeriodPage() {
         periodId: id,
         displayName: name,
         phone: friend?.phone,
+        email: friend?.email,
         weightDefault: 1,
         role: 'member' as const,
       };
@@ -204,9 +212,32 @@ export function PeriodPage() {
   };
 
   const saveMemberPhone = async (member: LocalMember, phone: string) => {
-    const next = { ...member, phone: phone.trim() || undefined };
+    const next = { ...member, phone: normalizeIranMobile(phone) || phone.trim() || undefined };
     await db.members.put(next);
     await queueOp(id, 'member', 'upsert', next);
+  };
+
+  const saveMemberEmail = async (member: LocalMember, email: string) => {
+    const next = { ...member, email: normalizeEmail(email) || email.trim() || undefined };
+    await db.members.put(next);
+    await queueOp(id, 'member', 'upsert', next);
+  };
+
+  const applyImportedSnap = async (raw: string, passphrase?: string) => {
+    const snap = await parseSnapshot(raw, passphrase);
+    const exists = await db.periods.get(snap.period.id);
+    if (exists && !pendingImportId) {
+      setImportRaw(raw);
+      setImportPass(passphrase);
+      setPendingImportId(snap.period.id);
+      setOverwriteOpen(true);
+      return;
+    }
+    const importedId = await importPeriodSnapshot(snap);
+    setPendingImportId(null);
+    setImportRaw('');
+    setToast('دوره از JSON وارد شد');
+    navigate(`/periods/${importedId}`);
   };
 
   const toggleAbsent = async (member: LocalMember) => {
@@ -433,6 +464,7 @@ export function PeriodPage() {
         )
       }
     >
+      <SyncBanner periodId={id} />
       <div className="-mx-4 mb-4 overflow-x-auto px-4 no-scrollbar animate-rise" role="tablist" aria-label="بخش‌های دوره">
         <div className="flex w-max min-w-full gap-2">
           {tabs.map((t) => (
@@ -780,6 +812,7 @@ export function PeriodPage() {
             <div className="space-y-3 animate-rise">
               <div className="card-surface space-y-3">
                 <h3 className="font-bold">اعضا</h3>
+                <p className="text-xs text-ink-700/70">برای دیدن این دوره بعد از ورود، موبایل یا ایمیل لازم است.</p>
                 <ul className="space-y-3 text-sm">
                   {members.map((m) => (
                     <li key={m.id} className="space-y-2 rounded-2xl bg-brand-50 p-3">
@@ -788,6 +821,7 @@ export function PeriodPage() {
                           {m.displayName} {m.role === 'owner' ? '· مالک' : ''} {m.isPot ? '· صندوق' : ''}
                           {m.excludeFromNew ? ' · غایب' : ''}
                           {m.unitLabel ? ` · ${m.unitLabel}` : ''}
+                          {!m.isPot && m.role !== 'owner' && !m.phone && !m.email ? ' · فقط محلی — بدون دسترسی ابری' : ''}
                         </span>
                         {!isViewer && !m.isPot && m.role !== 'owner' ? (
                           <select
@@ -808,6 +842,14 @@ export function PeriodPage() {
                             dir="ltr"
                             defaultValue={m.phone || ''}
                             onBlur={(e) => saveMemberPhone(m, e.target.value)}
+                            disabled={isViewer}
+                          />
+                          <input
+                            className="input !py-2"
+                            placeholder="ایمیل"
+                            dir="ltr"
+                            defaultValue={m.email || ''}
+                            onBlur={(e) => saveMemberEmail(m, e.target.value)}
                             disabled={isViewer}
                           />
                           {period.template === 'building' ? (
@@ -942,6 +984,42 @@ export function PeriodPage() {
                   >
                     تصویر
                   </button>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    onClick={async () => {
+                      const snap = await buildPeriodSnapshot(id);
+                      downloadJson(`dongham-period-${period.title}.json`, snap);
+                      setToast('فایل JSON ذخیره شد');
+                    }}
+                  >
+                    JSON
+                  </button>
+                  <label className="btn-ghost cursor-pointer">
+                    ورود JSON
+                    <input
+                      type="file"
+                      accept="application/json,text/plain"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (!file) return;
+                        void file.text().then(async (raw) => {
+                          try {
+                            if (raw.trim().startsWith('DH1:')) {
+                              setImportRaw(raw);
+                              setImportPassOpen(true);
+                              return;
+                            }
+                            await applyImportedSnap(raw);
+                          } catch (err) {
+                            setToast(err instanceof Error ? err.message : 'ورود JSON ناموفق');
+                          }
+                        });
+                      }}
+                    />
+                  </label>
                 </div>
               </div>
               {!isViewer ? (
@@ -1003,6 +1081,42 @@ export function PeriodPage() {
         onSubmit={(value) => {
           setSnapPrompt(false);
           void exportOfflineSnap(value.trim() || undefined);
+        }}
+      />
+      <PromptDialog
+        open={importPassOpen}
+        title="رمز اسنپ‌شات"
+        message="این فایل رمز دارد."
+        placeholder="رمز دوره"
+        inputType="password"
+        confirmLabel="ورود"
+        onClose={() => {
+          setImportPassOpen(false);
+          setImportRaw('');
+        }}
+        onSubmit={(value) => {
+          setImportPassOpen(false);
+          void applyImportedSnap(importRaw, value).catch((err) => {
+            setToast(err instanceof Error ? err.message : 'ورود JSON ناموفق');
+          });
+        }}
+      />
+      <ConfirmDialog
+        open={overwriteOpen}
+        title="بازنویسی دوره"
+        message="دوره‌ای با همین شناسه هست. بازنویسی شود؟"
+        confirmLabel="بازنویسی"
+        danger
+        onClose={() => {
+          setOverwriteOpen(false);
+          setPendingImportId(null);
+          setImportRaw('');
+        }}
+        onConfirm={() => {
+          setOverwriteOpen(false);
+          void applyImportedSnap(importRaw, importPass).catch((err) => {
+            setToast(err instanceof Error ? err.message : 'ورود JSON ناموفق');
+          });
         }}
       />
     </Shell>

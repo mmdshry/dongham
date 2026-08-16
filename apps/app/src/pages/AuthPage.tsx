@@ -1,10 +1,11 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Shell } from '../components/ui';
 import { ConfirmDialog } from '../components/Dialog';
 import { api, ensureProfile, getDeviceId, updateProfile } from '../lib/api';
 import { db } from '../lib/db';
-import { toPersianDigits } from '../lib/format';
+import { normalizeIranMobile, normalizeOtpCode, toPersianDigits } from '../lib/format';
 import { googleClientId, loadGis } from '../lib/googleAuth';
 import { flushOutbox, pullCloud } from '../lib/sync';
 import { usePersianDigits } from '../lib/usePersianDigits';
@@ -20,6 +21,8 @@ type AuthUser = {
 };
 
 export function AuthPage() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const setToast = useUiStore((s) => s.setToast);
   const profile = useLiveQuery(() => db.profile.get('self'));
   const persian = usePersianDigits();
@@ -45,9 +48,10 @@ export function AuthPage() {
       plan: res.user.plan || 'free',
       premiumUntil: res.user.premiumUntil,
     });
-    await pullCloud();
     await flushOutbox();
+    await pullCloud();
     setToast(toast);
+    navigate(searchParams.get('next') || '/', { replace: true });
   };
 
   useEffect(() => {
@@ -90,15 +94,19 @@ export function AuthPage() {
     return () => {
       cancelled = true;
     };
-    // applySession is stable enough for this page
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, profile?.token]);
 
   const requestOtp = async () => {
+    const local = normalizeIranMobile(phone);
+    if (!local) {
+      setToast('شماره موبایل نامعتبر است');
+      return;
+    }
     try {
       const res = await api<{ ok: boolean; devCode?: string }>('/auth/otp/request', {
         method: 'POST',
-        body: JSON.stringify({ phone }),
+        body: JSON.stringify({ phone: local }),
       });
       setOtpSent(true);
       if (res.devCode) setDevCode(res.devCode);
@@ -109,12 +117,18 @@ export function AuthPage() {
   };
 
   const verifyOtp = async () => {
+    const local = normalizeIranMobile(phone);
+    const otp = normalizeOtpCode(code);
+    if (!local || !otp) {
+      setToast('شماره یا کد نامعتبر است');
+      return;
+    }
     try {
       const res = await api<{ token: string; user: AuthUser }>('/auth/otp/verify', {
         method: 'POST',
         body: JSON.stringify({
-          phone,
-          code,
+          phone: local,
+          code: otp,
           displayName: displayName || profile?.displayName,
           deviceId: await getDeviceId(),
         }),
@@ -191,81 +205,85 @@ export function AuthPage() {
           ) : null}
         </div>
 
-        {!profile?.token && clientId ? (
-          <div className="card-surface space-y-2">
-            <p className="text-sm font-semibold">ورود با گوگل</p>
-            <div ref={googleBtnRef} className="flex w-full max-w-full justify-center overflow-hidden" />
-          </div>
-        ) : null}
-
-        <div className="flex gap-2">
-          <button
-            type="button"
-            className={`chip flex-1 ${mode === 'otp' ? 'bg-brand-700 text-white' : 'bg-white/80 ring-1 ring-brand-700/10'}`}
-            onClick={() => setMode('otp')}
-          >
-            موبایل
-          </button>
-          <button
-            type="button"
-            className={`chip flex-1 ${mode === 'email' ? 'bg-brand-700 text-white' : 'bg-white/80 ring-1 ring-brand-700/10'}`}
-            onClick={() => setMode('email')}
-          >
-            ایمیل / رمز
-          </button>
-        </div>
-
-        <div className="card-surface space-y-3">
-          <div>
-            <label className="label">نام نمایشی</label>
-            <input className="input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={profile?.displayName} />
-          </div>
-          {mode === 'otp' ? (
-            <>
-              <div>
-                <label className="label">شماره موبایل</label>
-                <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="0912xxxxxxx" dir="ltr" />
+        {!profile?.token ? (
+          <>
+            {clientId ? (
+              <div className="card-surface space-y-2">
+                <p className="text-sm font-semibold">ورود با گوگل</p>
+                <div ref={googleBtnRef} className="flex w-full max-w-full justify-center overflow-hidden" />
               </div>
-              {!otpSent ? (
-                <button type="button" className="btn-primary w-full" onClick={requestOtp}>
-                  دریافت کد
-                </button>
+            ) : null}
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className={`chip flex-1 ${mode === 'otp' ? 'bg-brand-700 text-white' : 'bg-white/80 ring-1 ring-brand-700/10'}`}
+                onClick={() => setMode('otp')}
+              >
+                موبایل
+              </button>
+              <button
+                type="button"
+                className={`chip flex-1 ${mode === 'email' ? 'bg-brand-700 text-white' : 'bg-white/80 ring-1 ring-brand-700/10'}`}
+                onClick={() => setMode('email')}
+              >
+                ایمیل / رمز
+              </button>
+            </div>
+
+            <div className="card-surface space-y-3">
+              <div>
+                <label className="label">نام نمایشی</label>
+                <input className="input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder={profile?.displayName} />
+              </div>
+              {mode === 'otp' ? (
+                <>
+                  <div>
+                    <label className="label">شماره موبایل</label>
+                    <input className="input" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="۰۹۱۲xxxxxxx" dir="ltr" inputMode="tel" />
+                  </div>
+                  {!otpSent ? (
+                    <button type="button" className="btn-primary w-full" onClick={requestOtp}>
+                      دریافت کد
+                    </button>
+                  ) : (
+                    <>
+                      {devCode ? (
+                        <p className="text-xs text-brand-800">کد توسعه: {toPersianDigits(devCode, persian)}</p>
+                      ) : null}
+                      <div>
+                        <label className="label">کد تأیید</label>
+                        <input className="input" value={code} onChange={(e) => setCode(e.target.value)} dir="ltr" inputMode="numeric" />
+                      </div>
+                      <button type="button" className="btn-primary w-full" onClick={verifyOtp}>
+                        تأیید و ورود
+                      </button>
+                    </>
+                  )}
+                </>
               ) : (
                 <>
-                  {devCode ? (
-                    <p className="text-xs text-brand-800">کد توسعه: {toPersianDigits(devCode, persian)}</p>
-                  ) : null}
                   <div>
-                    <label className="label">کد تأیید</label>
-                    <input className="input" value={code} onChange={(e) => setCode(e.target.value)} dir="ltr" />
+                    <label className="label">ایمیل</label>
+                    <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} dir="ltr" />
                   </div>
-                  <button type="button" className="btn-primary w-full" onClick={verifyOtp}>
-                    تأیید و ورود
-                  </button>
+                  <div>
+                    <label className="label">رمز</label>
+                    <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} dir="ltr" />
+                  </div>
+                  <div className="flex gap-2">
+                    <button type="button" className="btn-ghost flex-1" onClick={loginEmail}>
+                      ورود
+                    </button>
+                    <button type="button" className="btn-primary flex-1" onClick={registerEmail}>
+                      ثبت‌نام
+                    </button>
+                  </div>
                 </>
               )}
-            </>
-          ) : (
-            <>
-              <div>
-                <label className="label">ایمیل</label>
-                <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} dir="ltr" />
-              </div>
-              <div>
-                <label className="label">رمز</label>
-                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} dir="ltr" />
-              </div>
-              <div className="flex gap-2">
-                <button type="button" className="btn-ghost flex-1" onClick={loginEmail}>
-                  ورود
-                </button>
-                <button type="button" className="btn-primary flex-1" onClick={registerEmail}>
-                  ثبت‌نام
-                </button>
-              </div>
-            </>
-          )}
-        </div>
+            </div>
+          </>
+        ) : null}
       </div>
       <ConfirmDialog
         open={confirmDelete}

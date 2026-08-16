@@ -1,5 +1,4 @@
 import { api } from './api';
-import { FX_CURRENCY_CODES } from './currencies';
 import { db } from './db';
 
 const FX_META = 'fxRates';
@@ -14,8 +13,10 @@ export type FxSnapshot = {
   missing: string[];
 };
 
+const MAJOR_FX = ['USD', 'EUR', 'TRY', 'AED', 'IQD', 'XAU'] as const;
+
 function missingOf(rates: FxRates): string[] {
-  return FX_CURRENCY_CODES.filter((code) => !rates[code] || rates[code] <= 0);
+  return MAJOR_FX.filter((code) => !rates[code] || rates[code] <= 0);
 }
 
 function parseRates(raw: string | undefined): FxRates {
@@ -89,6 +90,24 @@ export async function fetchFxSnapshot(): Promise<FxSnapshot> {
 
 export async function fetchFxRates(): Promise<FxRates> {
   return (await fetchFxSnapshot()).rates;
+}
+
+export function startFxLoop() {
+  let last = 0;
+  const tick = () => {
+    last = Date.now();
+    void fetchFxSnapshot();
+  };
+  tick();
+  const id = window.setInterval(tick, 60_000);
+  const onVis = () => {
+    if (document.visibilityState === 'visible' && Date.now() - last > 60_000) tick();
+  };
+  document.addEventListener('visibilitychange', onVis);
+  return () => {
+    window.clearInterval(id);
+    document.removeEventListener('visibilitychange', onVis);
+  };
 }
 
 /** Rate to convert `from` into period currency (IRT/IRR). Rates are تومان per 1 unit. 0 if unknown. */

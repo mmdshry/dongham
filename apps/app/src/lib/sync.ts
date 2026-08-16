@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import type { PeriodKind, PeriodTemplate, RoundTo } from '@dongham/ledger';
-import { api, ensureProfile, getDeviceId } from './api';
+import { ApiError, api, ensureProfile, getDeviceId } from './api';
+import { useUiStore } from '../store/ui';
 import {
   db,
   noneCharge,
@@ -102,6 +103,7 @@ export async function applyPeriodSnapshot(snap: PeriodSnapshot): Promise<void> {
       weightDefault: m.weightDefault ?? prev?.weightDefault ?? 1,
       role: m.role || prev?.role || 'member',
       phone: m.phone ?? prev?.phone,
+      email: m.email ?? prev?.email,
       cardNumber: m.cardNumber ?? prev?.cardNumber,
       sheba: m.sheba ?? prev?.sheba,
       cardHolderName: m.cardHolderName ?? prev?.cardHolderName,
@@ -206,13 +208,17 @@ export async function createPeriodLocal(input: {
     await db.periods.update(id, { lunchTurnMemberId: selfMemberId });
   }
 
+  const friends = await db.friends.toArray();
   for (const name of input.memberNames || []) {
     if (!name.trim() || name.trim() === profile.displayName) continue;
+    const friend = friends.find((f) => f.displayName === name.trim());
     const mid = nanoid();
     await db.members.put({
       id: mid,
       periodId: id,
       displayName: name.trim(),
+      phone: friend?.phone,
+      email: friend?.email,
       weightDefault: 1,
       role: 'member',
     });
@@ -300,8 +306,16 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
   if (!profile.token) return { ok: false, error: 'برای همگام‌سازی وارد شوید' };
   if (typeof navigator !== 'undefined' && !navigator.onLine) return { ok: false, error: 'آفلاین هستید' };
   try {
-    const { periods } = await api<{ periods: { id: string }[] }>('/periods');
+    const { periods } = await api<{ periods: { id: string; version?: number; updatedAt?: string }[] }>('/periods');
+    const localPeriods = await db.periods.toArray();
+    const serverAhead = localPeriods.some((local) => {
+      const remote = periods.find((p) => p.id === local.id);
+      return remote && typeof remote.version === 'number' && remote.version > local.version;
+    });
+    useUiStore.getState().setServerAhead(serverAhead);
     for (const p of periods) {
+      const pending = await db.outbox.where('periodId').equals(p.id).count();
+      if (pending > 0) continue;
       const snap = await api<PeriodSnapshot>(`/periods/${p.id}/snapshot`);
       await applyPeriodSnapshot(snap);
     }
@@ -312,6 +326,7 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
           id: f.id,
           displayName: f.displayName,
           phone: f.phone,
+          email: f.email,
           friendUserId: f.friendUserId,
         });
       }
@@ -418,8 +433,14 @@ export async function flushOutbox(periodId?: string): Promise<{ ok: boolean; err
       await db.periods.update(pid, { synced: true, version: res.version });
       await db.outbox.where('periodId').equals(pid).delete();
     }
+    useUiStore.getState().setSyncConflict(null);
     return { ok: true };
   } catch (e) {
+    if (e instanceof ApiError && e.status === 409) {
+      const message = e.message || 'نسخهٔ سرور با این دستگاه یکی نیست';
+      useUiStore.getState().setSyncConflict(message);
+      return { ok: false, error: message };
+    }
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
@@ -429,10 +450,10 @@ export function startSyncLoop() {
     void flushOutbox();
   };
   const pull = () => {
-    void pullCloud().then(() => flushOutbox());
+    void flushOutbox().then(() => pullCloud());
   };
   window.addEventListener('online', pull);
-  void pullCloud();
+  void flushOutbox().then(() => pullCloud());
   const id = window.setInterval(tick, 15_000);
   return () => {
     window.removeEventListener('online', pull);

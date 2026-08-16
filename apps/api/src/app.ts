@@ -2,7 +2,9 @@ import type { Context, Next } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { nanoid } from 'nanoid';
+import { inferCadence, nextRecurringAt, normalizeEmail, normalizeIranMobile, normalizeOtpCode } from '@dongham/ledger';
 import {
+  claimListedMemberships,
   createUser,
   findUserByEmail,
   findUserByPhone,
@@ -21,7 +23,6 @@ import { getFxRates } from './fx.js';
 import { handleTelegramUpdate, telegramSend } from './telegram.js';
 import type { ActivityRecord, ExpenseRecord, MemberRole, PaymentRecord, PeriodKind, PeriodTemplate, RecurringCadence, RoundTo } from './types.js';
 import { zarinpalRequest, zarinpalVerify } from './zarinpal.js';
-import { inferCadence, nextRecurringAt } from '@dongham/ledger';
 
 type Variables = {
   userId?: string;
@@ -79,13 +80,18 @@ function canAccessPeriod(userId: string | null, periodId: string): boolean {
 // ——— Auth ———
 app.post('/auth/otp/request', async (c) => {
   const { phone } = await c.req.json<{ phone: string }>();
-  if (!phone || !/^09\d{9}$/.test(phone)) {
+  const local = normalizeIranMobile(phone);
+  if (!local) {
     return c.json({ error: 'شماره موبایل نامعتبر است' }, 400);
   }
-  const code = await sendOtp(phone);
-  const body: Record<string, unknown> = { ok: true };
-  if (isOtpMock()) body.devCode = code;
-  return c.json(body);
+  try {
+    const code = await sendOtp(local);
+    const body: Record<string, unknown> = { ok: true };
+    if (isOtpMock()) body.devCode = code;
+    return c.json(body);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'ارسال پیامک ناموفق بود' }, 502);
+  }
 });
 
 app.post('/auth/otp/verify', async (c) => {
@@ -95,11 +101,14 @@ app.post('/auth/otp/verify', async (c) => {
     displayName?: string;
     deviceId: string;
   }>();
-  if (!verifyOtp(phone, code)) return c.json({ error: 'کد نامعتبر است' }, 400);
-  let user = findUserByPhone(phone);
+  const local = normalizeIranMobile(phone);
+  const otp = normalizeOtpCode(code);
+  if (!local || !otp || !verifyOtp(local, otp)) return c.json({ error: 'کد نامعتبر است' }, 400);
+  let user = findUserByPhone(local);
   if (!user) {
-    user = createUser({ phone, displayName: displayName || `کاربر ${phone.slice(-4)}` });
+    user = createUser({ phone: local, displayName: displayName || `کاربر ${local.slice(-4)}` });
   }
+  claimListedMemberships(user);
   const token = await issueToken(user.id, deviceId || nanoid());
   return c.json({ token, user });
 });
@@ -111,15 +120,17 @@ app.post('/auth/register', async (c) => {
     displayName: string;
     deviceId: string;
   }>();
-  if (!email || !password || password.length < 6) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail || !password || password.length < 6) {
     return c.json({ error: 'ایمیل یا رمز نامعتبر است' }, 400);
   }
-  if (findUserByEmail(email)) return c.json({ error: 'این ایمیل قبلاً ثبت شده' }, 409);
+  if (findUserByEmail(normalizedEmail)) return c.json({ error: 'این ایمیل قبلاً ثبت شده' }, 409);
   const user = createUser({
-    email,
-    displayName: displayName || email.split('@')[0],
+    email: normalizedEmail,
+    displayName: displayName || normalizedEmail.split('@')[0],
     passwordHash: await hashPassword(password),
   });
+  claimListedMemberships(user);
   const token = await issueToken(user.id, deviceId || nanoid());
   return c.json({ token, user });
 });
@@ -134,6 +145,7 @@ app.post('/auth/login', async (c) => {
   if (!user?.passwordHash || !(await verifyPassword(password, user.passwordHash))) {
     return c.json({ error: 'ایمیل یا رمز اشتباه است' }, 401);
   }
+  claimListedMemberships(user);
   const token = await issueToken(user.id, deviceId || nanoid());
   return c.json({ token, user });
 });
@@ -146,6 +158,7 @@ app.post('/auth/google', async (c) => {
   }
   try {
     const result = await loginWithGoogle(idToken, deviceId || nanoid());
+    claimListedMemberships(result.user);
     return c.json(result);
   } catch {
     return c.json({ error: 'ورود گوگل نامعتبر است' }, 401);
@@ -186,7 +199,9 @@ app.get('/periods', (c) => {
   const memberPeriodIds = new Set(
     db.members.filter((m) => m.userId === userId).map((m) => m.periodId),
   );
-  const periods = db.periods.filter((p) => memberPeriodIds.has(p.id) || p.ownerId === userId);
+  const periods = db.periods
+    .filter((p) => memberPeriodIds.has(p.id) || p.ownerId === userId)
+    .map((p) => ({ id: p.id, title: p.title, currency: p.currency, version: p.version, updatedAt: p.updatedAt }));
   return c.json({ periods });
 });
 
@@ -202,6 +217,7 @@ app.post('/periods', async (c) => {
       displayName: string;
       guestKey?: string;
       phone?: string;
+      email?: string;
       userId?: string;
       role?: MemberRole;
       isPot?: boolean;
@@ -261,7 +277,8 @@ app.post('/periods', async (c) => {
           displayName: m.displayName,
           weightDefault: m.weightDefault ?? 1,
           role: m.role || 'member',
-          phone: m.phone,
+          phone: normalizeIranMobile(m.phone) || m.phone,
+          email: normalizeEmail(m.email) || m.email,
           isPot: m.isPot,
         });
       }
@@ -324,9 +341,29 @@ app.post('/periods/:id/sync', async (c) => {
     return c.json({ error: 'نقش بیننده اجازهٔ تغییر ندارد' }, 403);
   }
 
+  const ops = body.ops || [];
+  if (typeof body.baseVersion === 'number' && body.baseVersion > 0 && body.baseVersion !== period.version && ops.length > 0) {
+    return c.json(
+      {
+        error: 'نسخهٔ سرور با این دستگاه یکی نیست',
+        serverVersion: period.version,
+        snapshot: {
+          period,
+          members: db.members.filter((m) => m.periodId === periodId),
+          expenses: db.expenses.filter((e) => e.periodId === periodId && !e.deletedAt),
+          payments: db.payments.filter((p) => p.periodId === periodId && !p.deletedAt),
+          chat: db.chat.filter((m) => m.periodId === periodId),
+          activity: (db.activity || []).filter((a) => a.periodId === periodId),
+          recurring: db.recurring.filter((r) => r.periodId === periodId),
+        },
+      },
+      409,
+    );
+  }
+
   mutate((d) => {
     const p = d.periods.find((x) => x.id === periodId)!;
-    for (const op of body.ops || []) {
+    for (const op of ops) {
       if (op.entity === 'expense') {
         const payload = op.payload as unknown as ExpenseRecord;
         if (op.action === 'delete') {
@@ -380,6 +417,7 @@ app.post('/periods/:id/sync', async (c) => {
           guestKey?: string;
           userId?: string;
           phone?: string;
+          email?: string;
           role?: MemberRole;
           excludeFromNew?: boolean;
           isPot?: boolean;
@@ -394,7 +432,8 @@ app.post('/periods/:id/sync', async (c) => {
         if (existing) {
           existing.displayName = payload.displayName;
           if (payload.userId) existing.userId = payload.userId;
-          if (payload.phone !== undefined) existing.phone = payload.phone;
+          if (payload.phone !== undefined) existing.phone = normalizeIranMobile(payload.phone) || payload.phone;
+          if (payload.email !== undefined) existing.email = normalizeEmail(payload.email) || payload.email;
           if (payload.role) existing.role = payload.role;
           if (payload.excludeFromNew !== undefined) existing.excludeFromNew = payload.excludeFromNew;
           if (payload.isPot !== undefined) existing.isPot = payload.isPot;
@@ -413,7 +452,8 @@ app.post('/periods/:id/sync', async (c) => {
             userId: payload.userId,
             weightDefault: payload.weightDefault ?? 1,
             role: payload.role || 'member',
-            phone: payload.phone,
+            phone: normalizeIranMobile(payload.phone) || payload.phone,
+            email: normalizeEmail(payload.email) || payload.email,
             excludeFromNew: payload.excludeFromNew,
             isPot: payload.isPot,
             cardNumber: payload.cardNumber,
@@ -578,12 +618,26 @@ app.post('/invites/:token/join', async (c) => {
   }>();
   const invite = getDb().invites.find((i) => i.token === token);
   if (!invite) return c.json({ error: 'پیدا نشد' }, 404);
-  const existing = getDb().members.find(
-    (m) =>
-      m.periodId === invite.periodId &&
-      (m.userId === userId || (guestKey && m.guestKey === guestKey)),
-  );
-  if (existing) return c.json({ memberId: existing.id, periodId: invite.periodId });
+  const user = getDb().users.find((u) => u.id === userId && !u.deletedAt);
+  const phone = normalizeIranMobile(user?.phone);
+  const email = normalizeEmail(user?.email);
+  const existing = getDb().members.find((m) => {
+    if (m.periodId !== invite.periodId) return false;
+    if (m.userId === userId || (guestKey && m.guestKey === guestKey)) return true;
+    if (phone && normalizeIranMobile(m.phone) === phone) return true;
+    if (email && normalizeEmail(m.email) === email) return true;
+    return false;
+  });
+  if (existing) {
+    mutate((db) => {
+      const row = db.members.find((m) => m.id === existing.id);
+      if (row) {
+        row.userId = userId;
+        if (guestKey) row.guestKey = guestKey;
+      }
+    });
+    return c.json({ memberId: existing.id, periodId: invite.periodId });
+  }
   const memberId = nanoid();
   mutate((db) => {
     db.members.push({
@@ -591,9 +645,11 @@ app.post('/invites/:token/join', async (c) => {
       periodId: invite.periodId,
       userId,
       guestKey,
-      displayName: displayName || 'مهمان',
+      displayName: displayName || user?.displayName || 'مهمان',
       weightDefault: 1,
       role: 'member',
+      phone: phone || undefined,
+      email: email || undefined,
     });
   });
   return c.json({ memberId, periodId: invite.periodId });
@@ -609,16 +665,18 @@ app.get('/friends', (c) => {
 app.post('/friends', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  const { displayName, phone, friendUserId } = await c.req.json<{
+  const { displayName, phone, email, friendUserId } = await c.req.json<{
     displayName: string;
     phone?: string;
+    email?: string;
     friendUserId?: string;
   }>();
   const friend = {
     id: nanoid(),
     userId,
     displayName,
-    phone,
+    phone: normalizeIranMobile(phone) || phone,
+    email: normalizeEmail(email) || email,
     friendUserId,
   };
   mutate((db) => db.friends.push(friend));

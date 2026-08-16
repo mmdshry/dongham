@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import QRCode from 'qrcode';
 import { db, noneCharge, type LocalExpense, type LocalMember, type LocalPayment, type LocalPeriod, type LocalRecurring } from './db';
+import { queueOp } from './sync';
 
 export interface PeriodSnapshot {
   v: 1;
@@ -52,9 +53,24 @@ export async function importPeriodSnapshot(snap: PeriodSnapshot): Promise<string
   const id = snap.period.id || nanoid();
   const period = { ...snap.period, id, synced: false, updatedAt: new Date().toISOString() };
   await db.periods.put(period);
-  for (const m of snap.members) await db.members.put({ ...m, periodId: id });
+  await queueOp(id, 'period', 'upsert', {
+    title: period.title,
+    currency: period.currency,
+    kind: period.kind,
+    template: period.template,
+    roundTo: period.roundTo,
+    bankerMemberId: period.bankerMemberId,
+    buildingCharge: period.buildingCharge,
+    lunchTurnMemberId: period.lunchTurnMemberId,
+    encrypted: period.encrypted,
+  });
+  for (const m of snap.members) {
+    const member = { ...m, periodId: id };
+    await db.members.put(member);
+    await queueOp(id, 'member', 'upsert', member);
+  }
   for (const e of snap.expenses) {
-    await db.expenses.put({
+    const expense = {
       ...e,
       periodId: id,
       service: e.service || noneCharge(),
@@ -62,10 +78,20 @@ export async function importPeriodSnapshot(snap: PeriodSnapshot): Promise<string
       tax: e.tax || noneCharge(),
       payers: e.payers || [],
       occurredAt: e.occurredAt || e.createdAt,
-    });
+    };
+    await db.expenses.put(expense);
+    await queueOp(id, 'expense', 'upsert', expense);
   }
-  for (const p of snap.payments) await db.payments.put({ ...p, periodId: id });
-  for (const r of snap.recurring) await db.recurring.put({ ...r, periodId: id });
+  for (const p of snap.payments) {
+    const payment = { ...p, periodId: id };
+    await db.payments.put(payment);
+    await queueOp(id, 'payment', 'upsert', payment);
+  }
+  for (const r of snap.recurring) {
+    const rule = { ...r, periodId: id };
+    await db.recurring.put(rule);
+    await queueOp(id, 'recurring', 'upsert', rule);
+  }
   return id;
 }
 

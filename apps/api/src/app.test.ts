@@ -382,4 +382,63 @@ describe('api auth & sync', () => {
     const otherBody = (await json(otherEdge)) as { payments: { id: string }[] };
     expect(otherBody.payments.map((p) => p.id).sort()).toEqual(['pay-a', 'pay-c']);
   });
+
+  it('accepts persian digits for otp and claims listed memberships', async () => {
+    const ownerReq = await app.request('/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '۰۹۱۲۱۱۱۱۱۱۱' }),
+    });
+    const { devCode: ownerCode } = (await json(ownerReq)) as { devCode: string };
+    const ownerVerify = await app.request('/auth/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone: '۰۹۱۲۱۱۱۱۱۱۱',
+        code: ownerCode.replace(/\d/g, (d) => '۰۱۲۳۴۵۶۷۸۹'[Number(d)]),
+        displayName: 'مالک',
+        deviceId: 'own1',
+      }),
+    });
+    const { token } = (await json(ownerVerify)) as { token: string };
+    expect(token).toBeTruthy();
+
+    const periodRes = await app.request('/periods', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        title: 'سفر دوستان',
+        currency: 'IRT',
+        members: [
+          { id: 'm-owner', displayName: 'مالک', role: 'owner' },
+          { id: 'm-sara', displayName: 'سارا', phone: '۰۹۱۲۲۲۲۲۲۲۲' },
+        ],
+      }),
+    });
+    const { period } = (await json(periodRes)) as { period: { id: string } };
+    expect(period.id).toBeTruthy();
+
+    const saraReq = await app.request('/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09122222222' }),
+    });
+    const { devCode: saraCode } = (await json(saraReq)) as { devCode: string };
+    const saraVerify = await app.request('/auth/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone: '09122222222',
+        code: saraCode,
+        displayName: 'سارا',
+        deviceId: 'sara1',
+      }),
+    });
+    const { token: saraToken } = (await json(saraVerify)) as { token: string };
+    const listed = await app.request('/periods', {
+      headers: { Authorization: `Bearer ${saraToken}` },
+    });
+    const { periods } = (await json(listed)) as { periods: { id: string }[] };
+    expect(periods.map((p) => p.id)).toContain(period.id);
+  });
 });

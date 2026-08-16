@@ -77,6 +77,7 @@ export function ExpenseFormPage() {
   const [currencyWarn, setCurrencyWarn] = useState<string | null>(null);
   const [needManualFx, setNeedManualFx] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [fxRates, setFxRates] = useState<Record<string, number>>({});
 
   useEffect(() => {
     if (existing) {
@@ -106,6 +107,10 @@ export function ExpenseFormPage() {
       }
     }
   }, [existing]);
+
+  useEffect(() => {
+    void fetchFxSnapshot().then((s) => setFxRates(s.rates));
+  }, []);
 
   useEffect(() => {
     if (!isNew || !people.length) return;
@@ -387,7 +392,7 @@ export function ExpenseFormPage() {
             <label className="label" htmlFor="exp-currency">
               ارز هزینه
             </label>
-            <CurrencySelect id="exp-currency" value={currency} onChange={onCurrencyChange} />
+            <CurrencySelect id="exp-currency" value={currency} onChange={onCurrencyChange} rates={fxRates} />
           </div>
           {currencyWarn ? (
             <div className="rounded-2xl bg-amber-50 px-3 py-2 text-xs text-amber-900">

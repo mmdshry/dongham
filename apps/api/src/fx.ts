@@ -2,9 +2,11 @@ import type { FxCacheRecord } from './types.js';
 import { getDb, mutate } from './db.js';
 
 const NEEDED = ['USD', 'EUR', 'TRY', 'AED', 'IQD', 'XAU'] as const;
-const HOUR_MS = 60 * 60 * 1000;
+const CACHE_MS = 60_000;
 const NOBITEX_STATS = 'https://api.nobitex.ir/market/stats';
-const FETCH_MS = 2500;
+const FETCH_MS = 8000;
+const NAVASAN_HOME = 'https://www.navasan.net/';
+const NAVASAN_LAST = 'https://www.navasan.net/last_currencies.php';
 
 function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response> {
   return fetch(url, { ...init, signal: AbortSignal.timeout(FETCH_MS) });
@@ -55,7 +57,7 @@ export async function getFxRates(): Promise<{
   missing: string[];
 }> {
   const cached = getDb().fxCache;
-  if (cached && Date.now() - new Date(cached.fetchedAt).getTime() < HOUR_MS) {
+  if (cached && Date.now() - new Date(cached.fetchedAt).getTime() < CACHE_MS) {
     return {
       rates: cached.rates,
       source: 'cache',
@@ -105,6 +107,11 @@ async function fetchLiveRates(): Promise<{ rates: Record<string, number>; source
     }
   }
 
+  const web = await fetchNavasanLastCurrencies();
+  if (web && Object.keys(web).length) {
+    return { rates: web, source: 'navasan-web' };
+  }
+
   let rates: Record<string, number> = {};
   let source = '';
 
@@ -125,6 +132,73 @@ async function fetchLiveRates(): Promise<{ rates: Record<string, number>; source
 
   if (!Object.keys(rates).length) return null;
   return { rates, source: source || 'nobitex' };
+}
+
+export function parseNavasanLastCurrencies(json: unknown): Record<string, number> {
+  if (!json || typeof json !== 'object') return {};
+  const rates: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(json as Record<string, { value?: string | number } | number>)) {
+    const value = typeof raw === 'number' ? raw : Number(raw?.value);
+    if (!Number.isFinite(value) || value <= 0) continue;
+    rates[key.toUpperCase()] = value;
+  }
+  return rates;
+}
+
+function cookieValue(header: string | null, name: string): string | null {
+  if (!header) return null;
+  const match = header.match(new RegExp(`${name}=([^;]+)`));
+  return match?.[1] || null;
+}
+
+function extractCsrf(html: string, sessionId?: string): string | null {
+  const patterns = [
+    /last_currencies\.php\?csrf=([^"'&\s]+)/i,
+    /name=["']csrf["'][^>]*value=["']([^"']+)/i,
+    /value=["']([^"']+)["'][^>]*name=["']csrf["']/i,
+    /["']csrf["']\s*[:=]\s*["']([^"']+)/i,
+  ];
+  for (const re of patterns) {
+    const m = html.match(re);
+    if (m?.[1]) return m[1];
+  }
+  if (sessionId) {
+    const encoded = html.match(new RegExp(`${sessionId}[^"'\\s]{20,}`));
+    if (encoded?.[0]) return encoded[0];
+  }
+  return null;
+}
+
+async function fetchNavasanLastCurrencies(): Promise<Record<string, number> | null> {
+  const headers = {
+    Accept: 'text/html,application/xhtml+xml,application/json',
+    'User-Agent': 'Mozilla/5.0 (compatible; Dongham/1.0)',
+    Referer: NAVASAN_HOME,
+  };
+  try {
+    const home = await fetchWithTimeout(NAVASAN_HOME, { headers });
+    if (!home.ok) return null;
+    const html = await home.text();
+    const session = cookieValue(home.headers.get('set-cookie'), 'PHPSESSID');
+    const csrf = extractCsrf(html, session || undefined);
+    const url = new URL(NAVASAN_LAST);
+    if (csrf) url.searchParams.set('csrf', csrf);
+    url.searchParams.set('_', String(Math.floor(Date.now() / 1000)));
+    const res = await fetchWithTimeout(url.toString(), {
+      headers: {
+        ...headers,
+        Accept: 'application/json, text/javascript, */*; q=0.01',
+        'X-Requested-With': 'XMLHttpRequest',
+        ...(session ? { Cookie: `PHPSESSID=${session}` } : {}),
+      },
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    const rates = parseNavasanLastCurrencies(json);
+    return Object.keys(rates).length ? rates : null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchNobitex(): Promise<Record<string, number> | null> {

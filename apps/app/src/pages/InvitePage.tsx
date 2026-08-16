@@ -64,7 +64,7 @@ export function InvitePage() {
     }
     if (!profile.token) {
       setToast('برای پیوستن از گوشی دیگر ابتدا وارد شوید');
-      navigate('/auth');
+      navigate(`/auth?next=/i/${token}`);
       return;
     }
     try {

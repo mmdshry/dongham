@@ -69,6 +69,7 @@ export interface MemberRecord {
   weightDefault: number;
   role: MemberRole;
   phone?: string;
+  email?: string;
   cardNumber?: string;
   sheba?: string;
   cardHolderName?: string;
@@ -147,6 +148,7 @@ export interface FriendRecord {
   friendUserId?: string;
   displayName: string;
   phone?: string;
+  email?: string;
 }
 
 export interface AttachmentRecord {

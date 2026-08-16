@@ -2,6 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import type { PeriodKind, PeriodTemplate, RoundTo } from '@dongham/ledger';
+import { SyncBanner } from '../components/SyncBanner';
 import { EmptyState, Money, Shell } from '../components/ui';
 import { Modal } from '../components/Dialog';
 import { CurrencySelect } from '../components/CurrencySelect';
@@ -25,6 +26,7 @@ export function HomePage() {
   const expenses = useLiveQuery(() => db.expenses.toArray(), []) || [];
   const payments = useLiveQuery(() => db.payments.toArray(), []) || [];
   const profile = useLiveQuery(() => db.profile.get('self'));
+  const outbox = useLiveQuery(() => db.outbox.toArray(), []) || [];
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [memberNames, setMemberNames] = useState<string[]>([]);
@@ -95,6 +97,7 @@ export function HomePage() {
         </button>
       }
     >
+      <SyncBanner />
       <div className="mb-4 grid gap-3 sm:grid-cols-2 animate-rise">
         <div className="card-surface">
           <p className="text-xs text-ink-700/70">طلب شما</p>
@@ -146,7 +149,7 @@ export function HomePage() {
                   </span>
                 </div>
                 <p className="mt-3 text-xs text-ink-700/70">
-                  {p.synced ? 'همگام' : 'در صف همگام‌سازی'}
+                  {outbox.some((o) => o.periodId === p.id) || !p.synced ? 'در صف همگام‌سازی' : 'همگام'}
                   {p.template && p.template !== 'custom' ? ` · ${TEMPLATES.find((t) => t.id === p.template)?.label}` : ''}
                 </p>
               </Link>
@@ -226,7 +229,7 @@ export function HomePage() {
                 <label className="label" htmlFor="period-currency">
                   ارز پایه
                 </label>
-                <CurrencySelect id="period-currency" value={currency} onChange={setCurrency} />
+                <CurrencySelect id="period-currency" value={currency} onChange={setCurrency} rates={fxRates} />
               </div>
               <MemberPicker
                 selected={memberNames}

@@ -4,6 +4,7 @@ import { BottomNav, DesktopNav } from './components/BottomNav';
 import { ToastHost } from './components/ui';
 import { ensureProfile } from './lib/api';
 import { useKeyboardInset } from './lib/keyboard';
+import { startFxLoop } from './lib/fx';
 import { startSyncLoop } from './lib/sync';
 import { AuthPage } from './pages/AuthPage';
 import { ExpenseFormPage } from './pages/ExpenseFormPage';
@@ -24,6 +25,7 @@ function AppShell() {
   useEffect(() => {
     void ensureProfile();
     const stop = startSyncLoop();
+    const stopFx = startFxLoop();
     const on = () => setOnline(true);
     const off = () => setOnline(false);
     window.addEventListener('online', on);
@@ -31,6 +33,7 @@ function AppShell() {
     setOnline(navigator.onLine);
     return () => {
       stop();
+      stopFx();
       window.removeEventListener('online', on);
       window.removeEventListener('offline', off);
     };

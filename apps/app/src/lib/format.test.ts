@@ -59,8 +59,11 @@ describe('format', () => {
 
   it('validates iran mobile and e164', () => {
     expect(isValidIranMobile('09121234567')).toBe(true);
-    expect(isValidIranMobile('9121234567')).toBe(false);
-    expect(toWhatsAppE164('09121234567')).toBe('989121234567');
+    expect(isValidIranMobile('۰۹۱۲۱۲۳۴۵۶۷')).toBe(true);
+    expect(isValidIranMobile('٠٩١٢١٢٣٤٥٦٧')).toBe(true);
+    expect(isValidIranMobile('+989121234567')).toBe(true);
+    expect(isValidIranMobile('9121234567')).toBe(true);
+    expect(toWhatsAppE164('۰۹۱۲۱۲۳۴۵۶۷')).toBe('989121234567');
   });
 
   it('validates card luhn and sheba', () => {

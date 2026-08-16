@@ -59,5 +59,12 @@ export {
 } from './iran-banks.js';
 export type { IranBank } from './iran-banks.js';
 
-export { parseExpenseText, toLatinDigits, indexedAmountNow } from './telegram-parse.js';
+export {
+  parseExpenseText,
+  toLatinDigits,
+  indexedAmountNow,
+  normalizeIranMobile,
+  normalizeOtpCode,
+  normalizeEmail,
+} from './telegram-parse.js';
 export type { ParsedExpenseText } from './telegram-parse.js';

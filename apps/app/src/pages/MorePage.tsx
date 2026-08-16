@@ -5,7 +5,8 @@ import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { detectBank } from '@dongham/ledger';
 import { FxRatesPanel } from '../components/FxRatesPanel';
-import { ConfirmDialog } from '../components/Dialog';
+import { ConfirmDialog, PromptDialog } from '../components/Dialog';
+import { SyncBanner } from '../components/SyncBanner';
 import { Shell } from '../components/ui';
 import { updateProfile } from '../lib/api';
 import {
@@ -40,6 +41,10 @@ export function MorePage() {
   const [holder, setHolder] = useState('');
   const [bankHint, setBankHint] = useState('');
   const [confirmWipe, setConfirmWipe] = useState(false);
+  const [importRaw, setImportRaw] = useState('');
+  const [importPass, setImportPass] = useState<string | undefined>();
+  const [importPassOpen, setImportPassOpen] = useState(false);
+  const [overwriteOpen, setOverwriteOpen] = useState(false);
 
   useEffect(() => {
     void listPayouts(profile).then(setPayouts);
@@ -153,13 +158,29 @@ export function MorePage() {
     setToast('بازیابی شد');
   };
 
+  const finishImport = async (raw: string, passphrase?: string, allowOverwrite = false) => {
+    const snap = await parseSnapshot(raw, passphrase);
+    const exists = await db.periods.get(snap.period.id);
+    if (exists && !allowOverwrite) {
+      setImportRaw(raw);
+      setImportPass(passphrase);
+      setOverwriteOpen(true);
+      return;
+    }
+    const id = await importPeriodSnapshot(snap);
+    setToast('دوره وارد شد');
+    window.location.href = `/periods/${id}`;
+  };
+
   const importSnap = async (file: File) => {
     try {
       const raw = await file.text();
-      const snap = await parseSnapshot(raw);
-      const id = await importPeriodSnapshot(snap);
-      setToast(`دوره وارد شد`);
-      window.location.href = `/periods/${id}`;
+      if (raw.trim().startsWith('DH1:')) {
+        setImportRaw(raw);
+        setImportPassOpen(true);
+        return;
+      }
+      await finishImport(raw);
     } catch (e) {
       setToast(e instanceof Error ? e.message : 'ورود اسنپ‌شات ناموفق');
     }
@@ -168,6 +189,7 @@ export function MorePage() {
   return (
     <Shell title="بیشتر">
       <div className="mx-auto max-w-lg space-y-4 animate-rise">
+        <SyncBanner />
         <div className="card-surface space-y-3">
           <h2 className="section-title">پروفایل محلی</h2>
           <input
@@ -338,6 +360,41 @@ export function MorePage() {
         onConfirm={() => {
           setConfirmWipe(false);
           void wipeLocal();
+        }}
+      />
+      <PromptDialog
+        open={importPassOpen}
+        title="رمز اسنپ‌شات"
+        message="این فایل رمز دارد."
+        placeholder="رمز دوره"
+        inputType="password"
+        confirmLabel="ورود"
+        onClose={() => {
+          setImportPassOpen(false);
+          setImportRaw('');
+        }}
+        onSubmit={(value) => {
+          setImportPassOpen(false);
+          void finishImport(importRaw, value).catch((e) => {
+            setToast(e instanceof Error ? e.message : 'ورود اسنپ‌شات ناموفق');
+          });
+        }}
+      />
+      <ConfirmDialog
+        open={overwriteOpen}
+        title="بازنویسی دوره"
+        message="دوره‌ای با همین شناسه هست. بازنویسی شود؟"
+        confirmLabel="بازنویسی"
+        danger
+        onClose={() => {
+          setOverwriteOpen(false);
+          setImportRaw('');
+        }}
+        onConfirm={() => {
+          setOverwriteOpen(false);
+          void finishImport(importRaw, importPass, true).catch((e) => {
+            setToast(e instanceof Error ? e.message : 'ورود اسنپ‌شات ناموفق');
+          });
         }}
       />
     </Shell>

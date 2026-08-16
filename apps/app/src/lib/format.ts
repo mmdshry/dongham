@@ -1,5 +1,12 @@
 import { currencyLabel } from './currencies';
-import { formatCardGrouped as groupCard, formatShebaGrouped as groupSheba, toLatinDigits as latinFromLedger } from '@dongham/ledger';
+import {
+  formatCardGrouped as groupCard,
+  formatShebaGrouped as groupSheba,
+  normalizeEmail as emailFromLedger,
+  normalizeIranMobile as mobileFromLedger,
+  normalizeOtpCode as otpFromLedger,
+  toLatinDigits as latinFromLedger,
+} from '@dongham/ledger';
 
 const persianDigits = '۰۱۲۳۴۵۶۷۸۹';
 
@@ -108,26 +115,31 @@ export function formatGrouped(amount: number, persian = true): string {
   return s;
 }
 
+export function normalizeIranMobile(phone: string | undefined | null): string | null {
+  return mobileFromLedger(phone);
+}
+
+export function normalizeOtpCode(code: string | undefined | null): string | null {
+  return otpFromLedger(code);
+}
+
+export function normalizeEmail(email: string | undefined | null): string | null {
+  return emailFromLedger(email);
+}
+
 export function isValidIranMobile(phone: string | undefined | null): boolean {
-  if (!phone) return false;
-  const latin = toLatinDigits(phone).replace(/[\s-]/g, '');
-  return /^09\d{9}$/.test(latin) || /^989\d{9}$/.test(latin) || /^\+989\d{9}$/.test(latin);
+  return !!normalizeIranMobile(phone);
 }
 
 /** E.164 without plus: 98XXXXXXXXXX */
 export function toWhatsAppE164(phone: string): string | null {
-  const latin = toLatinDigits(phone).replace(/[\s-]/g, '');
-  if (/^09\d{9}$/.test(latin)) return `98${latin.slice(1)}`;
-  if (/^989\d{9}$/.test(latin)) return latin;
-  if (/^\+989\d{9}$/.test(latin)) return latin.slice(1);
-  return null;
+  const local = normalizeIranMobile(phone);
+  return local ? `98${local.slice(1)}` : null;
 }
 
 /** Iranian local mobile: 09XXXXXXXXX */
 export function toIranLocal09(phone: string): string | null {
-  const e164 = toWhatsAppE164(phone);
-  if (!e164) return null;
-  return `0${e164.slice(2)}`;
+  return normalizeIranMobile(phone);
 }
 
 export function luhnOk(card: string): boolean {

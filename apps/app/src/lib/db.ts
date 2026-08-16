@@ -72,6 +72,7 @@ export interface LocalMember {
   weightDefault: number;
   role: 'owner' | 'member' | 'viewer';
   phone?: string;
+  email?: string;
   cardNumber?: string;
   sheba?: string;
   cardHolderName?: string;
@@ -149,6 +150,7 @@ export interface LocalFriend {
   id: string;
   displayName: string;
   phone?: string;
+  email?: string;
   friendUserId?: string;
 }
 

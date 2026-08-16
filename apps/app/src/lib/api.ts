@@ -34,6 +34,17 @@ export async function updateProfile(patch: Partial<LocalProfile>): Promise<Local
 
 export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 
+export class ApiError extends Error {
+  status: number;
+  data: unknown;
+  constructor(message: string, status: number, data: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.data = data;
+  }
+}
+
 export async function api<T>(
   path: string,
   options: RequestInit = {},
@@ -45,6 +56,8 @@ export async function api<T>(
   headers.set('X-Device-Id', await getDeviceId());
   const res = await fetch(`${API_URL}${path}`, { ...options, headers });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as { error?: string }).error || res.statusText);
+  if (!res.ok) {
+    throw new ApiError((data as { error?: string }).error || res.statusText, res.status, data);
+  }
   return data as T;
 }
