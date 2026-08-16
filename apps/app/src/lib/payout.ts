@@ -2,7 +2,7 @@ import { detectBank } from '@dongham/ledger';
 import { nanoid } from 'nanoid';
 import { encryptText, decryptMaybe } from './crypto';
 import { db, type LocalProfile, type PayoutMethod } from './db';
-import { luhnOk, normalizeCard, normalizeSheba, shebaOk } from './format';
+import { iranCardOk, normalizeCard, normalizeSheba, shebaOk } from './format';
 import { updateProfile } from './api';
 
 export interface DecryptedPayout {
@@ -12,6 +12,7 @@ export interface DecryptedPayout {
   sheba: string;
   holder: string;
   bank: string;
+  accountNumber?: string;
   isDefault?: boolean;
 }
 
@@ -44,6 +45,7 @@ export async function listPayouts(profile?: LocalProfile | null): Promise<Decryp
       sheba,
       holder: m.cardHolderName || p.cardHolderName || '',
       bank,
+      accountNumber: m.accountNumber,
       isDefault: m.isDefault,
     });
   }
@@ -61,20 +63,25 @@ export async function savePayoutMethod(input: {
   sheba?: string;
   holder?: string;
   bank?: string;
+  accountNumber?: string;
   isDefault?: boolean;
 }): Promise<{ ok: boolean; error?: string }> {
   const card = input.card ? normalizeCard(input.card) : '';
   const sheba = input.sheba ? normalizeSheba(input.sheba) : '';
-  if (card && !luhnOk(card)) return { ok: false, error: 'شماره کارت نامعتبر است' };
+  if (!card) return { ok: false, error: 'شماره کارت لازم است' };
+  if (!iranCardOk(card)) return { ok: false, error: 'شماره کارت نامعتبر است' };
   if (sheba && !shebaOk(sheba)) return { ok: false, error: 'شبا نامعتبر است' };
-  if (!card && !sheba) return { ok: false, error: 'کارت یا شبا لازم است' };
+  const current = await listPayouts();
+  const dup = current.find((p) => p.card && normalizeCard(p.card) === card && p.id !== (input.id || ''));
+  if (dup) return { ok: false, error: 'این کارت قبلاً ذخیره شده' };
   const bank = input.bank || detectBank(card, sheba)?.name || '';
   const method: PayoutMethod = {
     id: input.id || nanoid(),
-    cardNumber: card ? await encryptText(card) : undefined,
+    cardNumber: await encryptText(card),
     sheba: sheba ? await encryptText(sheba) : undefined,
     cardHolderName: input.holder,
     bankName: bank,
+    accountNumber: input.accountNumber || undefined,
     isDefault: input.isDefault,
     label: bank || undefined,
   };

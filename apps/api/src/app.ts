@@ -2,7 +2,7 @@ import type { Context, Next } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { nanoid } from 'nanoid';
-import { inferCadence, nextRecurringAt, normalizeEmail, normalizeIranMobile, normalizeOtpCode } from '@dongham/ledger';
+import { inferCadence, isPeriodId, migratePeriodIds, newPeriodId, nextRecurringAt, normalizeEmail, normalizeIranMobile, normalizeOtpCode } from '@dongham/ledger';
 import {
   claimListedMemberships,
   createUser,
@@ -18,7 +18,8 @@ import {
   verifyToken,
 } from './auth.js';
 import { premiumUntilFromNow, verifyBazaarPurchase, verifyMyketPurchase } from './billing.js';
-import { getDb, mutate } from './db.js';
+import { bumpPeriodVersion, getDb, mutate } from './db.js';
+import { lookupCardSheba, lookupIdentity, quotaFor } from './drapi.js';
 import { getFxRates } from './fx.js';
 import { handleTelegramUpdate, telegramSend } from './telegram.js';
 import type { ActivityRecord, ExpenseRecord, MemberRole, PaymentRecord, PeriodKind, PeriodTemplate, RecurringCadence, RoundTo } from './types.js';
@@ -68,13 +69,59 @@ function requireUser(c: Context<{ Variables: Variables }>): string | null {
   return c.get('userId') ?? null;
 }
 
-function canAccessPeriod(userId: string | null, periodId: string): boolean {
-  if (!userId) return false;
+function findPeriod(periodId: string) {
+  return getDb().periods.find((p) => p.id === periodId);
+}
+
+function periodSnapshotBody(periodId: string) {
   const db = getDb();
   const period = db.periods.find((p) => p.id === periodId);
+  if (!period) return null;
+  return {
+    period,
+    members: db.members.filter((m) => m.periodId === periodId),
+    expenses: db.expenses.filter((e) => e.periodId === periodId),
+    payments: db.payments.filter((p) => p.periodId === periodId),
+    chat: db.chat.filter((m) => m.periodId === periodId),
+    invites: db.invites.filter((i) => i.periodId === periodId),
+    recurring: db.recurring.filter((r) => r.periodId === periodId),
+    activity: (db.activity || []).filter((a) => a.periodId === periodId),
+    version: period.version,
+  };
+}
+
+function memberMatchesUser(periodId: string, userId: string): boolean {
+  const db = getDb();
+  const user = db.users.find((u) => u.id === userId);
+  const phone = normalizeIranMobile(user?.phone);
+  const email = normalizeEmail(user?.email);
+  return db.members.some((m) => {
+    if (m.periodId !== periodId) return false;
+    if (m.userId === userId) return true;
+    if (phone && normalizeIranMobile(m.phone) === phone) return true;
+    if (email && m.email && normalizeEmail(m.email) === email) return true;
+    return false;
+  });
+}
+
+function canAccessPeriod(userId: string | null, periodId: string, mode: 'read' | 'write' = 'read'): boolean {
+  const period = findPeriod(periodId);
   if (!period) return false;
+  if (mode === 'read' && (period.visibility || 'private') === 'public') return true;
+  if (!userId) return false;
   if (period.ownerId === userId) return true;
-  return db.members.some((m) => m.periodId === periodId && m.userId === userId);
+  return memberMatchesUser(periodId, userId);
+}
+
+function periodRole(userId: string, periodId: string): MemberRole | null {
+  const db = getDb();
+  const period = findPeriod(periodId);
+  if (!period) return null;
+  const mine = db.members.find((m) => m.periodId === periodId && m.userId === userId);
+  if (mine) return mine.role;
+  if (period.ownerId === userId) return 'owner';
+  if (memberMatchesUser(periodId, userId)) return 'member';
+  return null;
 }
 
 // ——— Auth ———
@@ -196,12 +243,16 @@ app.get('/periods', (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const db = getDb();
-  const memberPeriodIds = new Set(
-    db.members.filter((m) => m.userId === userId).map((m) => m.periodId),
-  );
   const periods = db.periods
-    .filter((p) => memberPeriodIds.has(p.id) || p.ownerId === userId)
-    .map((p) => ({ id: p.id, title: p.title, currency: p.currency, version: p.version, updatedAt: p.updatedAt }));
+    .filter((p) => p.ownerId === userId || memberMatchesUser(p.id, userId))
+    .map((p) => ({
+      id: p.id,
+      title: p.title,
+      currency: p.currency,
+      version: p.version,
+      updatedAt: p.updatedAt,
+      visibility: p.visibility || 'private',
+    }));
   return c.json({ periods });
 });
 
@@ -230,11 +281,19 @@ app.post('/periods', async (c) => {
     buildingCharge?: number;
     lunchTurnMemberId?: string;
     encrypted?: boolean;
+    visibility?: 'private' | 'public';
   }>();
-  const id = body.id || nanoid();
+  const taken = getDb().periods.map((p) => p.id);
+  let id = body.id;
+  if (id && !isPeriodId(id)) {
+    const mapped = await migratePeriodIds([...taken, id]);
+    id = mapped.get(id) || newPeriodId(taken);
+  }
+  if (!id) id = newPeriodId(taken);
   const now = new Date().toISOString();
   const existing = getDb().periods.find((p) => p.id === id);
   if (existing) {
+    if (existing.ownerId !== userId) return c.json({ error: 'اجازه ندارید' }, 403);
     mutate((db) => {
       const p = db.periods.find((x) => x.id === id)!;
       if (body.title) p.title = body.title;
@@ -246,6 +305,8 @@ app.post('/periods', async (c) => {
       if (body.buildingCharge !== undefined) p.buildingCharge = body.buildingCharge;
       if (body.lunchTurnMemberId) p.lunchTurnMemberId = body.lunchTurnMemberId;
       if (body.encrypted !== undefined) p.encrypted = body.encrypted;
+      if (body.visibility === 'public' || body.visibility === 'private') p.visibility = body.visibility;
+      bumpPeriodVersion(db, id!);
       p.updatedAt = now;
     });
     return c.json({ period: getDb().periods.find((p) => p.id === id) });
@@ -266,6 +327,7 @@ app.post('/periods', async (c) => {
       buildingCharge: body.buildingCharge,
       lunchTurnMemberId: body.lunchTurnMemberId,
       encrypted: body.encrypted,
+      visibility: body.visibility === 'public' ? 'public' : 'private',
     });
     if (body.members?.length) {
       for (const m of body.members) {
@@ -299,21 +361,9 @@ app.post('/periods', async (c) => {
 app.get('/periods/:id/snapshot', (c) => {
   const userId = requireUser(c);
   const periodId = c.req.param('id');
-  if (!canAccessPeriod(userId, periodId)) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  const db = getDb();
-  const period = db.periods.find((p) => p.id === periodId);
-  if (!period) return c.json({ error: 'پیدا نشد' }, 404);
-  return c.json({
-    period,
-    members: db.members.filter((m) => m.periodId === periodId),
-    expenses: db.expenses.filter((e) => e.periodId === periodId && !e.deletedAt),
-    payments: db.payments.filter((p) => p.periodId === periodId && !p.deletedAt),
-    chat: db.chat.filter((m) => m.periodId === periodId),
-    invites: db.invites.filter((i) => i.periodId === periodId),
-    recurring: db.recurring.filter((r) => r.periodId === periodId),
-    activity: (db.activity || []).filter((a) => a.periodId === periodId),
-    version: period.version,
-  });
+  const period = findPeriod(periodId);
+  if (!period || !canAccessPeriod(userId, periodId, 'read')) return c.json({ error: 'پیدا نشد' }, 404);
+  return c.json(periodSnapshotBody(periodId));
 });
 
 app.post('/periods/:id/sync', async (c) => {
@@ -333,11 +383,10 @@ app.post('/periods/:id/sync', async (c) => {
   const db = getDb();
   const period = db.periods.find((p) => p.id === periodId);
   if (!period) return c.json({ error: 'پیدا نشد' }, 404);
+  if (!canAccessPeriod(userId, periodId, 'write')) return c.json({ error: 'اجازه ندارید' }, 403);
 
-  const myRole: MemberRole =
-    db.members.find((m) => m.periodId === periodId && m.userId === userId)?.role ||
-    (period.ownerId === userId ? 'owner' : 'member');
-  if (myRole === 'viewer' && (body.ops || []).length > 0) {
+  const myRole = periodRole(userId, periodId);
+  if (!myRole || (myRole === 'viewer' && (body.ops || []).length > 0)) {
     return c.json({ error: 'نقش بیننده اجازهٔ تغییر ندارد' }, 403);
   }
 
@@ -347,15 +396,7 @@ app.post('/periods/:id/sync', async (c) => {
       {
         error: 'نسخهٔ سرور با این دستگاه یکی نیست',
         serverVersion: period.version,
-        snapshot: {
-          period,
-          members: db.members.filter((m) => m.periodId === periodId),
-          expenses: db.expenses.filter((e) => e.periodId === periodId && !e.deletedAt),
-          payments: db.payments.filter((p) => p.periodId === periodId && !p.deletedAt),
-          chat: db.chat.filter((m) => m.periodId === periodId),
-          activity: (db.activity || []).filter((a) => a.periodId === periodId),
-          recurring: db.recurring.filter((r) => r.periodId === periodId),
-        },
+        snapshot: periodSnapshotBody(periodId),
       },
       409,
     );
@@ -494,6 +535,7 @@ app.post('/periods/:id/sync', async (c) => {
           buildingCharge?: number;
           lunchTurnMemberId?: string;
           encrypted?: boolean;
+          visibility?: 'private' | 'public';
         };
         if (payload.title) p.title = payload.title;
         if (payload.currency) p.currency = payload.currency;
@@ -504,6 +546,7 @@ app.post('/periods/:id/sync', async (c) => {
         if (payload.buildingCharge !== undefined) p.buildingCharge = payload.buildingCharge;
         if (payload.lunchTurnMemberId) p.lunchTurnMemberId = payload.lunchTurnMemberId;
         if (payload.encrypted !== undefined) p.encrypted = payload.encrypted;
+        if (payload.visibility === 'public' || payload.visibility === 'private') p.visibility = payload.visibility;
       }
       if (op.entity === 'activity' && op.action === 'upsert') {
         if (!d.activity) d.activity = [];
@@ -516,6 +559,7 @@ app.post('/periods/:id/sync', async (c) => {
             action: payload.action,
             summary: payload.summary,
             createdAt: payload.createdAt || new Date().toISOString(),
+            entityId: payload.entityId,
           });
         }
       }
@@ -569,16 +613,16 @@ app.post('/periods/:id/sync', async (c) => {
     }
   });
 
-  const snap = getDb();
+  const snap = periodSnapshotBody(periodId)!;
   return c.json({
-    version: snap.periods.find((p) => p.id === periodId)!.version,
-    expenses: snap.expenses.filter((e) => e.periodId === periodId && !e.deletedAt),
-    payments: snap.payments.filter((p) => p.periodId === periodId && !p.deletedAt),
-    members: snap.members.filter((m) => m.periodId === periodId),
-    chat: snap.chat.filter((m) => m.periodId === periodId),
-    activity: (snap.activity || []).filter((a) => a.periodId === periodId),
-    recurring: snap.recurring.filter((r) => r.periodId === periodId),
-    period: snap.periods.find((p) => p.id === periodId),
+    version: snap.version,
+    expenses: snap.expenses,
+    payments: snap.payments,
+    members: snap.members,
+    chat: snap.chat,
+    activity: snap.activity,
+    recurring: snap.recurring,
+    period: snap.period,
   });
 });
 
@@ -587,6 +631,9 @@ app.post('/periods/:id/invites', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const periodId = c.req.param('id');
+  if (!canAccessPeriod(userId, periodId, 'write') || periodRole(userId, periodId) === 'viewer') {
+    return c.json({ error: 'اجازه ندارید' }, 403);
+  }
   const token = nanoid(12);
   mutate((db) => {
     db.invites.push({
@@ -635,6 +682,7 @@ app.post('/invites/:token/join', async (c) => {
         row.userId = userId;
         if (guestKey) row.guestKey = guestKey;
       }
+      bumpPeriodVersion(db, invite.periodId);
     });
     return c.json({ memberId: existing.id, periodId: invite.periodId });
   }
@@ -651,9 +699,29 @@ app.post('/invites/:token/join', async (c) => {
       phone: phone || undefined,
       email: email || undefined,
     });
+    bumpPeriodVersion(db, invite.periodId);
   });
   return c.json({ memberId, periodId: invite.periodId });
 });
+
+function friendContactTaken(
+  userId: string,
+  input: { phone?: string; email?: string },
+  excludeId?: string,
+): 'phone' | 'email' | null {
+  const nPhone = normalizeIranMobile(input.phone);
+  const nEmail = normalizeEmail(input.email);
+  for (const f of getDb().friends.filter((row) => row.userId === userId)) {
+    if (excludeId && f.id === excludeId) continue;
+    if (nPhone && normalizeIranMobile(f.phone) === nPhone) return 'phone';
+    if (nEmail && normalizeEmail(f.email) === nEmail) return 'email';
+  }
+  return null;
+}
+
+function friendTakenError(taken: 'phone' | 'email') {
+  return taken === 'phone' ? 'این شماره قبلاً برای دوست دیگری ثبت شده' : 'این ایمیل قبلاً برای دوست دیگری ثبت شده';
+}
 
 // ——— Friends ———
 app.get('/friends', (c) => {
@@ -665,22 +733,66 @@ app.get('/friends', (c) => {
 app.post('/friends', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  const { displayName, phone, email, friendUserId } = await c.req.json<{
+  const { id, displayName, phone, email, friendUserId } = await c.req.json<{
+    id?: string;
     displayName: string;
     phone?: string;
     email?: string;
     friendUserId?: string;
   }>();
   const friend = {
-    id: nanoid(),
+    id: id || nanoid(),
     userId,
     displayName,
     phone: normalizeIranMobile(phone) || phone,
     email: normalizeEmail(email) || email,
     friendUserId,
   };
-  mutate((db) => db.friends.push(friend));
+  const taken = friendContactTaken(userId, friend, friend.id);
+  if (taken) return c.json({ error: friendTakenError(taken) }, 409);
+  mutate((db) => {
+    const idx = db.friends.findIndex((f) => f.id === friend.id && f.userId === userId);
+    if (idx >= 0) db.friends[idx] = { ...db.friends[idx], ...friend };
+    else db.friends.push(friend);
+  });
   return c.json({ friend });
+});
+
+app.put('/friends/:id', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const id = c.req.param('id');
+  const { displayName, phone, email, friendUserId } = await c.req.json<{
+    displayName: string;
+    phone?: string;
+    email?: string;
+    friendUserId?: string;
+  }>();
+  const existing = getDb().friends.find((f) => f.id === id && f.userId === userId);
+  if (!existing) return c.json({ error: 'پیدا نشد' }, 404);
+  const taken = friendContactTaken(userId, { phone, email }, id);
+  if (taken) return c.json({ error: friendTakenError(taken) }, 409);
+  mutate((db) => {
+    const row = db.friends.find((f) => f.id === id && f.userId === userId);
+    if (!row) return;
+    row.displayName = displayName;
+    row.phone = normalizeIranMobile(phone) || phone;
+    row.email = normalizeEmail(email) || email;
+    if (friendUserId !== undefined) row.friendUserId = friendUserId;
+  });
+  return c.json({ friend: getDb().friends.find((f) => f.id === id) });
+});
+
+app.delete('/friends/:id', (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const id = c.req.param('id');
+  const existing = getDb().friends.find((f) => f.id === id && f.userId === userId);
+  if (!existing) return c.json({ error: 'پیدا نشد' }, 404);
+  mutate((db) => {
+    db.friends = db.friends.filter((f) => !(f.id === id && f.userId === userId));
+  });
+  return c.json({ ok: true });
 });
 
 // ——— Attachments ———
@@ -692,7 +804,7 @@ app.post('/attachments', async (c) => {
     mime: string;
     dataBase64: string;
   }>();
-  if (!canAccessPeriod(userId, periodId)) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  if (!canAccessPeriod(userId, periodId, 'write')) return c.json({ error: 'وارد نشده‌اید' }, 401);
   if (!dataBase64 || dataBase64.length > 2_500_000) {
     return c.json({ error: 'فایل نامعتبر یا خیلی بزرگ است' }, 400);
   }
@@ -742,6 +854,9 @@ app.post('/periods/:id/recurring', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const periodId = c.req.param('id');
+  if (!canAccessPeriod(userId, periodId, 'write') || periodRole(userId, periodId) === 'viewer') {
+    return c.json({ error: 'اجازه ندارید' }, 403);
+  }
   const body = await c.req.json<{
     title: string;
     amount: number;
@@ -764,6 +879,7 @@ app.post('/periods/:id/recurring', async (c) => {
       nextAt,
       active: true,
     });
+    bumpPeriodVersion(db, periodId);
   });
   return c.json({ id, nextAt });
 });
@@ -771,7 +887,7 @@ app.post('/periods/:id/recurring', async (c) => {
 app.post('/periods/:id/recurring/run', (c) => {
   const userId = requireUser(c);
   const periodId = c.req.param('id');
-  if (!canAccessPeriod(userId, periodId)) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  if (!canAccessPeriod(userId, periodId, 'write')) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const created: string[] = [];
   mutate((db) => {
     const now = Date.now();
@@ -800,6 +916,7 @@ app.post('/periods/:id/recurring/run', (c) => {
       rule.nextAt = nextRecurringAt(new Date().toISOString(), rule.cadence || 'days', rule.intervalDays);
       created.push(expenseId);
     }
+    if (created.length) bumpPeriodVersion(db, periodId);
   });
   return c.json({ created });
 });
@@ -817,7 +934,9 @@ app.get('/periods/:id/chat', (c) => {
 app.post('/periods/:id/chat', async (c) => {
   const userId = requireUser(c);
   const periodId = c.req.param('id');
-  if (!canAccessPeriod(userId, periodId)) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  if (!canAccessPeriod(userId, periodId, 'write') || periodRole(userId!, periodId) === 'viewer') {
+    return c.json({ error: 'اجازه ندارید' }, 403);
+  }
   const { id, senderMemberId, body, expenseId } = await c.req.json<{
     id?: string;
     senderMemberId: string;
@@ -839,6 +958,27 @@ app.post('/periods/:id/chat', async (c) => {
 app.get('/fx', async (c) => {
   const data = await getFxRates();
   return c.json(data);
+});
+
+app.get('/payout/sheba-quota', (c) => {
+  const identity = lookupIdentity(c.get('userId'), c.req.header('X-Device-Id'));
+  if (!identity) return c.json({ error: 'شناسه دستگاه لازم است' }, 400);
+  return c.json(quotaFor(identity));
+});
+
+app.post('/payout/card-to-sheba', async (c) => {
+  const identity = lookupIdentity(c.get('userId'), c.req.header('X-Device-Id'));
+  if (!identity) return c.json({ error: 'شناسه دستگاه لازم است' }, 400);
+  const { cardNumber } = await c.req.json<{ cardNumber?: string }>();
+  const digits = String(cardNumber || '').replace(/\D/g, '');
+  if (!/^\d{16}$/.test(digits)) return c.json({ error: 'شماره کارت نامعتبر است' }, 400);
+  try {
+    const { result, remaining, cached } = await lookupCardSheba(identity, digits);
+    return c.json({ ...result, remaining, cached });
+  } catch (e) {
+    const status = (e && typeof e === 'object' && 'status' in e && Number((e as { status: number }).status) === 429 ? 429 : 502) as 429 | 502;
+    return c.json({ error: e instanceof Error ? e.message : 'استعلام شبا ناموفق بود', remaining: quotaFor(identity).remaining }, status);
+  }
 });
 
 app.post('/billing/bazaar/verify', async (c) => {

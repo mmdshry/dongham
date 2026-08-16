@@ -1,6 +1,6 @@
 import { nanoid } from 'nanoid';
 import { computeBalances, parseExpenseText } from '@dongham/ledger';
-import { getDb, mutate } from './db.js';
+import { bumpPeriodVersion, getDb, mutate } from './db.js';
 
 const BOT = () => process.env.TELEGRAM_BOT_TOKEN || '';
 
@@ -125,6 +125,7 @@ export async function handleTelegramUpdate(update: TgUpdate): Promise<{ ok: bool
         updatedAt: new Date().toISOString(),
         version: 1,
       });
+      bumpPeriodVersion(d, link.periodId);
     });
     return { ok: true, reply: `ثبت شد: ${parsed.title} — ${parsed.amount} (پرداخت‌کننده: ${payer.displayName})` };
   }

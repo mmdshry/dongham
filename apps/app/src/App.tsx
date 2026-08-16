@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { BottomNav, DesktopNav } from './components/BottomNav';
 import { ToastHost } from './components/ui';
 import { ensureProfile } from './lib/api';
+import { migrateLocalPeriodIds } from './lib/periodMigrate';
 import { useKeyboardInset } from './lib/keyboard';
 import { startFxLoop } from './lib/fx';
 import { startSyncLoop } from './lib/sync';
@@ -23,17 +24,22 @@ function AppShell() {
   useKeyboardInset();
 
   useEffect(() => {
-    void ensureProfile();
-    const stop = startSyncLoop();
-    const stopFx = startFxLoop();
+    let stop: (() => void) | undefined;
+    let stopFx: (() => void) | undefined;
     const on = () => setOnline(true);
     const off = () => setOnline(false);
     window.addEventListener('online', on);
     window.addEventListener('offline', off);
     setOnline(navigator.onLine);
+    void (async () => {
+      await migrateLocalPeriodIds();
+      await ensureProfile();
+      stop = startSyncLoop();
+      stopFx = startFxLoop();
+    })();
     return () => {
-      stop();
-      stopFx();
+      stop?.();
+      stopFx?.();
       window.removeEventListener('online', on);
       window.removeEventListener('offline', off);
     };

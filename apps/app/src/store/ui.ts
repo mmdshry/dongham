@@ -1,13 +1,20 @@
 import { create } from 'zustand';
 
+export type SyncConflictState = {
+  periodId: string;
+  message: string;
+  serverVersion: number;
+  snapshot?: unknown;
+};
+
 interface UiState {
   toast: string | null;
   online: boolean;
-  syncConflict: string | null;
+  syncConflict: SyncConflictState | null;
   serverAhead: boolean;
   setToast: (msg: string | null) => void;
   setOnline: (v: boolean) => void;
-  setSyncConflict: (msg: string | null) => void;
+  setSyncConflict: (syncConflict: SyncConflictState | null) => void;
   setServerAhead: (v: boolean) => void;
 }
 

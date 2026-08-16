@@ -1,9 +1,9 @@
 ﻿import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
 import { LocalNotifications } from '@capacitor/local-notifications';
-import { detectBank } from '@dongham/ledger';
+import { CardPayoutPanel } from '../components/CardPayoutPanel';
 import { FxRatesPanel } from '../components/FxRatesPanel';
 import { ConfirmDialog, PromptDialog } from '../components/Dialog';
 import { SyncBanner } from '../components/SyncBanner';
@@ -17,12 +17,10 @@ import {
   verifyZarinpalReturn,
 } from '../lib/billing';
 import { downloadJson, exportBackup, importBackup } from '../lib/backup';
-import { decryptMaybe } from '../lib/crypto';
 import { db } from '../lib/db';
-import { formatCardGrouped, formatShebaGrouped, toPersianDigits } from '../lib/format';
-import { listPayouts, removePayoutMethod, savePayoutMethod } from '../lib/payout';
+import { toPersianDigits } from '../lib/format';
 import { importPeriodSnapshot, parseSnapshot } from '../lib/snapshot';
-import { flushOutbox } from '../lib/sync';
+import { flushOutbox, pullCloud } from '../lib/sync';
 import { useUiStore } from '../store/ui';
 
 const SUPPORT_TG = import.meta.env.VITE_SUPPORT_TELEGRAM || 'https://t.me/dongham';
@@ -30,25 +28,17 @@ const SUPPORT_BALE = import.meta.env.VITE_SUPPORT_BALE || 'https://ble.ir/dongha
 const SUPPORT_WA = import.meta.env.VITE_SUPPORT_WHATSAPP || 'https://wa.me/';
 
 export function MorePage() {
+  const navigate = useNavigate();
   const setToast = useUiStore((s) => s.setToast);
   const [params, setParams] = useSearchParams();
   const profile = useLiveQuery(() => db.profile.get('self'));
   const notifications = useLiveQuery(() => db.notifications.orderBy('createdAt').reverse().limit(20).toArray(), []) || [];
   const outboxCount = useLiveQuery(() => db.outbox.count(), []) || 0;
-  const [payouts, setPayouts] = useState<Awaited<ReturnType<typeof listPayouts>>>([]);
-  const [card, setCard] = useState('');
-  const [sheba, setSheba] = useState('');
-  const [holder, setHolder] = useState('');
-  const [bankHint, setBankHint] = useState('');
   const [confirmWipe, setConfirmWipe] = useState(false);
   const [importRaw, setImportRaw] = useState('');
   const [importPass, setImportPass] = useState<string | undefined>();
   const [importPassOpen, setImportPassOpen] = useState(false);
   const [overwriteOpen, setOverwriteOpen] = useState(false);
-
-  useEffect(() => {
-    void listPayouts(profile).then(setPayouts);
-  }, [profile]);
 
   useEffect(() => {
     const authority = params.get('Authority') || params.get('authority');
@@ -67,11 +57,6 @@ export function MorePage() {
     }
   }, []);
 
-  useEffect(() => {
-    const detected = detectBank(card, sheba);
-    setBankHint(detected?.name || '');
-  }, [card, sheba]);
-
   const saveName = async (displayName: string) => {
     await updateProfile({ displayName });
     setToast('ذخیره شد');
@@ -79,37 +64,6 @@ export function MorePage() {
 
   const toggleDigits = async () => {
     await updateProfile({ usePersianDigits: !profile?.usePersianDigits });
-  };
-
-  const addPayout = async () => {
-    const res = await savePayoutMethod({
-      card,
-      sheba,
-      holder: holder || profile?.cardHolderName,
-      bank: bankHint,
-      isDefault: payouts.length === 0,
-    });
-    setToast(res.ok ? 'کارت ذخیره شد' : res.error || 'خطا');
-    if (res.ok) {
-      setCard('');
-      setSheba('');
-      setPayouts(await listPayouts());
-    }
-  };
-
-  const revealCard = async () => {
-    const def = payouts.find((p) => p.isDefault) || payouts[0];
-    if (def) {
-      setToast(
-        [def.card && `کارت: ${formatCardGrouped(def.card)}`, def.sheba && `شبا: ${formatShebaGrouped(def.sheba)}`]
-          .filter(Boolean)
-          .join(' · ') || 'چیزی ذخیره نشده',
-      );
-      return;
-    }
-    const c = await decryptMaybe(profile?.cardNumber);
-    const s = await decryptMaybe(profile?.sheba);
-    setToast([c && `کارت: ${c}`, s && `شبا: ${s}`].filter(Boolean).join(' · ') || 'چیزی ذخیره نشده');
   };
 
   const testNotif = async () => {
@@ -214,33 +168,7 @@ export function MorePage() {
 
         <FxRatesPanel />
 
-        <div className="card-surface space-y-3">
-          <h2 className="font-bold">کارت و شبا</h2>
-          <p className="text-xs text-ink-700/70">چند کارت ذخیره کنید؛ بانک از شماره کارت/شبا تشخیص داده می‌شود.</p>
-          {payouts.map((p) => (
-            <div key={p.id} className="flex items-center justify-between gap-2 rounded-2xl bg-brand-50 px-3 py-2 text-sm">
-              <span>
-                {p.bank || 'کارت'} {p.isDefault ? '· پیش‌فرض' : ''}
-                <span className="mt-1 block text-xs text-ink-700/60" dir="ltr">
-                  {p.card ? formatCardGrouped(p.card) : p.sheba ? formatShebaGrouped(p.sheba) : ''}
-                </span>
-              </span>
-              <button type="button" className="btn-ghost !py-1 !text-xs" onClick={() => void removePayoutMethod(p.id).then(() => listPayouts().then(setPayouts))}>
-                حذف
-              </button>
-            </div>
-          ))}
-          <input className="input" placeholder="شماره کارت ۱۶ رقمی" dir="ltr" value={card} onChange={(e) => setCard(e.target.value)} />
-          <input className="input" placeholder="شبا IR..." dir="ltr" value={sheba} onChange={(e) => setSheba(e.target.value)} />
-          <input className="input" placeholder="نام صاحب حساب" value={holder} onChange={(e) => setHolder(e.target.value)} />
-          {bankHint ? <p className="text-xs text-brand-800">بانک تشخیص‌داده‌شده: {bankHint}</p> : null}
-          <button type="button" className="btn-primary w-full" onClick={() => void addPayout()}>
-            افزودن کارت
-          </button>
-          <button type="button" className="btn-ghost w-full" onClick={() => void revealCard()}>
-            نمایش کارت و شبا
-          </button>
-        </div>
+        <CardPayoutPanel />
 
         <div className="card-surface space-y-2">
           <h2 className="font-bold">اشتراک</h2>
@@ -284,19 +212,36 @@ export function MorePage() {
 
         <div className="card-surface space-y-2">
           <h2 className="font-bold">همگام‌سازی</h2>
-          <p className="text-xs text-ink-700/70">{toPersianDigits(outboxCount, profile?.usePersianDigits ?? true)} عملیات در صف</p>
+          <p className="text-xs text-ink-700/70">
+            {profile?.token
+              ? `${toPersianDigits(outboxCount, profile?.usePersianDigits ?? true)} عملیات در صف`
+              : 'حالت مهمان — برای همگام‌سازی ابری وارد شوید'}
+          </p>
           <button
             type="button"
             className="btn-primary w-full"
             onClick={async () => {
+              if (!profile?.token) {
+                navigate('/auth?next=/more');
+                return;
+              }
               const res = await flushOutbox();
-              setToast(res.ok ? 'همگام شد' : res.error || 'خطا');
+              if (!res.ok) {
+                setToast(res.error === 'وارد نشده‌اید' ? 'نشست منقضی شده؛ دوباره وارد شوید' : res.error || 'خطا');
+                return;
+              }
+              const pulled = await pullCloud();
+              if (!pulled.ok) {
+                setToast(pulled.error === 'وارد نشده‌اید' ? 'نشست منقضی شده؛ دوباره وارد شوید' : pulled.error || 'خطا');
+                return;
+              }
+              setToast('همگام شد');
             }}
           >
             همگام‌سازی همه دوره‌ها
           </button>
           <Link to="/auth" className="btn-ghost w-full">
-            ورود / ارتقا مهمان
+            {profile?.token ? 'حساب کاربری' : 'ورود / ارتقا مهمان'}
           </Link>
         </div>
 

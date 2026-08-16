@@ -58,6 +58,7 @@ export interface PeriodRecord {
   buildingCharge?: number;
   lunchTurnMemberId?: string;
   encrypted?: boolean;
+  visibility?: 'private' | 'public';
 }
 
 export interface MemberRecord {
@@ -172,6 +173,7 @@ export interface ActivityRecord {
   action: string;
   summary: string;
   createdAt: string;
+  entityId?: string;
 }
 
 export interface FxCacheRecord {
@@ -236,4 +238,21 @@ export interface DbShape {
     createdAt: string;
   }[];
   telegramLinks?: { chatId: string; periodId: string; payerMemberId?: string }[];
+  shebaLookups?: ShebaLookupDay[];
+}
+
+export interface ShebaLookupCache {
+  iban: string;
+  depositNumber: string;
+  bank: string;
+  bankName: string;
+  bankCode: string;
+  holderName: string;
+}
+
+export interface ShebaLookupDay {
+  identity: string;
+  day: string;
+  count: number;
+  cache: Record<string, ShebaLookupCache>;
 }

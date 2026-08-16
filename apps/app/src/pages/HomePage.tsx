@@ -1,7 +1,7 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import type { PeriodKind, PeriodTemplate, RoundTo } from '@dongham/ledger';
+import type { PeriodKind, PeriodTemplate, PeriodVisibility, RoundTo } from '@dongham/ledger';
 import { SyncBanner } from '../components/SyncBanner';
 import { EmptyState, Money, Shell } from '../components/ui';
 import { Modal } from '../components/Dialog';
@@ -10,13 +10,36 @@ import { MemberPicker } from '../components/MemberPicker';
 import { db } from '../lib/db';
 import { globalDebts } from '../lib/analytics';
 import { fetchFxRates, type FxRates } from '../lib/fx';
-import { formatJalaliDate, formatMoney } from '../lib/format';
+import { formatJalaliDate, formatMoney, toLatinDigits } from '../lib/format';
 import { currencyLabel } from '../lib/currencies';
 import { scheduleDebtReminders } from '../lib/reminders';
-import { createPeriodLocal } from '../lib/sync';
+import { applyPeriodSnapshot, createPeriodLocal } from '../lib/sync';
+import { api } from '../lib/api';
 import { KIND_OPTIONS, ROUND_OPTIONS, TEMPLATES, templateById } from '../lib/templates';
 import { pushWidgetBalance } from '../lib/widget';
 import { useUiStore } from '../store/ui';
+
+function PeriodSyncStatus({ pending, templateLabel }: { pending: boolean; templateLabel?: string }) {
+  return (
+    <p className="mt-3 flex items-center gap-1.5 text-xs text-ink-700/70">
+      {pending ? (
+        <svg className="h-4 w-4 shrink-0 text-amber-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
+          <path d="M12 4.2 2.8 20.2h18.4L12 4.2Z" strokeLinejoin="round" />
+          <path d="M12 10v4.5" strokeLinecap="round" />
+          <circle cx="12" cy="17.2" r="0.8" fill="currentColor" stroke="none" />
+        </svg>
+      ) : (
+        <svg className="h-4 w-4 shrink-0 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden>
+          <path d="M5 12.5 9.5 17 19 7.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      )}
+      <span>
+        {pending ? 'در صف همگام‌سازی' : 'همگام'}
+        {templateLabel ? ` · ${templateLabel}` : ''}
+      </span>
+    </p>
+  );
+}
 
 export function HomePage() {
   const navigate = useNavigate();
@@ -35,6 +58,8 @@ export function HomePage() {
   const [kind, setKind] = useState<PeriodKind>('split');
   const [roundTo, setRoundTo] = useState<RoundTo>(0);
   const [q, setQ] = useState('');
+  const [joinId, setJoinId] = useState('');
+  const [visibility, setVisibility] = useState<PeriodVisibility>('private');
   const [fxRates, setFxRates] = useState<FxRates>({});
 
   useEffect(() => {
@@ -80,11 +105,13 @@ export function HomePage() {
       template,
       kind,
       roundTo,
+      visibility,
     });
     setToast('دوره ساخته شد');
     setOpen(false);
     setTitle('');
     setMemberNames([]);
+    setVisibility('private');
     navigate(`/periods/${id}`);
   };
 
@@ -127,6 +154,43 @@ export function HomePage() {
           value={q}
           onChange={(e) => setQ(e.target.value)}
         />
+        <label className="label mt-3" htmlFor="join-period">
+          ورود با شناسه
+        </label>
+        <div className="flex gap-2">
+          <input
+            id="join-period"
+            className="input flex-1"
+            placeholder="X1x-2Xx"
+            dir="ltr"
+            value={joinId}
+            onChange={(e) => setJoinId(e.target.value)}
+          />
+          <button
+            type="button"
+            className="btn-primary shrink-0"
+            onClick={() => {
+              const raw = toLatinDigits(joinId.trim());
+              if (!raw) return;
+              void (async () => {
+                const local = await db.periods.get(raw);
+                if (local) {
+                  navigate(`/periods/${raw}`);
+                  return;
+                }
+                try {
+                  const snap = await api<Parameters<typeof applyPeriodSnapshot>[0]>(`/periods/${raw}/snapshot`);
+                  await applyPeriodSnapshot(snap);
+                  navigate(`/periods/${raw}`);
+                } catch {
+                  setToast('دوره پیدا نشد');
+                }
+              })();
+            }}
+          >
+            ورود
+          </button>
+        </div>
       </div>
 
       {filtered.length === 0 ? (
@@ -148,10 +212,12 @@ export function HomePage() {
                     {currencyLabel(p.currency)}
                   </span>
                 </div>
-                <p className="mt-3 text-xs text-ink-700/70">
-                  {outbox.some((o) => o.periodId === p.id) || !p.synced ? 'در صف همگام‌سازی' : 'همگام'}
-                  {p.template && p.template !== 'custom' ? ` · ${TEMPLATES.find((t) => t.id === p.template)?.label}` : ''}
-                </p>
+                <PeriodSyncStatus
+                  pending={!p.synced || outbox.some((o) => o.periodId === p.id)}
+                  templateLabel={
+                    p.template && p.template !== 'custom' ? TEMPLATES.find((t) => t.id === p.template)?.label : undefined
+                  }
+                />
               </Link>
             </li>
           ))}
@@ -237,6 +303,14 @@ export function HomePage() {
                 excludeNames={profile?.displayName ? [profile.displayName] : []}
                 draftInputId="period-member-new"
               />
+              <label className="flex items-center justify-between gap-2 text-sm">
+                <span>عمومی (با شناسه قابل مشاهده)</span>
+                <input
+                  type="checkbox"
+                  checked={visibility === 'public'}
+                  onChange={(e) => setVisibility(e.target.checked ? 'public' : 'private')}
+                />
+              </label>
             </div>
             <div className="mt-5 flex gap-2">
               <button type="button" className="btn-ghost flex-1" onClick={() => setOpen(false)}>

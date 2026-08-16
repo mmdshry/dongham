@@ -20,7 +20,7 @@ test('guest can create period and expense offline-capable', async ({ page, conte
   await expect(page.getByRole('heading', { level: 1, name: 'سفر تست' })).toBeVisible({ timeout: 15_000 });
 
   await context.setOffline(true);
-  await page.getByRole('link', { name: 'هزینه', exact: true }).click();
+  await page.getByRole('link', { name: 'هزینه جدید', exact: true }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'هزینه جدید' })).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole('button', { name: 'تاریخ هزینه' })).toBeVisible();
   await page.locator('#exp-title').fill('ناهار');
@@ -45,7 +45,7 @@ test('whatsapp share enables after member phone is saved', async ({ page }) => {
   await page.getByRole('button', { name: 'ساخت' }).click();
   await page.waitForURL(/\/periods\//, { timeout: 15_000 });
 
-  await page.getByRole('link', { name: 'هزینه', exact: true }).click();
+  await page.getByRole('link', { name: 'هزینه جدید', exact: true }).click();
   await page.locator('#exp-title').fill('تاکسی');
   await page.locator('#exp-amount').fill('100000');
   await page.getByRole('button', { name: 'ذخیره' }).click();

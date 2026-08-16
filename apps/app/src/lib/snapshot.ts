@@ -63,6 +63,7 @@ export async function importPeriodSnapshot(snap: PeriodSnapshot): Promise<string
     buildingCharge: period.buildingCharge,
     lunchTurnMemberId: period.lunchTurnMemberId,
     encrypted: period.encrypted,
+    visibility: period.visibility,
   });
   for (const m of snap.members) {
     const member = { ...m, periodId: id };

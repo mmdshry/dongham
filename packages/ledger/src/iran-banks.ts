@@ -85,6 +85,76 @@ export function bankByCode(code: string): IranBank | undefined {
   return BANKS[code];
 }
 
+export function listIranBanks(): IranBank[] {
+  const seen = new Set<string>();
+  const out: IranBank[] = [];
+  for (const bank of Object.values(BANKS)) {
+    if (seen.has(bank.code)) continue;
+    seen.add(bank.code);
+    out.push(bank);
+  }
+  return out;
+}
+
+const DRAPI_BANK: Record<string, string> = {
+  MELLI: '017',
+  BANK_MELLI: '017',
+  MELLI_IRAN: '017',
+  SEPAH: '015',
+  BANK_SEPAH: '015',
+  KESHAVARZI: '016',
+  AGRICULTURE: '016',
+  MELLAT: '012',
+  BANK_MELLAT: '012',
+  TEJARAT: '018',
+  SADERAT: '019',
+  SADERAT_IRAN: '019',
+  REFAH: '013',
+  REFAH_KARGARAN: '013',
+  MASKAN: '014',
+  POST_BANK: '021',
+  POSTBANK: '021',
+  TOSEAH_TAAVON: '020',
+  TOSE_E_TAAVON: '020',
+  TOSEAH_SADERAT: '051',
+  KARAFARIN: '053',
+  PARSIAN: '054',
+  EGHTESAD_NOVIN: '055',
+  EN: '055',
+  SAMAN: '056',
+  PASARGAD: '057',
+  SARMAYE: '058',
+  SARMAYEH: '058',
+  SINA: '059',
+  MEHR_IRAN: '060',
+  MEHR: '060',
+  GHARZOLHASANEH_MEHR_IRAN: '060',
+  SHAHR: '061',
+  AYANDEH: '062',
+  AYANDE: '062',
+  RESALAT: '063',
+  GHARZOLHASANEH_RESALAT: '063',
+  GARDESHGRI: '064',
+  TOURISM: '064',
+  DEY: '066',
+  DAY: '066',
+  IRAN_ZAMIN: '069',
+  KHAVARMIANEH: '070',
+  MIDDLE_EAST: '070',
+  MIDDLE_EAST_BANK: '078',
+  NOOR: '080',
+  IRAN_VENEZUELA: '095',
+  IRANVENEZUELA: '095',
+};
+
+export function bankFromDrapi(name: string | undefined | null): IranBank | undefined {
+  if (!name) return undefined;
+  const key = name.trim().toUpperCase().replace(/[\s-]+/g, '_');
+  const code = DRAPI_BANK[key];
+  if (code) return BANKS[code];
+  return Object.values(BANKS).find((b) => b.name === name.trim());
+}
+
 export function detectBankFromCard(card: string): IranBank | undefined {
   const digits = toLatinDigits(card).replace(/\D/g, '');
   if (digits.length < 6) return undefined;
@@ -92,9 +162,13 @@ export function detectBankFromCard(card: string): IranBank | undefined {
   return code ? BANKS[code] : undefined;
 }
 
-/** Iranian IBAN: IR + 2 check + 3 bank code + 19 account */
+/** Iranian IBAN: IR + 2 check + 3 bank code + 19 account. Accepts 24 digits without IR. */
 export function detectBankFromSheba(sheba: string): IranBank | undefined {
-  const raw = toLatinDigits(sheba).replace(/\s/g, '').toUpperCase();
+  let raw = toLatinDigits(sheba).replace(/\s/g, '').toUpperCase();
+  if (!raw.startsWith('IR')) {
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length === 24) raw = `IR${digits}`;
+  }
   if (!raw.startsWith('IR') || raw.length < 7) return undefined;
   return BANKS[raw.slice(4, 7)];
 }

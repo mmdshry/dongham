@@ -41,7 +41,17 @@ export async function verifyToken(token: string): Promise<{ userId: string; devi
     const user = db.users.find((u) => u.id === payload.sub && !u.deletedAt);
     if (!user) return null;
     const session = db.sessions.find((s) => s.token === token && s.userId === payload.sub);
-    if (!session) return null;
+    if (!session) {
+      mutate((d) => {
+        d.sessions.push({
+          id: nanoid(),
+          userId: payload.sub as string,
+          deviceId: payload.deviceId as string,
+          token,
+          createdAt: new Date().toISOString(),
+        });
+      });
+    }
     return { userId: payload.sub, deviceId: payload.deviceId };
   } catch {
     return null;

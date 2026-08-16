@@ -43,9 +43,17 @@ export function EmptyState({ title, hint }: { title: string; hint?: string }) {
 
 export function Money({ amount, currency = 'IRT' }: { amount: number; currency?: string }) {
   const profile = useLiveQuery(() => db.profile.get('self'));
-  return (
-    <span className="tabular-nums">{formatMoney(amount, currency, profile?.usePersianDigits ?? true)}</span>
-  );
+  const persian = profile?.usePersianDigits ?? true;
+  if (currency === 'IRT') {
+    const n = new Intl.NumberFormat(persian ? 'fa-IR' : 'en-US').format(amount);
+    return (
+      <span className="inline-flex items-center gap-1 tabular-nums">
+        <span dir="ltr">{n}</span>
+        <span>تومان</span>
+      </span>
+    );
+  }
+  return <span className="tabular-nums">{formatMoney(amount, currency, persian)}</span>;
 }
 
 export function Shell({

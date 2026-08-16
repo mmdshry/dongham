@@ -225,3 +225,22 @@ export function searchCurrencies(query: string, extraCodes: string[] = []): Curr
     [c.code, c.countryFa, c.nameFa, c.flag].some((part) => part.toLowerCase().includes(q)),
   );
 }
+
+/** Browse/search list: live rates visible before pinning. Empty query → priced codes plus IRR. */
+export function browseRateCurrencies(
+  query: string,
+  rates: Record<string, number> = {},
+  watch: string[] = [],
+): CurrencyInfo[] {
+  const watched = new Set(watch);
+  const extra = Object.keys(rates);
+  const list = searchCurrencies(query, extra).filter((c) => c.code !== 'IRT' && !watched.has(c.code));
+  if (query.trim()) return list;
+  return list.filter((c) => c.code === 'IRR' || (rates[c.code] || 0) > 0);
+}
+
+/** Displayed toman-per-unit. IRR is always 1. */
+export function displayTomanRate(code: string, rate?: number): number {
+  if (code === 'IRR') return 1;
+  return rate && rate > 0 ? rate : 0;
+}

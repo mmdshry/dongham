@@ -8,7 +8,7 @@ import { MoneyInput } from '../components/MoneyInput';
 import { Shell } from '../components/ui';
 import { decryptMaybe } from '../lib/crypto';
 import { db } from '../lib/db';
-import { copyText, formatMoney, luhnOk, shebaOk } from '../lib/format';
+import { copyText, formatMoney, iranCardOk, shebaOk } from '../lib/format';
 import { fetchFxRates } from '../lib/fx';
 import { indexRateFromFx, loanEquivalentNow } from '../lib/goldIndex';
 import { defaultPayout } from '../lib/payout';
@@ -137,7 +137,7 @@ export function PaymentFormPage() {
       setToast('شماره کارت یا شبا را در تنظیمات وارد کنید');
       return;
     }
-    if (card && !luhnOk(card)) setToast('شماره کارت نامعتبر است');
+    if (card && !iranCardOk(card)) setToast('شماره کارت نامعتبر است');
     if (sheba && !shebaOk(sheba)) setToast('شبا نامعتبر است');
     const text = [
       card && `کارت: ${card}`,

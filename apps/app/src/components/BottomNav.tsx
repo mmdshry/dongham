@@ -3,7 +3,7 @@ import { useKeyboardInset } from '../lib/keyboard';
 
 export const NAV_ITEMS = [
   { to: '/', label: 'دوره‌ها', icon: 'periods' as const },
-  { to: '/friends', label: 'دوستان', icon: 'friends' as const },
+  { to: '/friends', label: 'دوستام', icon: 'friends' as const },
   { to: '/auth', label: 'حساب', icon: 'account' as const },
   { to: '/more', label: 'بیشتر', icon: 'more' as const },
 ];

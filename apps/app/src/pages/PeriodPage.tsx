@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import QRCode from 'qrcode';
 import { nextRecurringAt } from '@dongham/ledger';
-import { ConfirmDialog, PromptDialog } from '../components/Dialog';
+import { PromptDialog } from '../components/Dialog';
 import { MessengerShare } from '../components/MessengerShare';
 import { MemberPicker } from '../components/MemberPicker';
 import { SyncBanner } from '../components/SyncBanner';
@@ -15,19 +15,19 @@ import { api, ensureProfile } from '../lib/api';
 import { decryptMaybe } from '../lib/crypto';
 import { db, POT_DISPLAY_NAME, type LocalMember, type RecurringCadence } from '../lib/db';
 import { periodAnalytics } from '../lib/analytics';
-import { copyText, formatJalaliDate, formatMoney, normalizeEmail, normalizeIranMobile, toPersianDigits } from '../lib/format';
+import { copyText, formatJalaliDate, formatJalaliDateTime, formatMoney, normalizeEmail, normalizeIranMobile, toPersianDigits } from '../lib/format';
 import { fetchFxRates } from '../lib/fx';
 import { loanEquivalentNow } from '../lib/goldIndex';
 import { defaultPayout } from '../lib/payout';
 import { shareCardImage, settlementPaySentence } from '../lib/share';
-import { buildPeriodSnapshot, importPeriodSnapshot, parseSnapshot, serializeSnapshot, snapshotQrDataUrl } from '../lib/snapshot';
+import { buildPeriodSnapshot, serializeSnapshot, snapshotQrDataUrl } from '../lib/snapshot';
+import { applyPeriodSnapshot, flushOutbox, logActivity, queueOp, upsertPayment, upsertRecurring } from '../lib/sync';
 import {
   canConfirmPayment,
   canMarkPaid,
   canRecordWithoutConfirm,
   hasPendingForEdge,
 } from '../lib/settlementGuard';
-import { flushOutbox, logActivity, queueOp, upsertPayment, upsertRecurring } from '../lib/sync';
 import { CADENCE_OPTIONS } from '../lib/templates';
 import { useUiStore } from '../store/ui';
 
@@ -71,11 +71,6 @@ export function PeriodPage() {
   const [recurringCadence, setRecurringCadence] = useState<RecurringCadence>('jalaliMonthly');
   const [snapPrompt, setSnapPrompt] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [importPassOpen, setImportPassOpen] = useState(false);
-  const [importRaw, setImportRaw] = useState('');
-  const [importPass, setImportPass] = useState<string | undefined>();
-  const [overwriteOpen, setOverwriteOpen] = useState(false);
-  const [pendingImportId, setPendingImportId] = useState<string | null>(null);
 
   const period = useLiveQuery(() => db.periods.get(id), [id]);
   const members = useLiveQuery(() => db.members.where('periodId').equals(id).toArray(), [id]) || [];
@@ -95,10 +90,29 @@ export function PeriodPage() {
     void fetchFxRates().then(setFx);
   }, []);
 
+  useEffect(() => {
+    if (!id) return;
+    let cancelled = false;
+    void (async () => {
+      const local = await db.periods.get(id);
+      if (local || cancelled) return;
+      try {
+        const snap = await api<Parameters<typeof applyPeriodSnapshot>[0]>(`/periods/${id}/snapshot`);
+        if (!cancelled) await applyPeriodSnapshot(snap);
+      } catch {
+        /* private or missing */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
   const me = members.find(
     (m) => m.guestKey === profile?.guestKey || (profile?.userId && m.userId === profile.userId),
   );
-  const isViewer = me?.role === 'viewer';
+  const isOwner = me?.role === 'owner';
+  const isViewer = me?.role === 'viewer' || (!me && period?.visibility === 'public');
 
   const analytics = useMemo(
     () => periodAnalytics(expenses, payments, members, period?.roundTo || 0),
@@ -212,7 +226,12 @@ export function PeriodPage() {
   };
 
   const saveMemberPhone = async (member: LocalMember, phone: string) => {
-    const next = { ...member, phone: normalizeIranMobile(phone) || phone.trim() || undefined };
+    const trimmed = phone.trim();
+    if (trimmed && !normalizeIranMobile(trimmed)) {
+      setToast('شماره موبایل نامعتبر است');
+      return;
+    }
+    const next = { ...member, phone: normalizeIranMobile(trimmed) || undefined };
     await db.members.put(next);
     await queueOp(id, 'member', 'upsert', next);
   };
@@ -221,23 +240,6 @@ export function PeriodPage() {
     const next = { ...member, email: normalizeEmail(email) || email.trim() || undefined };
     await db.members.put(next);
     await queueOp(id, 'member', 'upsert', next);
-  };
-
-  const applyImportedSnap = async (raw: string, passphrase?: string) => {
-    const snap = await parseSnapshot(raw, passphrase);
-    const exists = await db.periods.get(snap.period.id);
-    if (exists && !pendingImportId) {
-      setImportRaw(raw);
-      setImportPass(passphrase);
-      setPendingImportId(snap.period.id);
-      setOverwriteOpen(true);
-      return;
-    }
-    const importedId = await importPeriodSnapshot(snap);
-    setPendingImportId(null);
-    setImportRaw('');
-    setToast('دوره از JSON وارد شد');
-    navigate(`/periods/${importedId}`);
   };
 
   const toggleAbsent = async (member: LocalMember) => {
@@ -434,6 +436,13 @@ export function PeriodPage() {
     setToast(next ? 'اسنپ‌شات این دوره رمز می‌شود' : 'رمزنگاری دوره خاموش شد');
   };
 
+  const setVisibility = async (visibility: 'private' | 'public') => {
+    if (!isOwner || !period) return;
+    await db.periods.update(id, { visibility });
+    await queueOp(id, 'period', 'upsert', { visibility });
+    setToast(visibility === 'public' ? 'دوره عمومی شد' : 'دوره خصوصی شد');
+  };
+
   const saveBuildingCharge = async (value: number) => {
     await db.periods.update(id, { buildingCharge: value });
     await queueOp(id, 'period', 'upsert', { buildingCharge: value });
@@ -459,7 +468,7 @@ export function PeriodPage() {
       action={
         isViewer ? null : (
           <Link to={`/periods/${id}/expenses/new`} className="btn-primary !py-2 !text-sm">
-            هزینه
+            هزینه جدید
           </Link>
         )
       }
@@ -796,20 +805,58 @@ export function PeriodPage() {
 
           {tab === 'activity' ? (
             <ul className="space-y-2 animate-rise">
-              {[...activity].reverse().map((a) => (
-                <li key={a.id} className="card-surface text-sm">
-                  <p className="font-semibold">{a.summary}</p>
-                  <p className="mt-1 text-xs text-ink-700/60">
-                    {a.actorName} · {formatJalaliDate(a.createdAt)}
-                  </p>
-                </li>
-              ))}
+              {[...activity].reverse().map((a) => {
+                const related =
+                  (a.entityId && expenses.find((e) => e.id === a.entityId)) ||
+                  (a.entityId && payments.find((p) => p.id === a.entityId)) ||
+                  undefined;
+                const createdAt = related?.createdAt || a.createdAt;
+                const updatedAt = related && 'updatedAt' in related ? related.updatedAt : undefined;
+                return (
+                  <li key={a.id} className="card-surface text-sm">
+                    <p className="font-semibold">{a.summary}</p>
+                    <p className="mt-1 text-xs text-ink-700/60">
+                      {a.actorName} · ایجاد: {formatJalaliDateTime(createdAt)}
+                    </p>
+                    {updatedAt && updatedAt !== createdAt ? (
+                      <p className="mt-0.5 text-xs text-ink-700/60">تغییر: {formatJalaliDateTime(updatedAt)}</p>
+                    ) : null}
+                  </li>
+                );
+              })}
               {activity.length === 0 ? <EmptyState title="تاریخچه‌ای نیست" /> : null}
             </ul>
           ) : null}
 
           {tab === 'more' ? (
             <div className="space-y-3 animate-rise">
+              <div className="card-surface space-y-3">
+                <h3 className="font-bold">شناسه و دسترسی</h3>
+                <p className="font-mono text-sm" dir="ltr">
+                  {id}
+                </p>
+                <button
+                  type="button"
+                  className="btn-ghost w-full"
+                  onClick={() => void copyText(id).then((ok) => setToast(ok ? 'کپی شد' : 'کپی نشد'))}
+                >
+                  کپی شناسه
+                </button>
+                {isOwner ? (
+                  <label className="flex items-center justify-between gap-2 text-sm">
+                    <span>عمومی (هر کس شناسه را بداند می‌بیند)</span>
+                    <input
+                      type="checkbox"
+                      checked={(period.visibility || 'private') === 'public'}
+                      onChange={(e) => void setVisibility(e.target.checked ? 'public' : 'private')}
+                    />
+                  </label>
+                ) : (
+                  <p className="text-xs text-ink-700/70">
+                    {(period.visibility || 'private') === 'public' ? 'این دوره عمومی است.' : 'این دوره خصوصی است.'}
+                  </p>
+                )}
+              </div>
               <div className="card-surface space-y-3">
                 <h3 className="font-bold">اعضا</h3>
                 <p className="text-xs text-ink-700/70">برای دیدن این دوره بعد از ورود، موبایل یا ایمیل لازم است.</p>
@@ -995,31 +1042,6 @@ export function PeriodPage() {
                   >
                     JSON
                   </button>
-                  <label className="btn-ghost cursor-pointer">
-                    ورود JSON
-                    <input
-                      type="file"
-                      accept="application/json,text/plain"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        e.target.value = '';
-                        if (!file) return;
-                        void file.text().then(async (raw) => {
-                          try {
-                            if (raw.trim().startsWith('DH1:')) {
-                              setImportRaw(raw);
-                              setImportPassOpen(true);
-                              return;
-                            }
-                            await applyImportedSnap(raw);
-                          } catch (err) {
-                            setToast(err instanceof Error ? err.message : 'ورود JSON ناموفق');
-                          }
-                        });
-                      }}
-                    />
-                  </label>
                 </div>
               </div>
               {!isViewer ? (
@@ -1081,42 +1103,6 @@ export function PeriodPage() {
         onSubmit={(value) => {
           setSnapPrompt(false);
           void exportOfflineSnap(value.trim() || undefined);
-        }}
-      />
-      <PromptDialog
-        open={importPassOpen}
-        title="رمز اسنپ‌شات"
-        message="این فایل رمز دارد."
-        placeholder="رمز دوره"
-        inputType="password"
-        confirmLabel="ورود"
-        onClose={() => {
-          setImportPassOpen(false);
-          setImportRaw('');
-        }}
-        onSubmit={(value) => {
-          setImportPassOpen(false);
-          void applyImportedSnap(importRaw, value).catch((err) => {
-            setToast(err instanceof Error ? err.message : 'ورود JSON ناموفق');
-          });
-        }}
-      />
-      <ConfirmDialog
-        open={overwriteOpen}
-        title="بازنویسی دوره"
-        message="دوره‌ای با همین شناسه هست. بازنویسی شود؟"
-        confirmLabel="بازنویسی"
-        danger
-        onClose={() => {
-          setOverwriteOpen(false);
-          setPendingImportId(null);
-          setImportRaw('');
-        }}
-        onConfirm={() => {
-          setOverwriteOpen(false);
-          void applyImportedSnap(importRaw, importPass).catch((err) => {
-            setToast(err instanceof Error ? err.message : 'ورود JSON ناموفق');
-          });
         }}
       />
     </Shell>

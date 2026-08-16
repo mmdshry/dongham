@@ -22,6 +22,7 @@ export interface PayoutMethod {
   sheba?: string;
   cardHolderName?: string;
   bankName?: string;
+  accountNumber?: string;
   isDefault?: boolean;
 }
 
@@ -61,6 +62,7 @@ export interface LocalPeriod {
   roundTo: RoundTo;
   buildingCharge?: number;
   lunchTurnMemberId?: string;
+  visibility?: 'private' | 'public';
 }
 
 export interface LocalMember {
@@ -190,6 +192,7 @@ export interface LocalActivity {
   action: string;
   summary: string;
   createdAt: string;
+  entityId?: string;
 }
 
 class DonghamDB extends Dexie {
@@ -287,6 +290,14 @@ class DonghamDB extends Dexie {
         .modify((p: LocalProfile) => {
           if (!p.payoutMethods) p.payoutMethods = [];
           if (p.debtReminders === undefined) p.debtReminders = true;
+        });
+    });
+    this.version(4).upgrade(async (tx) => {
+      await tx
+        .table('periods')
+        .toCollection()
+        .modify((p: LocalPeriod) => {
+          if (!p.visibility) p.visibility = 'private';
         });
     });
   }

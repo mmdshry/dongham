@@ -47,6 +47,20 @@ export function formatJalaliDate(iso: string): string {
   }
 }
 
+export function formatJalaliDateTime(iso: string): string {
+  try {
+    return new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(iso));
+  } catch {
+    return iso.slice(0, 16);
+  }
+}
+
 export function formatCalendarDate(iso: string, mode: 'jalali' | 'gregorian', persian = true): string {
   try {
     if (mode === 'jalali') {
@@ -159,9 +173,15 @@ export function luhnOk(card: string): boolean {
   return sum % 10 === 0;
 }
 
-/** Iranian Sheba: IR + 24 digits. IBAN mod-97 must be 1. */
+/** Iranian Shetab debit card: exactly 16 digits and Luhn. */
+export function iranCardOk(card: string): boolean {
+  const digits = normalizeCard(card);
+  return digits.length === 16 && luhnOk(digits);
+}
+
+/** Iranian Sheba: IR + 24 digits. IBAN mod-97 must be 1. Accepts 24 digits without IR. */
 export function shebaOk(sheba: string): boolean {
-  const raw = toLatinDigits(sheba).replace(/\s/g, '').toUpperCase();
+  const raw = normalizeSheba(sheba);
   if (!/^IR\d{24}$/.test(raw)) return false;
   const rearranged = raw.slice(4) + raw.slice(0, 4);
   const expanded = rearranged.replace(/[A-Z]/g, (ch) => String(ch.charCodeAt(0) - 55));
@@ -177,7 +197,11 @@ export function normalizeCard(card: string): string {
 }
 
 export function normalizeSheba(sheba: string): string {
-  return toLatinDigits(sheba).replace(/\s/g, '').toUpperCase();
+  const raw = toLatinDigits(sheba).replace(/\s/g, '').toUpperCase();
+  if (raw.startsWith('IR')) return raw;
+  const digits = raw.replace(/\D/g, '');
+  if (digits.length === 24) return `IR${digits}`;
+  return raw;
 }
 
 export function formatShebaGrouped(sheba: string): string {

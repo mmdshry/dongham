@@ -3,6 +3,8 @@ import { computeShares, validateShares, splitEqual, splitByWeight, splitExact, s
 import { applyTax, expenseTotal, roundMoney, roundToStep, toBaseCurrency } from './money.js';
 
 export type * from './types.js';
+export type { PeriodVisibility } from './period-id.js';
+export { isPeriodId, newPeriodId, periodIdFromLegacy, migratePeriodIds } from './period-id.js';
 export {
   computeBalances,
   suggestSettlements,
@@ -51,6 +53,8 @@ export type { CalendarMode, CalendarCell } from './jalali.js';
 
 export {
   bankByCode,
+  bankFromDrapi,
+  listIranBanks,
   detectBankFromCard,
   detectBankFromSheba,
   detectBank,

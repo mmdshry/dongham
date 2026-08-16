@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { parseReceiptHeuristic } from './ocr';
 import {
   isValidIranMobile,
+  formatJalaliDate,
+  formatJalaliDateTime,
+  iranCardOk,
   luhnOk,
+  normalizeSheba,
   parseMoneyInput,
   parseWeightInput,
   formatWeightInput,
@@ -63,14 +67,30 @@ describe('format', () => {
     expect(isValidIranMobile('٠٩١٢١٢٣٤٥٦٧')).toBe(true);
     expect(isValidIranMobile('+989121234567')).toBe(true);
     expect(isValidIranMobile('9121234567')).toBe(true);
+    expect(isValidIranMobile('02122001001')).toBe(false);
+    expect(isValidIranMobile('0912123456')).toBe(false);
     expect(toWhatsAppE164('۰۹۱۲۱۲۳۴۵۶۷')).toBe('989121234567');
   });
 
   it('validates card luhn and sheba', () => {
     expect(luhnOk('4111111111111111')).toBe(true);
     expect(luhnOk('4111111111111112')).toBe(false);
+    expect(iranCardOk('6037991111111111')).toBe(false);
+    expect(iranCardOk('6037991111111112')).toBe(true);
+    expect(iranCardOk('4111111111111111')).toBe(true);
+    expect(iranCardOk('411111111111111')).toBe(false);
     expect(shebaOk('IR060170000000000000000000')).toBe(true);
+    expect(shebaOk('060170000000000000000000')).toBe(true);
     expect(shebaOk('IR000170000000000000000000')).toBe(false);
+    expect(normalizeSheba('060170000000000000000000')).toBe('IR060170000000000000000000');
+  });
+
+  it('includes time in jalali datetime', () => {
+    const iso = '2026-08-16T10:45:00.000Z';
+    const date = formatJalaliDate(iso);
+    const dateTime = formatJalaliDateTime(iso);
+    expect(dateTime.startsWith(date) || dateTime.includes(date)).toBe(true);
+    expect(dateTime.length).toBeGreaterThan(date.length);
   });
 
   it('groups card numbers', () => {

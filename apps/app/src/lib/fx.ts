@@ -3,6 +3,7 @@ import { db } from './db';
 
 const FX_META = 'fxRates';
 const FX_MANUAL_META = 'fxManualRates';
+const FX_WATCH_META = 'fxWatchlist';
 
 export type FxRates = Record<string, number>;
 
@@ -13,10 +14,37 @@ export type FxSnapshot = {
   missing: string[];
 };
 
-const MAJOR_FX = ['USD', 'EUR', 'TRY', 'AED', 'IQD', 'XAU'] as const;
+function missingOf(rates: FxRates, needed: string[] = []): string[] {
+  return needed.filter((code) => !rates[code] || rates[code] <= 0);
+}
 
-function missingOf(rates: FxRates): string[] {
-  return MAJOR_FX.filter((code) => !rates[code] || rates[code] <= 0);
+export function parseWatchlist(raw: string | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const item of parsed) {
+      if (typeof item !== 'string') continue;
+      const code = item.trim().toUpperCase();
+      if (!code || code === 'IRT' || seen.has(code)) continue;
+      seen.add(code);
+      out.push(code);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+export async function loadFxWatchlist(): Promise<string[]> {
+  const row = await db.meta.get(FX_WATCH_META);
+  return parseWatchlist(row?.value);
+}
+
+export async function saveFxWatchlist(codes: string[]): Promise<void> {
+  await db.meta.put({ key: FX_WATCH_META, value: JSON.stringify(parseWatchlist(JSON.stringify(codes))) });
 }
 
 function parseRates(raw: string | undefined): FxRates {
@@ -69,7 +97,8 @@ export async function fetchFxSnapshot(): Promise<FxSnapshot> {
     const live = res.rates || {};
     const rates = mergeRates(live, manual, cached);
     await db.meta.put({ key: FX_META, value: JSON.stringify(rates) });
-    const missing = missingOf(rates);
+    const watch = await loadFxWatchlist();
+    const missing = missingOf(rates, watch);
     const source = missing.length && Object.keys(manual).length ? `${res.source || 'none'}+manual` : res.source || 'none';
     return {
       rates,
@@ -83,7 +112,7 @@ export async function fetchFxSnapshot(): Promise<FxSnapshot> {
       rates,
       source: Object.keys(manual).length ? 'manual' : Object.keys(cached).length ? 'offline' : 'none',
       fetchedAt: new Date().toISOString(),
-      missing: missingOf(rates),
+      missing: missingOf(rates, await loadFxWatchlist()),
     };
   }
 }

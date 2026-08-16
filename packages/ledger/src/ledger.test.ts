@@ -263,7 +263,11 @@ describe('iran banks', () => {
     const { detectBankFromCard, detectBankFromSheba, formatCardGrouped } = await import('./iran-banks.js');
     expect(detectBankFromCard('6037991111111111')?.name).toBe('ملی');
     expect(detectBankFromSheba('IR060170000000000000000000')?.name).toBe('ملی');
+    expect(detectBankFromSheba('060170000000000000000000')?.name).toBe('ملی');
     expect(detectBankFromCard('4111111111111111')).toBeUndefined();
+    const { bankFromDrapi } = await import('./iran-banks.js');
+    expect(bankFromDrapi('EGHTESAD_NOVIN')?.name).toBe('اقتصاد نوین');
+    expect(bankFromDrapi('eghtesad-novin')?.code).toBe('055');
     expect(formatCardGrouped('6037991111111111')).toBe('6037 9911 1111 1111');
   });
 });
