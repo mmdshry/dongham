@@ -82,8 +82,11 @@ function storeOtp(phone: string, code: string) {
 }
 
 export function otpProvider(): string {
-  if (process.env.OTP_PROVIDER) return process.env.OTP_PROVIDER;
+  const explicit = (process.env.OTP_PROVIDER || '').trim().toLowerCase();
+  if (explicit === 'kavenegar') return 'kavenegar';
+  if (explicit === 'senator') return 'senator';
   if (process.env.SENATOR_API_KEY) return 'senator';
+  if (process.env.KAVENEGAR_API_KEY) return 'kavenegar';
   return 'mock';
 }
 
@@ -131,9 +134,13 @@ export async function sendOtp(phone: string): Promise<string> {
   const provider = otpProvider();
   try {
     if (provider === 'senator') {
+      console.log(`[otp] provider=senator phone=${local}`);
       await sendSenator(local, code);
     } else if (provider === 'kavenegar') {
+      console.log(`[otp] provider=kavenegar phone=${local}`);
       await sendKavenegar(local, code);
+    } else if (process.env.NODE_ENV === 'production') {
+      throw new Error('ارسال پیامک پیکربندی نشده است');
     } else {
       console.log(`[OTP mock] ${local} => ${code}`);
     }
