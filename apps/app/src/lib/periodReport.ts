@@ -2,7 +2,7 @@ import type { SplitMode } from '@dongham/ledger';
 import { periodAnalytics } from './analytics';
 import { currencyLabel } from './currencies';
 import type { LocalExpense, LocalMember, LocalPayment, LocalPeriod } from './db';
-import { formatJalaliDate, formatMoney, toPersianDigits } from './format';
+import { formatCalendarDate, formatMoney, toPersianDigits } from './format';
 import { settlementPaySentence } from './share';
 
 export const REPORT_WIDTH_PX = 794;
@@ -139,9 +139,11 @@ export function buildPeriodReportModel(
   expenses: LocalExpense[],
   payments: LocalPayment[],
   members: LocalMember[],
-  opts?: { exportedAt?: string },
+  opts?: { exportedAt?: string; calendarMode?: 'jalali' | 'gregorian' },
 ): PeriodReportModel {
   const exportedAt = opts?.exportedAt ?? new Date().toISOString();
+  const cal = opts?.calendarMode || 'jalali';
+  const fmt = (iso: string) => formatCalendarDate(iso, cal);
   const liveExpenses = expenses
     .filter((e) => !e.deletedAt)
     .sort((a, b) => byNewest(a.occurredAt || a.createdAt, b.occurredAt || b.createdAt));
@@ -157,7 +159,7 @@ export function buildPeriodReportModel(
 
   return {
     title: period.title,
-    exportDate: formatJalaliDate(exportedAt),
+    exportDate: fmt(exportedAt),
     memberCount: members.length,
     currencyFa: currencyLabel(period.currency),
     total,
@@ -185,7 +187,7 @@ export function buildPeriodReportModel(
       };
     }),
     expenses: liveExpenses.map((e) => ({
-      date: formatJalaliDate(e.occurredAt || e.createdAt),
+      date: fmt(e.occurredAt || e.createdAt),
       title: e.title,
       payer: nameOf(e.payerId),
       amount: e.amount,
@@ -194,7 +196,7 @@ export function buildPeriodReportModel(
       tags: joinTags(e.tags),
     })),
     payments: livePayments.map((p) => ({
-      date: formatJalaliDate(p.createdAt),
+      date: fmt(p.createdAt),
       fromName: nameOf(p.fromMemberId),
       toName: nameOf(p.toMemberId),
       amount: p.amount,
@@ -251,10 +253,13 @@ export function buildPeriodReportHtml(
   expenses: LocalExpense[],
   payments: LocalPayment[],
   members: LocalMember[],
-  opts?: { variant?: ReportVariant; exportedAt?: string },
+  opts?: { variant?: ReportVariant; exportedAt?: string; calendarMode?: 'jalali' | 'gregorian' },
 ): string {
   const variant = opts?.variant ?? 'full';
-  const model = buildPeriodReportModel(period, expenses, payments, members, { exportedAt: opts?.exportedAt });
+  const model = buildPeriodReportModel(period, expenses, payments, members, {
+    exportedAt: opts?.exportedAt,
+    calendarMode: opts?.calendarMode,
+  });
 
   const balanceRows =
     model.balances.length === 0

@@ -1,3 +1,4 @@
+import { sanitizeFxWatchlist } from '@dongham/ledger';
 import { api } from './api';
 import { db } from './db';
 
@@ -21,18 +22,7 @@ function missingOf(rates: FxRates, needed: string[] = []): string[] {
 export function parseWatchlist(raw: string | undefined): string[] {
   if (!raw) return [];
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    const seen = new Set<string>();
-    const out: string[] = [];
-    for (const item of parsed) {
-      if (typeof item !== 'string') continue;
-      const code = item.trim().toUpperCase();
-      if (!code || code === 'IRT' || seen.has(code)) continue;
-      seen.add(code);
-      out.push(code);
-    }
-    return out;
+    return sanitizeFxWatchlist(JSON.parse(raw));
   } catch {
     return [];
   }
@@ -45,6 +35,13 @@ export async function loadFxWatchlist(): Promise<string[]> {
 
 export async function saveFxWatchlist(codes: string[]): Promise<void> {
   await db.meta.put({ key: FX_WATCH_META, value: JSON.stringify(parseWatchlist(JSON.stringify(codes))) });
+  const profile = await db.profile.get('self');
+  if (profile?.token) {
+    const { updateProfile } = await import('./api');
+    await updateProfile({ prefsUpdatedAt: new Date().toISOString() });
+    const { pushCloudProfile } = await import('./cloudProfile');
+    void pushCloudProfile({ includePayouts: false }).catch(() => undefined);
+  }
 }
 
 function parseRates(raw: string | undefined): FxRates {

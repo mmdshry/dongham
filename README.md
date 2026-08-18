@@ -11,13 +11,17 @@
 | API | Hono + JWT + OTP (mock / سناتور / کاوه‌نگار) |
 | Ledger | `@dongham/ledger` — تقسیم مساوی/ضریب/مبلغ/درصد + settlement |
 | SEO | Astro (`apps/marketing`) |
+| ادمین | Vite + React (`apps/admin`) روی `admin.dongham.ir` |
 
 ## اجرا
+
+مدیر بستهٔ مرجع **npm** است (`package-lock.json`). `pnpm-workspace.yaml` فقط برای کسانی است که ترجیح می‌دهند pnpm نصب کنند.
 
 ```bash
 npm install
 npm run dev          # http://localhost:5173
 npm run dev:api      # http://localhost:8787
+npm run dev:admin    # http://localhost:5174
 npm run dev:marketing
 npm test
 npm run test:e2e
@@ -40,6 +44,22 @@ npx cap open android --workspace @dongham/app
 - Export PDF / Excel / تصویر
 - هزینه تکراری، رمز AES-GCM روی کارت/شبا و اسنپ‌شات خروجی، حذف حساب
 - نوتیفیکیشن (وب + Capacitor Local Notifications)
+
+## پنل ادمین
+
+ورود فقط با OTP برای شماره‌های `ADMIN_PHONES` (پیش‌فرض `09190755375` و `09306057083`). توکن ادمین ۲۴ ساعته است و JWT معمولی اپ به `/admin` راه ندارد.
+
+```bash
+npm run dev:admin    # http://localhost:5174
+```
+
+روی سرور:
+
+1. DNS ساب‌دامنه `admin.dongham.ir` را مثل `app.dongham.ir` به همین هاست بدهید.
+2. vhost آپاچی را به خروجی استاتیک `apps/admin/dist` اشاره دهید (SPA fallback در `apps/admin/public/.htaccess`).
+3. `CORS_ORIGIN` باید `https://admin.dongham.ir` را داشته باشد (در `deploy/ecosystem.config.cjs` آمده).
+4. `ADMIN_PHONES` را در `.env` سرور تنظیم کنید.
+5. پنل ادمین را با `VITE_API_URL` عمومی بیلد کنید، یا روی vhost ادمین `/api` را به `127.0.0.1:8787` پروکسی کنید (نمونه در `apps/admin/public/.htaccess`).
 
 ## Lighthouse
 

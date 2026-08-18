@@ -3,7 +3,7 @@ import QRCode from 'qrcode';
 import { db, noneCharge, type LocalExpense, type LocalMember, type LocalPayment, type LocalPeriod, type LocalRecurring } from './db';
 import { queueOp } from './sync';
 
-export interface PeriodSnapshot {
+export interface ExportSnapshot {
   v: 1;
   period: LocalPeriod;
   members: LocalMember[];
@@ -12,9 +12,12 @@ export interface PeriodSnapshot {
   recurring: LocalRecurring[];
 }
 
+/** @deprecated Use ExportSnapshot — cloud sync uses CloudPeriodSnapshot. */
+export type PeriodSnapshot = ExportSnapshot;
+
 const QR_MAX = 1800;
 
-export async function buildPeriodSnapshot(periodId: string): Promise<PeriodSnapshot> {
+export async function buildPeriodSnapshot(periodId: string): Promise<ExportSnapshot> {
   const period = await db.periods.get(periodId);
   if (!period) throw new Error('دوره پیدا نشد');
   return {
@@ -27,19 +30,19 @@ export async function buildPeriodSnapshot(periodId: string): Promise<PeriodSnaps
   };
 }
 
-export async function serializeSnapshot(snap: PeriodSnapshot, passphrase?: string): Promise<string> {
+export async function serializeSnapshot(snap: ExportSnapshot, passphrase?: string): Promise<string> {
   const json = JSON.stringify(snap);
   if (passphrase) return `DH1:${await encryptWithPass(json, passphrase)}`;
   return json;
 }
 
-export async function parseSnapshot(raw: string, passphrase?: string): Promise<PeriodSnapshot> {
+export async function parseSnapshot(raw: string, passphrase?: string): Promise<ExportSnapshot> {
   let json = raw.trim();
   if (json.startsWith('DH1:')) {
     if (!passphrase) throw new Error('رمز دوره لازم است');
     json = await decryptWithPass(json.slice(4), passphrase);
   }
-  const snap = JSON.parse(json) as PeriodSnapshot;
+  const snap = JSON.parse(json) as ExportSnapshot;
   if (snap.v !== 1 || !snap.period?.id) throw new Error('اسنپ‌شات نامعتبر است');
   return snap;
 }
@@ -49,7 +52,7 @@ export async function snapshotQrDataUrl(payload: string): Promise<string | null>
   return QRCode.toDataURL(payload, { margin: 1, width: 320, errorCorrectionLevel: 'L' });
 }
 
-export async function importPeriodSnapshot(snap: PeriodSnapshot): Promise<string> {
+export async function importPeriodSnapshot(snap: ExportSnapshot): Promise<string> {
   const id = snap.period.id || nanoid();
   const period = { ...snap.period, id, synced: false, updatedAt: new Date().toISOString() };
   await db.periods.put(period);

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CurrencyMark } from './Flag';
 import { browseRateCurrencies, currencyInfo, displayTomanRate } from '../lib/currencyCatalog';
-import { formatGrouped, formatJalaliDateTime, parseMoneyInput } from '../lib/format';
+import { formatCalendarDateTime, formatGrouped, parseMoneyInput } from '../lib/format';
 import {
   fetchFxSnapshot,
   loadFxWatchlist,
@@ -11,6 +11,7 @@ import {
   type FxSnapshot,
 } from '../lib/fx';
 import { usePersianDigits } from '../lib/usePersianDigits';
+import { useCalendarMode } from '../lib/calendarPref';
 import { useUiStore } from '../store/ui';
 
 function FxTomanPrice({ amount, persian }: { amount: number; persian: boolean }) {
@@ -42,6 +43,7 @@ function sourceLabel(source: string): string {
 export function FxRatesPanel({ compact = false }: { compact?: boolean }) {
   const setToast = useUiStore((s) => s.setToast);
   const persian = usePersianDigits();
+  const calendarMode = useCalendarMode();
   const [snap, setSnap] = useState<FxSnapshot | null>(null);
   const [watch, setWatch] = useState<string[]>([]);
   const [draft, setDraft] = useState<Record<string, string>>({});
@@ -99,7 +101,7 @@ export function FxRatesPanel({ compact = false }: { compact?: boolean }) {
     const rates: Record<string, number> = {};
     for (const code of watch) {
       if (code === 'IRR') {
-        rates[code] = 1;
+        rates[code] = 0.1;
         continue;
       }
       const n = parseMoneyInput(draft[code] || '');
@@ -127,7 +129,7 @@ export function FxRatesPanel({ compact = false }: { compact?: boolean }) {
       {snap ? (
         <p className="text-xs text-brand-800">
           منبع: {sourceLabel(snap.source)}
-          {snap.fetchedAt ? ` · آخرین بروزرسانی ${formatJalaliDateTime(snap.fetchedAt)}` : ''}
+          {snap.fetchedAt ? ` · آخرین بروزرسانی ${formatCalendarDateTime(snap.fetchedAt, calendarMode, persian)}` : ''}
         </p>
       ) : null}
       {snap?.source === 'offline' || snap?.source === 'stale' || snap?.source === 'none' ? (

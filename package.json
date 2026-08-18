@@ -10,8 +10,9 @@
   "scripts": {
     "dev": "npm run dev -w @dongham/app",
     "dev:api": "npm run dev -w @dongham/api",
+    "dev:admin": "npm run dev -w @dongham/admin",
     "dev:marketing": "npm run dev -w @dongham/marketing",
-    "build": "npm run build -w @dongham/ledger && npm run build -w @dongham/app && npm run build -w @dongham/api && npm run build -w @dongham/marketing",
+    "build": "npm run build -w @dongham/ledger && npm run build -w @dongham/app && npm run build -w @dongham/api && npm run build -w @dongham/marketing && npm run build -w @dongham/admin",
     "test": "npm run test -w @dongham/ledger && npm run test -w @dongham/api && npm run test -w @dongham/app",
     "test:e2e": "npm run test -w @dongham/e2e",
     "lint": "npm run lint -w @dongham/app --if-present",

@@ -8,7 +8,8 @@ import { FxRatesPanel } from '../components/FxRatesPanel';
 import { ConfirmDialog, PromptDialog } from '../components/Dialog';
 import { SyncBanner } from '../components/SyncBanner';
 import { Shell } from '../components/ui';
-import { updateProfile } from '../lib/api';
+import { updateAccountPrefs } from '../lib/cloudProfile';
+import { useCalendarMode } from '../lib/calendarPref';
 import {
   buyPremiumBazaar,
   buyPremiumMyket,
@@ -25,13 +26,14 @@ import { useUiStore } from '../store/ui';
 
 const SUPPORT_TG = import.meta.env.VITE_SUPPORT_TELEGRAM || 'https://t.me/dongham';
 const SUPPORT_BALE = import.meta.env.VITE_SUPPORT_BALE || 'https://ble.ir/dongham';
-const SUPPORT_WA = import.meta.env.VITE_SUPPORT_WHATSAPP || 'https://wa.me/';
+const SUPPORT_WA = import.meta.env.VITE_SUPPORT_WHATSAPP || '';
 
 export function MorePage() {
   const navigate = useNavigate();
   const setToast = useUiStore((s) => s.setToast);
   const [params, setParams] = useSearchParams();
   const profile = useLiveQuery(() => db.profile.get('self'));
+  const calendarMode = useCalendarMode();
   const notifications = useLiveQuery(() => db.notifications.orderBy('createdAt').reverse().limit(20).toArray(), []) || [];
   const outboxCount = useLiveQuery(() => db.outbox.count(), []) || 0;
   const [confirmWipe, setConfirmWipe] = useState(false);
@@ -58,12 +60,12 @@ export function MorePage() {
   }, []);
 
   const saveName = async (displayName: string) => {
-    await updateProfile({ displayName });
+    await updateAccountPrefs({ displayName });
     setToast('ذخیره شد');
   };
 
   const toggleDigits = async () => {
-    await updateProfile({ usePersianDigits: !profile?.usePersianDigits });
+    await updateAccountPrefs({ usePersianDigits: !profile?.usePersianDigits });
   };
 
   const testNotif = async () => {
@@ -145,7 +147,7 @@ export function MorePage() {
       <div className="mx-auto max-w-lg space-y-4 animate-rise">
         <SyncBanner />
         <div className="card-surface space-y-3">
-          <h2 className="section-title">پروفایل محلی</h2>
+          <h2 className="section-title">پروفایل</h2>
           <input
             className="input"
             defaultValue={profile?.displayName}
@@ -160,9 +162,19 @@ export function MorePage() {
             <input
               type="checkbox"
               checked={profile?.debtReminders !== false}
-              onChange={() => updateProfile({ debtReminders: profile?.debtReminders === false })}
+              onChange={() => updateAccountPrefs({ debtReminders: profile?.debtReminders === false })}
             />
             یادآوری بدهی
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={calendarMode === 'gregorian'}
+              onChange={() =>
+                updateAccountPrefs({ calendarMode: calendarMode === 'gregorian' ? 'jalali' : 'gregorian' })
+              }
+            />
+            تقویم میلادی (به‌جای شمسی)
           </label>
         </div>
 
@@ -173,7 +185,11 @@ export function MorePage() {
         <div className="card-surface space-y-2">
           <h2 className="font-bold">اشتراک</h2>
           <p className="text-xs text-ink-700/70">
-            {isPremium(profile) ? 'نسخه پرمیوم فعال است — بدون تبلیغ.' : 'نسخه رایگان. وب‌اپ با زرین‌پال؛ اندروید با بازار یا مایکت.'}
+            {isPremium(profile)
+              ? Capacitor.isNativePlatform()
+                ? 'نسخه پرمیوم فعال است — بدون تبلیغ.'
+                : 'نسخه پرمیوم فعال است.'
+              : 'نسخه رایگان. وب‌اپ با زرین‌پال؛ اندروید با بازار یا مایکت.'}
           </p>
           {!isPremium(profile) ? (
             <>
@@ -199,9 +215,11 @@ export function MorePage() {
 
         <div className="card-surface space-y-2">
           <h2 className="font-bold">پشتیبانی</h2>
-          <a className="btn-ghost w-full" href={SUPPORT_WA} target="_blank" rel="noreferrer">
-            واتساپ پشتیبانی
-          </a>
+          {SUPPORT_WA && SUPPORT_WA !== 'https://wa.me/' ? (
+            <a className="btn-ghost w-full" href={SUPPORT_WA} target="_blank" rel="noreferrer">
+              واتساپ پشتیبانی
+            </a>
+          ) : null}
           <a className="btn-ghost w-full" href={SUPPORT_TG} target="_blank" rel="noreferrer">
             تلگرام پشتیبانی
           </a>
@@ -288,7 +306,7 @@ export function MorePage() {
         <div className="card-surface space-y-2">
           <h2 className="font-bold">حریم خصوصی</h2>
           <p className="text-xs text-ink-700/70">
-            کارت و شبا روی دستگاه با AES-GCM رمز می‌شود. اسنپ‌شات خروجی فقط در صورت وارد کردن عبارت عبور رمز می‌شود. می‌توانید داده دستگاه را پاک کنید یا حساب ابری را حذف کنید.
+            کارت و شبا روی این دستگاه با AES-GCM رمز می‌شود و پس از ورود با حساب همگام می‌گردد. اسنپ‌شات خروجی فقط در صورت وارد کردن عبارت عبور رمز می‌شود. می‌توانید داده دستگاه را پاک کنید یا حساب ابری را حذف کنید.
           </p>
           <button type="button" className="btn-ghost w-full text-rose-700" onClick={() => setConfirmWipe(true)}>
             پاک‌سازی داده محلی

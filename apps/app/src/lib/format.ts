@@ -81,6 +81,30 @@ export function formatCalendarDate(iso: string, mode: 'jalali' | 'gregorian', pe
   }
 }
 
+export function formatCalendarDateTime(iso: string, mode: 'jalali' | 'gregorian', persian = true): string {
+  try {
+    if (mode === 'jalali') {
+      const text = new Intl.DateTimeFormat('fa-IR-u-ca-persian', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date(iso));
+      return persian ? text : toLatinDigits(text);
+    }
+    return new Intl.DateTimeFormat(persian ? 'fa-IR-u-ca-gregory' : 'en-GB', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(iso));
+  } catch {
+    return iso.slice(0, 16);
+  }
+}
+
 export async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text);

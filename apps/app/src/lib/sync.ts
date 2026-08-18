@@ -129,7 +129,7 @@ export async function logActivity(
   await queueOp(periodId, 'activity', 'upsert', row);
 }
 
-export type PeriodSnapshot = {
+export type CloudPeriodSnapshot = {
   period: Partial<LocalPeriod> & {
     id: string;
     title: string;
@@ -144,8 +144,11 @@ export type PeriodSnapshot = {
   chat?: LocalChat[];
   activity?: LocalActivity[];
   recurring?: LocalRecurring[];
+  invites?: { token: string; periodId: string; createdAt: string }[];
   version?: number;
 };
+
+export type PeriodSnapshot = CloudPeriodSnapshot;
 
 export type SyncConflictChoice = 'keep-local' | 'take-server';
 
@@ -270,6 +273,7 @@ export async function applyPeriodSnapshot(snap: PeriodSnapshot): Promise<void> {
     lunchTurnMemberId: snap.period.lunchTurnMemberId,
     encrypted: snap.period.encrypted,
     ownerGuestKey: snap.period.ownerGuestKey,
+    ownerId: snap.period.ownerId,
     visibility: snap.period.visibility || 'private',
   });
   const pid = snap.period.id;
@@ -336,6 +340,12 @@ export async function applyPeriodSnapshot(snap: PeriodSnapshot): Promise<void> {
     for (const r of snap.recurring) await db.recurring.put({ ...r, periodId: pid });
     await dropMissingIds(db.recurring, pid, new Set(snap.recurring.map((r) => r.id)));
   }
+  if (Array.isArray(snap.invites)) {
+    for (const inv of snap.invites) {
+      if (!inv.token) continue;
+      await db.invites.put({ token: inv.token, periodId: pid, createdAt: inv.createdAt || new Date().toISOString() });
+    }
+  }
 }
 
 function asPeriodSnapshot(value: unknown): PeriodSnapshot | undefined {
@@ -373,6 +383,7 @@ export async function createPeriodLocal(input: {
     version: 0,
     synced: false,
     ownerGuestKey: profile.guestKey,
+    ownerId: profile.userId,
     kind,
     template,
     roundTo: input.roundTo ?? 0,
@@ -522,6 +533,12 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
   if (!profile.token) return { ok: false, error: 'برای همگام‌سازی وارد شوید' };
   if (typeof navigator !== 'undefined' && !navigator.onLine) return { ok: false, error: 'آفلاین هستید' };
   try {
+    try {
+      const { syncCloudProfile } = await import('./cloudProfile');
+      await syncCloudProfile();
+    } catch {
+      /* optional */
+    }
     const { periods } = await api<{ periods: { id: string; version?: number; updatedAt?: string }[] }>('/periods');
     const localPeriods = await db.periods.toArray();
     const serverAhead = localPeriods.some((local) => {
@@ -532,6 +549,8 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
     for (const p of periods) {
       const pending = await db.outbox.where('periodId').equals(p.id).count();
       if (pending > 0) continue;
+      const local = await db.periods.get(p.id);
+      if (local && typeof p.version === 'number' && local.version >= p.version) continue;
       const snap = await api<PeriodSnapshot>(`/periods/${p.id}/snapshot`);
       await applyPeriodSnapshot(snap);
     }
@@ -677,16 +696,13 @@ export async function resolveSyncConflict(
 
 export function startSyncLoop() {
   const tick = () => {
-    void flushOutbox();
-  };
-  const pull = () => {
     void flushOutbox().then(() => pullCloud());
   };
-  window.addEventListener('online', pull);
-  void flushOutbox().then(() => pullCloud());
+  window.addEventListener('online', tick);
+  void tick();
   const id = window.setInterval(tick, 15_000);
   return () => {
-    window.removeEventListener('online', pull);
+    window.removeEventListener('online', tick);
     window.clearInterval(id);
   };
 }

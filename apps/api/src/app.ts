@@ -3,6 +3,8 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { nanoid } from 'nanoid';
 import { inferCadence, isPeriodId, migratePeriodIds, newPeriodId, nextRecurringAt, normalizeEmail, normalizeIranMobile, normalizeOtpCode } from '@dongham/ledger';
+import { adminApp, consumeImpersonation } from './admin.js';
+import { applyUserProfilePatch, authSession, cloudProfile, publicUser } from './profile.js';
 import {
   claimListedMemberships,
   createUser,
@@ -16,33 +18,51 @@ import {
   verifyOtp,
   verifyPassword,
   verifyToken,
+  revokeSession,
 } from './auth.js';
-import { premiumUntilFromNow, verifyBazaarPurchase, verifyMyketPurchase } from './billing.js';
+import { premiumUntilFromNow, recordBillingEvent, verifyBazaarPurchase, verifyMyketPurchase } from './billing.js';
 import { bumpPeriodVersion, getDb, mutate } from './db.js';
 import { lookupCardSheba, lookupIdentity, quotaFor } from './drapi.js';
 import { getFxRates } from './fx.js';
 import { handleTelegramUpdate, telegramSend } from './telegram.js';
 import type { ActivityRecord, ExpenseRecord, MemberRole, PaymentRecord, PeriodKind, PeriodTemplate, RecurringCadence, RoundTo } from './types.js';
 import { zarinpalRequest, zarinpalVerify } from './zarinpal.js';
+import { appPublicUrl, inviteExpiresAt, isInviteExpired } from './publicUrl.js';
 
 type Variables = {
   userId?: string;
   deviceId?: string;
+  role?: 'admin' | 'user';
+  impersonatedBy?: string;
 };
 
 export const app = new Hono<{ Variables: Variables }>();
+
+const defaultCorsOrigins = [
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:5174',
+  'https://app.dongham.ir',
+  'https://admin.dongham.ir',
+  'https://dongham.ir',
+  'https://www.dongham.ir',
+];
 
 app.use(
   '*',
   cors({
     origin: (origin) => {
-      const allowed = (process.env.CORS_ORIGIN || '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean);
-      if (!allowed.length) return origin || '*';
-      if (origin && allowed.includes(origin)) return origin;
-      return allowed[0];
+      const allowed = [
+        ...defaultCorsOrigins,
+        ...(process.env.CORS_ORIGIN || '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ];
+      if (!origin) return allowed[0];
+      if (allowed.includes(origin)) return origin;
+      return '';
     },
     allowHeaders: ['Content-Type', 'Authorization', 'X-Device-Id'],
     allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -58,6 +78,8 @@ async function authMiddleware(c: Context<{ Variables: Variables }>, next: Next) 
     if (payload) {
       c.set('userId', payload.userId);
       c.set('deviceId', payload.deviceId);
+      c.set('role', payload.role);
+      c.set('impersonatedBy', payload.impersonatedBy);
     }
   }
   await next();
@@ -117,14 +139,55 @@ function periodRole(userId: string, periodId: string): MemberRole | null {
   const db = getDb();
   const period = findPeriod(periodId);
   if (!period) return null;
-  const mine = db.members.find((m) => m.periodId === periodId && m.userId === userId);
-  if (mine) return mine.role;
   if (period.ownerId === userId) return 'owner';
-  if (memberMatchesUser(periodId, userId)) return 'member';
+  const mine = db.members.find((m) => m.periodId === periodId && m.userId === userId);
+  if (mine) return mine.role === 'owner' ? 'member' : mine.role;
+  if (memberMatchesUser(periodId, userId)) {
+    const matched = db.members.find((m) => {
+      if (m.periodId !== periodId) return false;
+      const user = db.users.find((u) => u.id === userId);
+      const phone = normalizeIranMobile(user?.phone);
+      const email = normalizeEmail(user?.email);
+      if (phone && normalizeIranMobile(m.phone) === phone) return true;
+      if (email && m.email && normalizeEmail(m.email) === email) return true;
+      return false;
+    });
+    return matched?.role === 'viewer' ? 'viewer' : 'member';
+  }
   return null;
 }
 
 // ——— Auth ———
+app.route('/admin', adminApp);
+
+async function handleImpersonateConsume(c: Context<{ Variables: Variables }>, code: string | undefined, deviceId: string) {
+  if (!code) return c.json({ error: 'کد نامعتبر است' }, 400);
+  const result = await consumeImpersonation(code, deviceId);
+  if ('error' in result) return c.json({ error: result.error }, result.status);
+  return c.json(authSession(result.token, result.user));
+}
+
+app.post('/auth/impersonate/consume', async (c) => {
+  let code: string | undefined;
+  let deviceId: string | undefined;
+  try {
+    const body = await c.req.json<{ code?: string; deviceId?: string }>();
+    code = body.code;
+    deviceId = body.deviceId;
+  } catch {
+    code = undefined;
+  }
+  return handleImpersonateConsume(c, code, deviceId || c.req.header('X-Device-Id') || nanoid());
+});
+
+app.get('/auth/impersonate/consume', async (c) => {
+  return handleImpersonateConsume(
+    c,
+    c.req.query('code'),
+    c.req.header('X-Device-Id') || nanoid(),
+  );
+});
+
 app.post('/auth/otp/request', async (c) => {
   const { phone } = await c.req.json<{ phone: string }>();
   const local = normalizeIranMobile(phone);
@@ -157,7 +220,7 @@ app.post('/auth/otp/verify', async (c) => {
   }
   claimListedMemberships(user);
   const token = await issueToken(user.id, deviceId || nanoid());
-  return c.json({ token, user });
+  return c.json(authSession(token, user));
 });
 
 app.post('/auth/register', async (c) => {
@@ -179,7 +242,7 @@ app.post('/auth/register', async (c) => {
   });
   claimListedMemberships(user);
   const token = await issueToken(user.id, deviceId || nanoid());
-  return c.json({ token, user });
+  return c.json(authSession(token, user));
 });
 
 app.post('/auth/login', async (c) => {
@@ -194,7 +257,7 @@ app.post('/auth/login', async (c) => {
   }
   claimListedMemberships(user);
   const token = await issueToken(user.id, deviceId || nanoid());
-  return c.json({ token, user });
+  return c.json(authSession(token, user));
 });
 
 app.post('/auth/google', async (c) => {
@@ -206,7 +269,7 @@ app.post('/auth/google', async (c) => {
   try {
     const result = await loginWithGoogle(idToken, deviceId || nanoid());
     claimListedMemberships(result.user);
-    return c.json(result);
+    return c.json(authSession(result.token, result.user));
   } catch {
     return c.json({ error: 'ورود گوگل نامعتبر است' }, 401);
   }
@@ -217,7 +280,43 @@ app.get('/auth/me', (c) => {
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const user = getDb().users.find((u) => u.id === userId && !u.deletedAt);
   if (!user) return c.json({ error: 'پیدا نشد' }, 404);
-  return c.json({ user });
+  return c.json({ user: publicUser(user), profile: cloudProfile(user) });
+});
+
+app.post('/auth/logout', (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const header = c.req.header('Authorization');
+  if (header?.startsWith('Bearer ')) revokeSession(header.slice(7));
+  return c.json({ ok: true });
+});
+
+app.put('/auth/me', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  let body: {
+    displayName?: string;
+    usePersianDigits?: boolean;
+    debtReminders?: boolean;
+    calendarMode?: 'jalali' | 'gregorian';
+    fxWatchlist?: string[];
+    payoutMethods?: unknown;
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'بدنه نامعتبر است' }, 400);
+  }
+  const next = applyUserProfilePatch(userId, {
+    displayName: body.displayName,
+    usePersianDigits: body.usePersianDigits,
+    debtReminders: body.debtReminders,
+    calendarMode: body.calendarMode,
+    fxWatchlist: body.fxWatchlist,
+    payoutMethods: Array.isArray(body.payoutMethods) ? body.payoutMethods : undefined,
+  });
+  if (!next) return c.json({ error: 'پیدا نشد' }, 404);
+  return c.json({ user: publicUser(next), profile: cloudProfile(next) });
 });
 
 app.post('/auth/delete-account', async (c) => {
@@ -232,6 +331,9 @@ app.post('/auth/delete-account', async (c) => {
       u.googleId = undefined;
       u.passwordHash = undefined;
       u.displayName = 'حساب حذف‌شده';
+      u.payoutMethods = undefined;
+      u.fxWatchlist = undefined;
+      u.prefsUpdatedAt = undefined;
     }
     db.sessions = db.sessions.filter((s) => s.userId !== userId);
   });
@@ -641,6 +743,7 @@ app.post('/periods/:id/invites', async (c) => {
       periodId,
       createdBy: userId,
       createdAt: new Date().toISOString(),
+      expiresAt: inviteExpiresAt(),
     });
   });
   return c.json({ token, url: `/i/${token}` });
@@ -649,7 +752,7 @@ app.post('/periods/:id/invites', async (c) => {
 app.get('/invites/:token', (c) => {
   const token = c.req.param('token');
   const invite = getDb().invites.find((i) => i.token === token);
-  if (!invite) return c.json({ error: 'پیدا نشد' }, 404);
+  if (!invite || isInviteExpired(invite)) return c.json({ error: 'پیدا نشد' }, 404);
   const period = getDb().periods.find((p) => p.id === invite.periodId);
   const members = getDb().members.filter((m) => m.periodId === invite.periodId);
   return c.json({ invite, period, members });
@@ -664,7 +767,7 @@ app.post('/invites/:token/join', async (c) => {
     guestKey?: string;
   }>();
   const invite = getDb().invites.find((i) => i.token === token);
-  if (!invite) return c.json({ error: 'پیدا نشد' }, 404);
+  if (!invite || isInviteExpired(invite)) return c.json({ error: 'پیدا نشد' }, 404);
   const user = getDb().users.find((u) => u.id === userId && !u.deletedAt);
   const phone = normalizeIranMobile(user?.phone);
   const email = normalizeEmail(user?.email);
@@ -996,8 +1099,9 @@ app.post('/billing/bazaar/verify', async (c) => {
       u.premiumUntil = until;
     }
   });
+  recordBillingEvent({ userId, source: 'bazaar', sku, until });
   const user = getDb().users.find((x) => x.id === userId);
-  return c.json({ ok: true, user });
+  return c.json({ ok: true, user: user ? publicUser(user) : undefined });
 });
 
 app.post('/billing/myket/verify', async (c) => {
@@ -1015,8 +1119,9 @@ app.post('/billing/myket/verify', async (c) => {
       u.premiumUntil = until;
     }
   });
+  recordBillingEvent({ userId, source: 'myket', sku, until });
   const user = getDb().users.find((x) => x.id === userId);
-  return c.json({ ok: true, user });
+  return c.json({ ok: true, user: user ? publicUser(user) : undefined });
 });
 
 app.post('/billing/zarinpal/request', async (c) => {
@@ -1025,7 +1130,7 @@ app.post('/billing/zarinpal/request', async (c) => {
   const { sku } = await c.req.json<{ sku?: string }>();
   const chosen = sku || 'premium_monthly';
   try {
-    const appUrl = process.env.APP_PUBLIC_URL || 'http://localhost:5173';
+    const appUrl = appPublicUrl();
     const result = await zarinpalRequest({
       userId,
       sku: chosen,
@@ -1046,13 +1151,13 @@ app.post('/billing/zarinpal/verify', async (c) => {
   if (!result.ok) return c.json({ error: result.error || 'تأیید نشد' }, 400);
   if (result.userId && result.userId !== userId) return c.json({ error: 'تراکنش متعلق به این حساب نیست' }, 403);
   const user = getDb().users.find((x) => x.id === userId);
-  return c.json({ ok: true, user });
+  return c.json({ ok: true, user: user ? publicUser(user) : undefined });
 });
 
 app.post('/telegram/webhook', async (c) => {
   const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
   if (secret && c.req.header('X-Telegram-Bot-Api-Secret-Token') !== secret) {
-    return c.json({ error: 'forbidden' }, 403);
+    return c.json({ error: 'دسترسی ندارید' }, 403);
   }
   const update = await c.req.json();
   const result = await handleTelegramUpdate(update);

@@ -50,14 +50,14 @@ export function parseNobitexStats(json: unknown): Record<string, number> {
   return rates;
 }
 
-export async function getFxRates(): Promise<{
+export async function getFxRates(opts?: { force?: boolean }): Promise<{
   rates: Record<string, number>;
   source: string;
   fetchedAt: string;
   missing: string[];
 }> {
   const cached = getDb().fxCache;
-  if (cached && Date.now() - new Date(cached.fetchedAt).getTime() < CACHE_MS) {
+  if (!opts?.force && cached && Date.now() - new Date(cached.fetchedAt).getTime() < CACHE_MS) {
     return {
       rates: cached.rates,
       source: 'cache',

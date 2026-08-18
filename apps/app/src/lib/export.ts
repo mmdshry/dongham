@@ -16,7 +16,7 @@ export function buildPeriodReportWorkbook(
   expenses: LocalExpense[],
   payments: LocalPayment[],
   members: LocalMember[],
-  opts?: { exportedAt?: string },
+  opts?: { exportedAt?: string; calendarMode?: 'jalali' | 'gregorian' },
 ) {
   const model = buildPeriodReportModel(period, expenses, payments, members, opts);
   return sheetsToWorkbook(buildPeriodReportSheets(model));
@@ -37,8 +37,9 @@ export function exportExcel(
   expenses: LocalExpense[],
   payments: LocalPayment[],
   members: LocalMember[],
+  opts?: { calendarMode?: 'jalali' | 'gregorian' },
 ) {
-  const wb = buildPeriodReportWorkbook(period, expenses, payments, members);
+  const wb = buildPeriodReportWorkbook(period, expenses, payments, members, opts);
   XLSX.writeFile(wb, `${period.title}.xlsx`);
 }
 
@@ -128,8 +129,9 @@ async function captureReport(
   payments: LocalPayment[],
   members: LocalMember[],
   variant: ReportVariant,
+  calendarMode?: 'jalali' | 'gregorian',
 ): Promise<HTMLCanvasElement> {
-  const html = buildPeriodReportHtml(period, expenses, payments, members, { variant });
+  const html = buildPeriodReportHtml(period, expenses, payments, members, { variant, calendarMode });
   const { root, cleanup } = mountPeriodReport(html);
   try {
     return await renderReportCanvas(root);
@@ -143,8 +145,9 @@ export async function exportPdf(
   expenses: LocalExpense[],
   payments: LocalPayment[],
   members: LocalMember[],
+  opts?: { calendarMode?: 'jalali' | 'gregorian' },
 ) {
-  const canvas = await captureReport(period, expenses, payments, members, 'full');
+  const canvas = await captureReport(period, expenses, payments, members, 'full', opts?.calendarMode);
   canvasToA4Pdf(canvas, `${period.title}.pdf`);
 }
 
@@ -153,7 +156,8 @@ export async function exportBalanceImage(
   expenses: LocalExpense[],
   payments: LocalPayment[],
   members: LocalMember[],
+  opts?: { calendarMode?: 'jalali' | 'gregorian' },
 ) {
-  const canvas = await captureReport(period, expenses, payments, members, 'full');
+  const canvas = await captureReport(period, expenses, payments, members, 'full', opts?.calendarMode);
   saveCanvasPng(canvas, `${period.title}-balance.png`);
 }

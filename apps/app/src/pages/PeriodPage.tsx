@@ -15,7 +15,8 @@ import { api, ensureProfile } from '../lib/api';
 import { decryptMaybe } from '../lib/crypto';
 import { db, POT_DISPLAY_NAME, type LocalMember, type RecurringCadence } from '../lib/db';
 import { periodAnalytics } from '../lib/analytics';
-import { copyText, formatJalaliDate, formatJalaliDateTime, formatMoney, normalizeEmail, normalizeIranMobile, toPersianDigits } from '../lib/format';
+import { useCalendarMode } from '../lib/calendarPref';
+import { copyText, formatCalendarDate, formatCalendarDateTime, formatMoney, normalizeEmail, normalizeIranMobile, toPersianDigits } from '../lib/format';
 import { fetchFxRates } from '../lib/fx';
 import { loanEquivalentNow } from '../lib/goldIndex';
 import { defaultPayout } from '../lib/payout';
@@ -85,6 +86,7 @@ export function PeriodPage() {
   const activity = useLiveQuery(() => db.activity.where('periodId').equals(id).sortBy('createdAt'), [id]) || [];
   const profile = useLiveQuery(() => db.profile.get('self'));
   const persian = profile?.usePersianDigits ?? true;
+  const calendarMode = useCalendarMode();
 
   useEffect(() => {
     void fetchFxRates().then(setFx);
@@ -111,7 +113,7 @@ export function PeriodPage() {
   const me = members.find(
     (m) => m.guestKey === profile?.guestKey || (profile?.userId && m.userId === profile.userId),
   );
-  const isOwner = me?.role === 'owner';
+  const isOwner = me?.role === 'owner' || (!!profile?.userId && period?.ownerId === profile.userId);
   const isViewer = me?.role === 'viewer' || (!me && period?.visibility === 'public');
 
   const analytics = useMemo(
@@ -393,9 +395,10 @@ export function PeriodPage() {
       };
       const { upsertExpense } = await import('../lib/sync');
       await upsertExpense(exp);
-      await db.recurring.update(rule.id, {
-        nextAt: nextRecurringAt(new Date().toISOString(), rule.cadence || 'days', rule.intervalDays),
-      });
+      const nextAt = nextRecurringAt(new Date().toISOString(), rule.cadence || 'days', rule.intervalDays);
+      const nextRule = { ...rule, nextAt };
+      await db.recurring.put(nextRule);
+      await queueOp(id, 'recurring', 'upsert', nextRule);
     }
     setToast('هزینه‌های تکراری اجرا شد');
   };
@@ -528,7 +531,7 @@ export function PeriodPage() {
                         <div className="min-w-0">
                           <p className="truncate font-semibold">{e.title}</p>
                           <p className="mt-1 truncate text-xs text-ink-700/60">
-                            {formatJalaliDate(e.occurredAt || e.createdAt)}
+                            {formatCalendarDate(e.occurredAt || e.createdAt, calendarMode, persian)}
                           </p>
                           {e.tags.length ? (
                             <ul className="mt-2 flex flex-wrap gap-1">
@@ -816,10 +819,10 @@ export function PeriodPage() {
                   <li key={a.id} className="card-surface text-sm">
                     <p className="font-semibold">{a.summary}</p>
                     <p className="mt-1 text-xs text-ink-700/60">
-                      {a.actorName} · ایجاد: {formatJalaliDateTime(createdAt)}
+                      {a.actorName} · ایجاد: {formatCalendarDateTime(createdAt, calendarMode, persian)}
                     </p>
                     {updatedAt && updatedAt !== createdAt ? (
-                      <p className="mt-0.5 text-xs text-ink-700/60">تغییر: {formatJalaliDateTime(updatedAt)}</p>
+                      <p className="mt-0.5 text-xs text-ink-700/60">تغییر: {formatCalendarDateTime(updatedAt, calendarMode, persian)}</p>
                     ) : null}
                   </li>
                 );
@@ -1006,7 +1009,7 @@ export function PeriodPage() {
                     className="btn-ghost"
                     onClick={async () => {
                       const { exportExcel } = await import('../lib/export');
-                      exportExcel(period, expenses, payments, members);
+                      exportExcel(period, expenses, payments, members, { calendarMode });
                     }}
                   >
                     Excel
@@ -1016,7 +1019,7 @@ export function PeriodPage() {
                     className="btn-ghost"
                     onClick={async () => {
                       const { exportPdf } = await import('../lib/export');
-                      await exportPdf(period, expenses, payments, members);
+                      await exportPdf(period, expenses, payments, members, { calendarMode });
                     }}
                   >
                     PDF
@@ -1026,7 +1029,7 @@ export function PeriodPage() {
                     className="btn-ghost"
                     onClick={async () => {
                       const { exportBalanceImage } = await import('../lib/export');
-                      await exportBalanceImage(period, expenses, payments, members);
+                      await exportBalanceImage(period, expenses, payments, members, { calendarMode });
                     }}
                   >
                     تصویر

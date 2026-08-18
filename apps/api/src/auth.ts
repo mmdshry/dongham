@@ -15,11 +15,48 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
   return bcrypt.compare(password, hash);
 }
 
-export async function issueToken(userId: string, deviceId: string): Promise<string> {
-  const token = await new SignJWT({ sub: userId, deviceId })
+export type TokenRole = 'admin' | 'user';
+
+export type IssuedTokenOpts = {
+  expiresIn?: string;
+  role?: TokenRole;
+  impersonatedBy?: string;
+};
+
+export function adminPhones(): string[] {
+  const raw = process.env.ADMIN_PHONES ?? '09190755375,09306057083';
+  return raw
+    .split(',')
+    .map((s) => normalizeIranMobile(s.trim()))
+    .filter((p): p is string => Boolean(p));
+}
+
+export function extraAdminPhones(): string[] {
+  return (getDb().platformSettings?.extraAdminPhones || [])
+    .map((s) => normalizeIranMobile(s))
+    .filter((p): p is string => Boolean(p));
+}
+
+export function isAdminPhone(phone?: string): boolean {
+  const local = normalizeIranMobile(phone);
+  if (!local) return false;
+  return adminPhones().includes(local) || extraAdminPhones().includes(local);
+}
+
+export function revokeSession(token: string): void {
+  mutate((db) => {
+    db.sessions = db.sessions.filter((s) => s.token !== token);
+  });
+}
+
+export async function issueToken(userId: string, deviceId: string, opts?: IssuedTokenOpts): Promise<string> {
+  const claims: Record<string, unknown> = { sub: userId, deviceId };
+  if (opts?.role === 'admin') claims.role = 'admin';
+  if (opts?.impersonatedBy) claims.impersonatedBy = opts.impersonatedBy;
+  const token = await new SignJWT(claims)
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
-    .setExpirationTime('30d')
+    .setExpirationTime(opts?.expiresIn || '30d')
     .sign(secret());
   mutate((db) => {
     db.sessions.push({
@@ -33,26 +70,23 @@ export async function issueToken(userId: string, deviceId: string): Promise<stri
   return token;
 }
 
-export async function verifyToken(token: string): Promise<{ userId: string; deviceId: string } | null> {
+export async function verifyToken(token: string): Promise<{
+  userId: string;
+  deviceId: string;
+  role: TokenRole;
+  impersonatedBy?: string;
+} | null> {
   try {
     const { payload } = await jwtVerify(token, secret());
     if (!payload.sub || typeof payload.deviceId !== 'string') return null;
     const db = getDb();
     const user = db.users.find((u) => u.id === payload.sub && !u.deletedAt);
-    if (!user) return null;
+    if (!user || user.bannedAt) return null;
     const session = db.sessions.find((s) => s.token === token && s.userId === payload.sub);
-    if (!session) {
-      mutate((d) => {
-        d.sessions.push({
-          id: nanoid(),
-          userId: payload.sub as string,
-          deviceId: payload.deviceId as string,
-          token,
-          createdAt: new Date().toISOString(),
-        });
-      });
-    }
-    return { userId: payload.sub, deviceId: payload.deviceId };
+    if (!session) return null;
+    const role: TokenRole = payload.role === 'admin' ? 'admin' : 'user';
+    const impersonatedBy = typeof payload.impersonatedBy === 'string' ? payload.impersonatedBy : undefined;
+    return { userId: payload.sub, deviceId: payload.deviceId, role, impersonatedBy };
   } catch {
     return null;
   }
@@ -103,6 +137,18 @@ async function sendKavenegar(phone: string, code: string): Promise<void> {
   }
 }
 
+const SENATOR_ERRORS: Record<number, string> = {
+  400: 'خطای سامانه پیامک',
+  401: 'نوع ارسال پیامک نامعتبر است',
+  402: 'کلید API پیامک نامعتبر است',
+  403: 'موجودی پنل پیامک کافی نیست',
+  404: 'کد پیامک نامعتبر است',
+  405: 'شماره موبایل برای پیامک نامعتبر است',
+  406: 'قالب پیامک نامعتبر است',
+  407: 'حساب در ربات پیامک سناتور ثبت نشده است',
+  500: 'حساب پیامک مسدود است',
+};
+
 async function sendSenator(phone: string, code: string): Promise<void> {
   const key = process.env.SENATOR_API_KEY;
   if (!key) throw new Error('SENATOR_API_KEY missing');
@@ -117,10 +163,45 @@ async function sendSenator(phone: string, code: string): Promise<void> {
   url.searchParams.set('phone', local);
   url.searchParams.set('template', template);
   const res = await fetch(url);
-  const json = (await res.json().catch(() => ({}))) as { ok?: boolean; status?: string; message?: string };
-  if (!res.ok || !json.ok || json.status !== 'successfully') {
-    console.error('[senator sms]', json.message || json.status || res.status);
-    throw new Error('ارسال پیامک ناموفق بود');
+  const json = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    status?: string;
+    message?: string;
+    result?: { error_code?: number; Tracking_code?: string; code?: string };
+  };
+  const errorCode = json.result?.error_code;
+  if (!res.ok || !json.ok || json.status !== 'successfully' || !json.result?.Tracking_code) {
+    console.error('[senator sms]', errorCode || json.message || json.status || res.status, json.result);
+    throw new Error((errorCode && SENATOR_ERRORS[errorCode]) || 'ارسال پیامک ناموفق بود');
+  }
+  console.log(`[senator sms] sent phone=${local} tracking=${json.result.Tracking_code}`);
+}
+
+export async function fetchSenatorAmount(): Promise<{
+  configured: boolean;
+  amount?: number;
+  error?: string;
+}> {
+  const key = process.env.SENATOR_API_KEY;
+  if (!key) return { configured: false };
+  try {
+    const base = process.env.SENATOR_SMS_URL || 'https://api.fast-creat.ir/sms';
+    const url = new URL(base);
+    url.searchParams.set('apikey', key);
+    url.searchParams.set('type', 'amount');
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    const json = (await res.json().catch(() => ({}))) as {
+      ok?: boolean;
+      message?: string;
+      result?: { amount?: number | string };
+    };
+    const amount = Number(json.result?.amount);
+    if (!res.ok || json.ok === false || !Number.isFinite(amount)) {
+      return { configured: true, error: json.message || 'موجودی خوانده نشد' };
+    }
+    return { configured: true, amount };
+  } catch {
+    return { configured: true, error: 'خطا در ارتباط با سناتور' };
   }
 }
 
@@ -128,9 +209,7 @@ async function sendSenator(phone: string, code: string): Promise<void> {
 export async function sendOtp(phone: string): Promise<string> {
   const local = normalizeIranMobile(phone);
   if (!local) throw new Error('شماره موبایل نامعتبر است');
-  const existing = getDb().otps.find((o) => o.phone === local && o.expiresAt > Date.now());
-  const code = existing?.code || String(Math.floor(100000 + Math.random() * 900000));
-  storeOtp(local, code);
+  const code = String(Math.floor(100000 + Math.random() * 900000));
   const provider = otpProvider();
   try {
     if (provider === 'senator') {
@@ -148,6 +227,7 @@ export async function sendOtp(phone: string): Promise<string> {
     console.error('[otp send]', err instanceof Error ? err.message : err);
     throw err;
   }
+  storeOtp(local, code);
   return code;
 }
 

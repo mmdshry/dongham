@@ -1,5 +1,8 @@
-/**
- * Cafe Bazaar purchase verification.
+import { nanoid } from 'nanoid';
+import { getDb, mutate } from './db.js';
+import type { BillingEvent } from './types.js';
+
+/** Cafe Bazaar / Myket purchase verification.
  * Production: BAZAAR_API_TOKEN + developer API.
  * Tests/dev: tokens starting with "dev-" are accepted when no token is configured.
  */
@@ -35,6 +38,28 @@ export async function verifyBazaarPurchase(input: {
 
 export function premiumUntilFromNow(days = 30): string {
   return new Date(Date.now() + days * 86400_000).toISOString();
+}
+
+export function recordBillingEvent(input: {
+  userId: string;
+  source: BillingEvent['source'];
+  sku?: string;
+  amount?: number;
+  until: string;
+}): void {
+  mutate((db) => {
+    if (!db.billingEvents) db.billingEvents = [];
+    db.billingEvents.unshift({
+      id: nanoid(),
+      userId: input.userId,
+      source: input.source,
+      sku: input.sku,
+      amount: input.amount,
+      until: input.until,
+      createdAt: new Date().toISOString(),
+    });
+    if (db.billingEvents.length > 5000) db.billingEvents = db.billingEvents.slice(0, 5000);
+  });
 }
 
 export async function verifyMyketPurchase(input: {

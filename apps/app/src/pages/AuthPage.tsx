@@ -4,21 +4,13 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Shell } from '../components/ui';
 import { ConfirmDialog } from '../components/Dialog';
 import { api, ensureProfile, getDeviceId, updateProfile } from '../lib/api';
+import { applyAuthSession, rememberUserId, type AuthUser, type CloudProfile } from '../lib/cloudProfile';
 import { db } from '../lib/db';
 import { normalizeIranMobile, normalizeOtpCode, toPersianDigits } from '../lib/format';
 import { googleClientId, loadGis } from '../lib/googleAuth';
 import { flushOutbox, pullCloud } from '../lib/sync';
 import { usePersianDigits } from '../lib/usePersianDigits';
 import { useUiStore } from '../store/ui';
-
-type AuthUser = {
-  id: string;
-  displayName: string;
-  phone?: string;
-  email?: string;
-  plan?: 'free' | 'premium';
-  premiumUntil?: string;
-};
 
 export function AuthPage() {
   const navigate = useNavigate();
@@ -38,21 +30,39 @@ export function AuthPage() {
   const googleBtnRef = useRef<HTMLDivElement>(null);
   const clientId = googleClientId();
 
-  const applySession = async (res: { token: string; user: AuthUser }, toast: string) => {
-    await updateProfile({
-      token: res.token,
-      userId: res.user.id,
-      displayName: res.user.displayName,
-      phone: res.user.phone,
-      email: res.user.email,
-      plan: res.user.plan || 'free',
-      premiumUntil: res.user.premiumUntil,
-    });
+  const applySession = async (
+    res: { token: string; user: AuthUser; profile?: CloudProfile },
+    toast: string,
+  ) => {
+    await applyAuthSession(res);
     await flushOutbox();
     await pullCloud();
     setToast(toast);
-    navigate(searchParams.get('next') || '/', { replace: true });
+    const next = searchParams.get('next') || '/';
+    navigate(next, { replace: true });
   };
+
+  useEffect(() => {
+    const imp = searchParams.get('imp');
+    if (!imp) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await api<{ token: string; user: AuthUser }>('/auth/impersonate/consume', {
+          method: 'POST',
+          body: JSON.stringify({ code: imp, deviceId: await getDeviceId() }),
+        });
+        if (cancelled) return;
+        await applySession(res, 'ورود پشتیبانی');
+      } catch (e) {
+        if (!cancelled) setToast(e instanceof Error ? e.message : 'ورود پشتیبانی ناموفق بود');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   useEffect(() => {
     if (!clientId || profile?.token) return;
@@ -169,13 +179,21 @@ export function AuthPage() {
   };
 
   const logout = async () => {
+    try {
+      await api('/auth/logout', { method: 'POST' });
+    } catch {
+      /* already invalid */
+    }
+    const current = await ensureProfile();
+    await rememberUserId(current.userId);
     await updateProfile({ token: undefined, userId: undefined });
     setToast('خارج شدید — داده محلی باقی است');
   };
 
   const deleteAccount = async () => {
     try {
-      await ensureProfile();
+      const current = await ensureProfile();
+      await rememberUserId(current.userId);
       await api('/auth/delete-account', { method: 'POST' });
       await updateProfile({ token: undefined, userId: undefined, phone: undefined, email: undefined });
       setToast('حساب حذف شد');

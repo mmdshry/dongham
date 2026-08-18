@@ -1,3 +1,4 @@
+import { isPremium as isPremiumEntitlement } from '@dongham/ledger';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { api, updateProfile } from './api';
 import type { LocalProfile } from './db';
@@ -15,10 +16,7 @@ export const PREMIUM_SKU_YEARLY = 'premium_yearly';
 export const PREMIUM_SKU = PREMIUM_SKU_MONTHLY;
 
 export function isPremium(profile?: LocalProfile | null): boolean {
-  if (!profile) return false;
-  if (profile.plan !== 'premium') return false;
-  if (!profile.premiumUntil) return false;
-  return new Date(profile.premiumUntil).getTime() > Date.now();
+  return isPremiumEntitlement(profile);
 }
 
 async function applyUser(user: { plan?: string; premiumUntil?: string }) {

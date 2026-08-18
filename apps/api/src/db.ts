@@ -25,6 +25,10 @@ const emptyDb = (): DbShape => ({
   zarinpalPending: [],
   telegramLinks: [],
   shebaLookups: [],
+  adminAudit: [],
+  impersonationTickets: [],
+  billingEvents: [],
+  platformSettings: { extraAdminPhones: [] },
 });
 
 export function loadDb(): DbShape {

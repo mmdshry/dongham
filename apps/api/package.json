@@ -15,7 +15,7 @@
     "jose": "^6.0.10",
     "nanoid": "^5.1.5",
     "pg": "^8.14.1",
-    "@dongham/ledger": "workspace:*"
+    "@dongham/ledger": "*"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

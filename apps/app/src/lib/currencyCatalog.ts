@@ -239,8 +239,8 @@ export function browseRateCurrencies(
   return list.filter((c) => c.code === 'IRR' || (rates[c.code] || 0) > 0);
 }
 
-/** Displayed toman-per-unit. IRR is always 1. */
+/** Displayed toman-per-unit. 1 IRR = 0.1 IRT. */
 export function displayTomanRate(code: string, rate?: number): number {
-  if (code === 'IRR') return 1;
+  if (code === 'IRR') return 0.1;
   return rate && rate > 0 ? rate : 0;
 }

@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import { computeBalances, parseExpenseText } from '@dongham/ledger';
 import { bumpPeriodVersion, getDb, mutate } from './db.js';
+import { appPublicUrl, inviteExpiresAt, isInviteExpired, telegramMiniAppInviteUrl } from './publicUrl.js';
 
 const BOT = () => process.env.TELEGRAM_BOT_TOKEN || '';
 
@@ -12,6 +13,12 @@ type TgUpdate = {
   };
 };
 
+function inviteReply(token: string): string {
+  const web = `${appPublicUrl()}/i/${token}`;
+  const mini = telegramMiniAppInviteUrl(token);
+  return mini ? `دعوت وب: ${web}\nمینی‌اپ: ${mini}` : `دعوت: ${web}`;
+}
+
 export async function handleTelegramUpdate(update: TgUpdate): Promise<{ ok: boolean; reply?: string }> {
   const msg = update.message;
   const text = msg?.text?.trim();
@@ -19,10 +26,13 @@ export async function handleTelegramUpdate(update: TgUpdate): Promise<{ ok: bool
   if (!text || chatId == null) return { ok: true };
 
   if (text.startsWith('/start')) {
-    const app = process.env.APP_PUBLIC_URL || 'https://app.dongham.ir';
+    const app = appPublicUrl();
+    const miniHint = telegramMiniAppInviteUrl('TOKEN')
+      ? '\nدعوت مینی‌اپ: لینک /invite هم startapp می‌فرستد.'
+      : '';
     return {
       ok: true,
-      reply: `دونگ‌هام — دفتر حساب گروهی.\nوب‌اپ: ${app}\nبرای اتصال این چت به یک دوره: /link TOKEN\nحساب: /balance\nثبت هزینه: «علی ناهار ۵۰۰۰۰۰»`,
+      reply: `دونگ‌هام — دفتر حساب گروهی.\nوب‌اپ: ${app}\nبرای اتصال این چت به یک دوره: /link TOKEN\nحساب: /balance\nثبت هزینه: «علی ناهار ۵۰۰۰۰۰»${miniHint}`,
     };
   }
 
@@ -30,11 +40,15 @@ export async function handleTelegramUpdate(update: TgUpdate): Promise<{ ok: bool
     const token = text.split(/\s+/)[1];
     if (!token) return { ok: true, reply: 'نمونه: /link abc123' };
     const invite = getDb().invites.find((i) => i.token === token);
-    if (!invite) return { ok: true, reply: 'دعوت پیدا نشد' };
+    if (!invite || isInviteExpired(invite)) return { ok: true, reply: 'دعوت پیدا نشد' };
+    const members = getDb().members.filter((m) => m.periodId === invite.periodId && !m.isPot);
+    const fromName = update.message?.from?.first_name;
+    const payerMemberId =
+      (fromName && members.find((m) => m.displayName.includes(fromName))?.id) || members[0]?.id;
     mutate((db) => {
       db.telegramLinks = db.telegramLinks || [];
       db.telegramLinks = db.telegramLinks.filter((l) => l.chatId !== String(chatId));
-      db.telegramLinks.push({ chatId: String(chatId), periodId: invite.periodId });
+      db.telegramLinks.push({ chatId: String(chatId), periodId: invite.periodId, payerMemberId });
     });
     const period = getDb().periods.find((p) => p.id === invite.periodId);
     return { ok: true, reply: `چت به دوره «${period?.title || invite.periodId}» وصل شد.` };
@@ -78,8 +92,7 @@ export async function handleTelegramUpdate(update: TgUpdate): Promise<{ ok: bool
       const label = bal > 0 ? 'طلبکار' : bal < 0 ? 'بدهکار' : 'تسویه';
       return `${m.displayName}: ${bal} (${label})`;
     });
-    const app = process.env.APP_PUBLIC_URL || 'https://app.dongham.ir';
-    return { ok: true, reply: `${lines.join('\n') || 'عضوی نیست'}\nحساب کامل: ${app}` };
+    return { ok: true, reply: `${lines.join('\n') || 'عضوی نیست'}\nحساب کامل: ${appPublicUrl()}` };
   }
 
   if (text.startsWith('/invite')) {
@@ -91,20 +104,26 @@ export async function handleTelegramUpdate(update: TgUpdate): Promise<{ ok: bool
         periodId: link.periodId,
         createdBy: 'telegram',
         createdAt: new Date().toISOString(),
+        expiresAt: inviteExpiresAt(),
       });
     });
-    const app = process.env.APP_PUBLIC_URL || 'https://app.dongham.ir';
-    return { ok: true, reply: `دعوت: ${app}/i/${token}` };
+    return { ok: true, reply: inviteReply(token) };
   }
 
   const parsed = parseExpenseText(text);
   if (parsed && link) {
     const db = getDb();
-    const members = db.members.filter((m) => m.periodId === link.periodId && !m.isPot);
+    const people = db.members.filter((m) => m.periodId === link.periodId && !m.isPot);
+    const shareMembers = people.filter((m) => !m.excludeFromNew);
+    const linkedPayer = link.payerMemberId ? people.find((m) => m.id === link.payerMemberId) : undefined;
     const payer =
-      (parsed.payerName && members.find((m) => m.displayName.includes(parsed.payerName!))) || members[0];
+      (parsed.payerName && people.find((m) => m.displayName.includes(parsed.payerName!))) ||
+      linkedPayer ||
+      people[0];
     if (!payer) return { ok: true, reply: 'عضوی در دوره نیست.' };
+    const splitPeople = shareMembers.length ? shareMembers : people;
     const expenseId = nanoid();
+    const now = new Date().toISOString();
     mutate((d) => {
       d.expenses.push({
         id: expenseId,
@@ -114,17 +133,38 @@ export async function handleTelegramUpdate(update: TgUpdate): Promise<{ ok: bool
         currency: d.periods.find((p) => p.id === link.periodId)?.currency || 'IRT',
         payerId: payer.id,
         splitMode: 'equal',
-        shares: members.map((m) => ({ memberId: m.id, value: 1 })),
+        shares: splitPeople.map((m) => ({ memberId: m.id, value: 1 })),
         tax: { type: 'none', value: 0 },
         service: { type: 'none', value: 0 },
         tip: { type: 'none', value: 0 },
         tags: ['تلگرام'],
         fxRate: 1,
-        createdAt: new Date().toISOString(),
-        occurredAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: now,
+        occurredAt: now,
+        updatedAt: now,
         version: 1,
       });
+      if (!d.activity) d.activity = [];
+      d.activity.push({
+        id: nanoid(),
+        periodId: link.periodId,
+        actorName: 'تلگرام',
+        action: 'expense.upsert',
+        summary: `ثبت هزینه از تلگرام: ${parsed.title}`,
+        createdAt: now,
+        entityId: expenseId,
+      });
+      const periodTitle = d.periods.find((p) => p.id === link.periodId)?.title || link.periodId;
+      for (const m of d.members.filter((x) => x.periodId === link.periodId && x.userId)) {
+        d.notifications.push({
+          id: nanoid(),
+          userId: m.userId!,
+          title: 'هزینه تلگرام',
+          body: `«${parsed.title}» در دوره «${periodTitle}» ثبت شد`,
+          read: false,
+          createdAt: now,
+        });
+      }
       bumpPeriodVersion(d, link.periodId);
     });
     return { ok: true, reply: `ثبت شد: ${parsed.title} — ${parsed.amount} (پرداخت‌کننده: ${payer.displayName})` };
@@ -141,4 +181,3 @@ export async function telegramSend(chatId: string | number, text: string) {
     body: JSON.stringify({ chat_id: chatId, text }),
   }).catch(() => undefined);
 }
-

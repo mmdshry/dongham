@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import { app } from './app.js';
-import { resetDb } from './db.js';
+import { getDb, mutate, resetDb } from './db.js';
 
 async function json(res: Response) {
   return res.json();
@@ -283,7 +283,13 @@ describe('api auth & sync', () => {
     await app.request('/telegram/webhook', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: { chat: { id: 99, type: 'group' }, text: `/link ${inviteToken}` } }),
+      body: JSON.stringify({
+        message: {
+          chat: { id: 99, type: 'group' },
+          text: `/link ${inviteToken}`,
+          from: { first_name: 'علی' },
+        },
+      }),
     });
 
     const exp = await app.request('/telegram/webhook', {
@@ -298,6 +304,8 @@ describe('api auth & sync', () => {
     const body = (await json(snap)) as { expenses: { title: string }[]; version: number };
     expect(body.expenses.some((e) => e.title === 'ناهار')).toBe(true);
     expect(body.version).toBe(2);
+    expect(getDb().activity.some((a) => a.periodId === period.id && a.action === 'expense.upsert')).toBe(true);
+    expect(getDb().telegramLinks?.find((l) => l.chatId === '99')?.payerMemberId).toBeTruthy();
 
     const { handleTelegramUpdate } = await import('./telegram.js');
     const bal = await handleTelegramUpdate({
@@ -576,7 +584,7 @@ describe('api auth & sync', () => {
     expect(dupEmail.status).toBe(409);
   });
 
-  it('accepts a valid jwt after sessions are lost', async () => {
+  it('rejects a jwt after the session is revoked', async () => {
     const req = await app.request('/auth/otp/request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -594,12 +602,11 @@ describe('api auth & sync', () => {
       }),
     });
     const { token } = (await json(verify)) as { token: string };
-    const { mutate } = await import('./db.js');
     mutate((d) => {
       d.sessions = [];
     });
     const listed = await app.request('/friends', { headers: { Authorization: `Bearer ${token}` } });
-    expect(listed.status).toBe(200);
+    expect(listed.status).toBe(401);
   });
 });
 
@@ -810,5 +817,144 @@ describe('period conflict and tombstones', () => {
     });
     const runSnap = (await json(afterRun)) as { version: number };
     expect(runSnap.version).toBe(4);
+  });
+
+  it('syncs profile prefs and payout methods on /auth/me', async () => {
+    const req = await app.request('/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09123334444' }),
+    });
+    const { devCode } = (await json(req)) as { devCode: string };
+    const verify = await app.request('/auth/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09123334444', code: devCode, displayName: 'سارا', deviceId: 'dev-p' }),
+    });
+    const session = (await json(verify)) as {
+      token: string;
+      user: { id: string; passwordHash?: string };
+      profile: { usePersianDigits: boolean; payoutMethods: { cardNumber: string }[] };
+    };
+    expect(session.user.passwordHash).toBeUndefined();
+    expect(session.profile.payoutMethods).toBeUndefined();
+
+    const put = await app.request('/auth/me', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({
+        displayName: 'سارا ک.',
+        usePersianDigits: false,
+        debtReminders: false,
+        calendarMode: 'gregorian',
+        fxWatchlist: ['USD', 'EUR', 'IRT'],
+        payoutMethods: [
+          {
+            id: 'card1',
+            cardNumber: '6037991111111112',
+            sheba: 'IR060170000000000000000000',
+            cardHolderName: 'سارا',
+            bankName: 'ملی',
+            isDefault: true,
+          },
+        ],
+      }),
+    });
+    expect(put.status).toBe(200);
+    const saved = (await json(put)) as {
+      user: { displayName: string };
+      profile: {
+        usePersianDigits: boolean;
+        debtReminders: boolean;
+        calendarMode: string;
+        fxWatchlist: string[];
+        payoutMethods: { cardNumber: string; sheba?: string }[];
+        prefsUpdatedAt?: string;
+      };
+    };
+    expect(saved.user.displayName).toBe('سارا ک.');
+    expect(saved.profile.usePersianDigits).toBe(false);
+    expect(saved.profile.debtReminders).toBe(false);
+    expect(saved.profile.calendarMode).toBe('gregorian');
+    expect(saved.profile.fxWatchlist).toEqual(['USD', 'EUR']);
+    expect(saved.profile.payoutMethods[0]?.cardNumber).toBe('6037991111111112');
+    expect(saved.profile.prefsUpdatedAt).toBeTruthy();
+
+    const me = await app.request('/auth/me', {
+      headers: { Authorization: `Bearer ${session.token}` },
+    });
+    const body = (await json(me)) as {
+      user: { passwordHash?: string; payoutMethods?: unknown };
+      profile: { payoutMethods: { cardNumber: string }[] };
+    };
+    expect(me.status).toBe(200);
+    expect(body.user.passwordHash).toBeUndefined();
+    expect(body.user.payoutMethods).toBeUndefined();
+    expect(body.profile.payoutMethods[0]?.cardNumber).toBe('6037991111111112');
+
+    const prefsOnly = await app.request('/auth/me', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({ usePersianDigits: true }),
+    });
+    const prefsBody = (await json(prefsOnly)) as { profile: { payoutMethods: { cardNumber: string }[] } };
+    expect(prefsBody.profile.payoutMethods[0]?.cardNumber).toBe('6037991111111112');
+  });
+
+  it('revokes the session on logout', async () => {
+    const req = await app.request('/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09120001111' }),
+    });
+    const { devCode } = (await json(req)) as { devCode: string };
+    const verify = await app.request('/auth/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09120001111', code: devCode, displayName: 'خروج', deviceId: 'logout-dev' }),
+    });
+    const { token } = (await json(verify)) as { token: string };
+    const out = await app.request('/auth/logout', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(out.status).toBe(200);
+    const me = await app.request('/auth/me', { headers: { Authorization: `Bearer ${token}` } });
+    expect(me.status).toBe(401);
+    expect(getDb().sessions.some((s) => s.token === token)).toBe(false);
+  });
+
+  it('downgrades expired premium on /auth/me', async () => {
+    const req = await app.request('/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09120002222' }),
+    });
+    const { devCode } = (await json(req)) as { devCode: string };
+    const verify = await app.request('/auth/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09120002222', code: devCode, displayName: 'منقضی', deviceId: 'exp-dev' }),
+    });
+    const session = (await json(verify)) as { token: string; user: { id: string } };
+    mutate((d) => {
+      const row = d.users.find((u) => u.id === session.user.id);
+      if (row) {
+        row.plan = 'premium';
+        row.premiumUntil = '2020-01-01T00:00:00.000Z';
+      }
+    });
+    const me = await app.request('/auth/me', { headers: { Authorization: `Bearer ${session.token}` } });
+    const body = (await json(me)) as { user: { plan: string }; profile: { plan: string } };
+    expect(me.status).toBe(200);
+    expect(body.user.plan).toBe('free');
+    expect(body.profile.plan).toBe('free');
+    expect(getDb().users.find((u) => u.id === session.user.id)?.plan).toBe('free');
   });
 });

@@ -3,6 +3,9 @@ import { computeShares, validateShares, splitEqual, splitByWeight, splitExact, s
 import { applyTax, expenseTotal, roundMoney, roundToStep, toBaseCurrency } from './money.js';
 
 export type * from './types.js';
+export { isPremium, expirePremium } from './premium.js';
+export type { PremiumLike } from './premium.js';
+export { sanitizeFxWatchlist } from './fx-watchlist.js';
 export type { PeriodVisibility } from './period-id.js';
 export { isPeriodId, newPeriodId, periodIdFromLegacy, migratePeriodIds } from './period-id.js';
 export {

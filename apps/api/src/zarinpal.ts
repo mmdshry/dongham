@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import { getDb, mutate } from './db.js';
-import { premiumUntilFromNow } from './billing.js';
+import { premiumUntilFromNow, recordBillingEvent } from './billing.js';
+import { appPublicUrl } from './publicUrl.js';
 
 const SKU_RIAL: Record<string, number> = {
   premium_monthly: Number(process.env.ZARINPAL_MONTHLY_RIAL || 490_000),
@@ -51,7 +52,7 @@ export async function zarinpalRequest(input: {
         createdAt: new Date().toISOString(),
       });
     });
-    const appUrl = process.env.APP_PUBLIC_URL || 'http://localhost:5173';
+    const appUrl = appPublicUrl();
     return {
       authority,
       url: `${appUrl}/more?Authority=${authority}&Status=OK`,
@@ -95,7 +96,7 @@ export async function zarinpalVerify(input: {
   if (!pending) return { ok: false, error: 'تراکنش پیدا نشد' };
 
   if (!merchantId() && input.authority.startsWith('dev-')) {
-    applyPremium(pending.userId, pending.sku);
+    applyPremium(pending.userId, pending.sku, pending.amount);
     return { ok: true, userId: pending.userId, sku: pending.sku };
   }
 
@@ -112,11 +113,11 @@ export async function zarinpalVerify(input: {
   if (json.data?.code !== 100 && json.data?.code !== 101) {
     return { ok: false, error: 'تأیید زرین‌پال ناموفق بود' };
   }
-  applyPremium(pending.userId, pending.sku);
+  applyPremium(pending.userId, pending.sku, pending.amount);
   return { ok: true, userId: pending.userId, sku: pending.sku };
 }
 
-function applyPremium(userId: string, sku: string) {
+function applyPremium(userId: string, sku: string, amount?: number) {
   const until = premiumUntilFromNow(skuDays(sku));
   mutate((db) => {
     const u = db.users.find((x) => x.id === userId);
@@ -126,4 +127,5 @@ function applyPremium(userId: string, sku: string) {
     }
     db.zarinpalPending = (db.zarinpalPending || []).filter((p) => p.userId !== userId || p.sku !== sku);
   });
+  recordBillingEvent({ userId, source: 'zarinpal', sku, amount, until });
 }

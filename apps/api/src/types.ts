@@ -20,6 +20,17 @@ export type {
   SplitMode,
 };
 
+export interface UserPayoutMethod {
+  id: string;
+  label?: string;
+  cardNumber: string;
+  sheba?: string;
+  cardHolderName?: string;
+  bankName?: string;
+  accountNumber?: string;
+  isDefault?: boolean;
+}
+
 export interface UserRecord {
   id: string;
   phone?: string;
@@ -29,8 +40,15 @@ export interface UserRecord {
   displayName: string;
   createdAt: string;
   deletedAt?: string;
+  bannedAt?: string;
   plan?: 'free' | 'premium';
   premiumUntil?: string;
+  usePersianDigits?: boolean;
+  debtReminders?: boolean;
+  calendarMode?: 'jalali' | 'gregorian';
+  fxWatchlist?: string[];
+  payoutMethods?: UserPayoutMethod[];
+  prefsUpdatedAt?: string;
 }
 
 export interface DeviceSession {
@@ -176,6 +194,40 @@ export interface ActivityRecord {
   entityId?: string;
 }
 
+export interface AdminAuditRecord {
+  id: string;
+  actorUserId: string;
+  actorPhone?: string;
+  action: string;
+  targetType: string;
+  targetId: string;
+  summary: string;
+  createdAt: string;
+}
+
+export interface ImpersonationTicket {
+  code: string;
+  userId: string;
+  actorUserId: string;
+  expiresAt: number;
+  token?: string;
+  consumedAt?: number;
+}
+
+export interface BillingEvent {
+  id: string;
+  userId: string;
+  source: 'bazaar' | 'myket' | 'zarinpal' | 'admin';
+  sku?: string;
+  amount?: number;
+  until: string;
+  createdAt: string;
+}
+
+export interface PlatformSettings {
+  extraAdminPhones?: string[];
+}
+
 export interface FxCacheRecord {
   rates: Record<string, number>;
   fetchedAt: string;
@@ -239,6 +291,10 @@ export interface DbShape {
   }[];
   telegramLinks?: { chatId: string; periodId: string; payerMemberId?: string }[];
   shebaLookups?: ShebaLookupDay[];
+  adminAudit?: AdminAuditRecord[];
+  impersonationTickets?: ImpersonationTicket[];
+  billingEvents?: BillingEvent[];
+  platformSettings?: PlatformSettings;
 }
 
 export interface ShebaLookupCache {

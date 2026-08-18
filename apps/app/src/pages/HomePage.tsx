@@ -10,7 +10,8 @@ import { MemberPicker } from '../components/MemberPicker';
 import { db } from '../lib/db';
 import { globalDebts } from '../lib/analytics';
 import { fetchFxRates, type FxRates } from '../lib/fx';
-import { formatJalaliDate, formatMoney, toLatinDigits } from '../lib/format';
+import { formatCalendarDate, formatMoney, toLatinDigits } from '../lib/format';
+import { useCalendarMode } from '../lib/calendarPref';
 import { currencyLabel } from '../lib/currencies';
 import { scheduleDebtReminders } from '../lib/reminders';
 import { applyPeriodSnapshot, createPeriodLocal } from '../lib/sync';
@@ -49,6 +50,7 @@ export function HomePage() {
   const expenses = useLiveQuery(() => db.expenses.toArray(), []) || [];
   const payments = useLiveQuery(() => db.payments.toArray(), []) || [];
   const profile = useLiveQuery(() => db.profile.get('self'));
+  const calendarMode = useCalendarMode();
   const outbox = useLiveQuery(() => db.outbox.toArray(), []) || [];
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState('');
@@ -206,7 +208,7 @@ export function HomePage() {
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="text-lg font-bold text-ink-900">{p.title}</p>
-                    <p className="mt-1 text-xs text-ink-700/60">{formatJalaliDate(p.updatedAt)}</p>
+                    <p className="mt-1 text-xs text-ink-700/60">{formatCalendarDate(p.updatedAt, calendarMode)}</p>
                   </div>
                   <span className="rounded-full bg-brand-100 px-2.5 py-1 text-[11px] font-semibold text-brand-800">
                     {currencyLabel(p.currency)}

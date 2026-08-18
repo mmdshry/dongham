@@ -43,6 +43,9 @@ export interface LocalProfile {
   plan?: 'free' | 'premium';
   premiumUntil?: string;
   debtReminders?: boolean;
+  calendarMode?: 'jalali' | 'gregorian';
+  prefsUpdatedAt?: string;
+  payoutDirty?: boolean;
 }
 
 export interface LocalPeriod {
@@ -63,6 +66,7 @@ export interface LocalPeriod {
   buildingCharge?: number;
   lunchTurnMemberId?: string;
   visibility?: 'private' | 'public';
+  ownerId?: string;
 }
 
 export interface LocalMember {
@@ -298,6 +302,14 @@ class DonghamDB extends Dexie {
         .toCollection()
         .modify((p: LocalPeriod) => {
           if (!p.visibility) p.visibility = 'private';
+        });
+    });
+    this.version(5).upgrade(async (tx) => {
+      await tx
+        .table('profile')
+        .toCollection()
+        .modify((p: LocalProfile) => {
+          if (!p.calendarMode) p.calendarMode = 'jalali';
         });
     });
   }

@@ -10,27 +10,9 @@ import {
   shiftCalendarMonth,
 } from '../lib/jalali';
 import { formatCalendarDate, toPersianDigits } from '../lib/format';
+import { readCalendarMode, writeCalendarMode } from '../lib/calendarPref';
+import { updateAccountPrefs } from '../lib/cloudProfile';
 import { usePersianDigits } from '../lib/usePersianDigits';
-
-const STORAGE_KEY = 'dongham.calendar';
-
-function readCalendarMode(): CalendarMode {
-  try {
-    const v = localStorage.getItem(STORAGE_KEY);
-    if (v === 'gregorian' || v === 'jalali') return v;
-  } catch {
-    /* ignore */
-  }
-  return 'jalali';
-}
-
-function writeCalendarMode(mode: CalendarMode) {
-  try {
-    localStorage.setItem(STORAGE_KEY, mode);
-  } catch {
-    /* ignore */
-  }
-}
 
 export function JalaliDatePicker({
   iso,
@@ -90,6 +72,7 @@ export function JalaliDatePicker({
   const switchMode = (next: CalendarMode) => {
     setMode(next);
     writeCalendarMode(next);
+    void updateAccountPrefs({ calendarMode: next });
   };
 
   return (

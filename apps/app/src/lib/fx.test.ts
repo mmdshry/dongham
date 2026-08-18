@@ -19,7 +19,7 @@ describe('rateToPeriod', () => {
 describe('parseWatchlist', () => {
   it('starts empty and drops IRT duplicates', () => {
     expect(parseWatchlist(undefined)).toEqual([]);
-    expect(parseWatchlist('["usd","USD","IRT","eur"]')).toEqual(['USD', 'EUR']);
+    expect(parseWatchlist('["usd","USD","IRT","IRR","eur"]')).toEqual(['USD', 'EUR']);
     expect(parseWatchlist('nope')).toEqual([]);
   });
 });
@@ -30,7 +30,7 @@ describe('browseRateCurrencies', () => {
     expect(listed.map((c) => c.code)).toEqual(expect.arrayContaining(['USD', 'EUR']));
     expect(listed.find((c) => c.code === 'USD')?.nameFa).toBe('دلار آمریکا');
     expect(browseRateCurrencies('', { USD: 186400 }, ['USD']).map((c) => c.code)).toContain('IRR');
-    expect(displayTomanRate('IRR', 999)).toBe(1);
+    expect(displayTomanRate('IRR', 999)).toBe(0.1);
     expect(displayTomanRate('USD', 186400)).toBe(186400);
   });
 });

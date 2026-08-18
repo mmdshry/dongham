@@ -57,6 +57,29 @@ export async function defaultPayout(profile?: LocalProfile | null): Promise<Decr
   return list.find((m) => m.isDefault) || list[0];
 }
 
+export async function syncSelfPayoutToMembers(): Promise<void> {
+  const profile = await db.profile.get('self');
+  if (!profile) return;
+  const def = await defaultPayout(profile);
+  const members = await db.members.toArray();
+  const { queueOp } = await import('./sync');
+  for (const member of members) {
+    const isSelf =
+      (profile.guestKey && member.guestKey === profile.guestKey) ||
+      Boolean(profile.userId && member.userId === profile.userId);
+    if (!isSelf) continue;
+    const next = {
+      ...member,
+      cardNumber: def?.card || '',
+      sheba: def?.sheba || '',
+      cardHolderName: def?.holder || '',
+      bankName: def?.bank || '',
+    };
+    await db.members.put(next);
+    await queueOp(member.periodId, 'member', 'upsert', next);
+  }
+}
+
 export async function savePayoutMethod(input: {
   id?: string;
   card?: string;
@@ -100,7 +123,13 @@ export async function savePayoutMethod(input: {
     sheba: def?.sheba,
     cardHolderName: def?.cardHolderName || input.holder,
     bankName: def?.bankName || bank,
+    payoutDirty: true,
+    prefsUpdatedAt: new Date().toISOString(),
   });
+  await syncSelfPayoutToMembers();
+  void import('./cloudProfile').then(({ pushCloudProfile }) =>
+    pushCloudProfile({ includePayouts: true }).catch(() => undefined),
+  );
   return { ok: true };
 }
 
@@ -114,5 +143,11 @@ export async function removePayoutMethod(id: string) {
     sheba: def?.sheba,
     bankName: def?.bankName,
     cardHolderName: def?.cardHolderName,
+    payoutDirty: true,
+    prefsUpdatedAt: new Date().toISOString(),
   });
+  await syncSelfPayoutToMembers();
+  void import('./cloudProfile').then(({ pushCloudProfile }) =>
+    pushCloudProfile({ includePayouts: true }).catch(() => undefined),
+  );
 }

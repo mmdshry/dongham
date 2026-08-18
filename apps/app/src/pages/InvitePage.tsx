@@ -92,13 +92,13 @@ export function InvitePage() {
         ) : (
           <>
             <div>
-              <p className="text-xs text-brand-700">Dongham</p>
+              <p className="text-xs text-brand-700">دونگ‌هام</p>
               <h2 className="text-2xl font-extrabold">{info.period.title}</h2>
               <p className="mt-1 text-sm text-ink-700/70">ارز: {info.period.currency}</p>
               <p className="mt-2 text-sm">اعضا: {(info.members || []).map((m) => m.displayName).join('، ')}</p>
             </div>
             <div>
-              <label className="label">نام شما (بدون ثبت‌نام اجباری)</label>
+              <label className="label">نام شما</label>
               <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="مهمان" />
             </div>
             <button type="button" className="btn-primary w-full" onClick={() => void join()}>
