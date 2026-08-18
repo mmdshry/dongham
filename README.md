@@ -15,23 +15,23 @@
 
 ## اجرا
 
-مدیر بستهٔ مرجع **npm** است (`package-lock.json`). `pnpm-workspace.yaml` فقط برای کسانی است که ترجیح می‌دهند pnpm نصب کنند.
+مدیر بستهٔ مرجع **pnpm** است. `@dongham/ledger` پکیج خصوصی محلی است و باید با `workspace:*` لینک شود، نه از npm.
 
 ```bash
-npm install
-npm run dev          # http://localhost:5173
-npm run dev:api      # http://localhost:8787
-npm run dev:admin    # http://localhost:5174
-npm run dev:marketing
-npm test
-npm run test:e2e
+pnpm install
+pnpm dev          # http://localhost:5173
+pnpm dev:api      # http://localhost:8787
+pnpm dev:admin    # http://localhost:5174
+pnpm dev:marketing
+pnpm test
+pnpm test:e2e
 ```
 
 ## Capacitor
 
 ```bash
-npm run cap:sync
-npx cap open android --workspace @dongham/app
+pnpm cap:sync
+pnpm --filter @dongham/app exec cap open android
 ```
 
 ## قابلیت‌های اصلی
@@ -50,7 +50,7 @@ npx cap open android --workspace @dongham/app
 ورود فقط با OTP برای شماره‌های `ADMIN_PHONES` (پیش‌فرض `09190755375` و `09306057083`). توکن ادمین ۲۴ ساعته است و JWT معمولی اپ به `/admin` راه ندارد.
 
 ```bash
-npm run dev:admin    # http://localhost:5174
+pnpm dev:admin    # http://localhost:5174
 ```
 
 روی سرور:
@@ -64,7 +64,7 @@ npm run dev:admin    # http://localhost:5174
 ## Lighthouse
 
 ```bash
-npm run build -w @dongham/marketing
+pnpm --filter @dongham/marketing build
 npx @lhci/cli autorun --config=lighthouserc.json
 ```
 
