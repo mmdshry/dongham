@@ -38,7 +38,7 @@ CREATE TABLE members (
   exclude_from_new TINYINT(1)    NOT NULL DEFAULT 0,
   is_pot           TINYINT(1)    NOT NULL DEFAULT 0,
   unit_label       VARCHAR(40)   NULL,
-  pot_period       CHAR(7) AS (IF(is_pot = 1, period_id, NULL)) STORED,
+  pot_period       CHAR(7) NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_member_user (period_id, user_id),
   UNIQUE KEY uq_member_guest (period_id, guest_key),

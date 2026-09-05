@@ -855,7 +855,7 @@ adminApp.delete('/periods/:id/attachments/:aid', async (c) => {
   const aid = c.req.param('aid');
   const snap = await loadPeriodSnapshot(periodId);
   const att = snap?.attachments.find((a) => a.id === aid);
-  if (!att) return c.json({ error: 'پیدا نشد' }, 404);
+  if (!snap || !att) return c.json({ error: 'پیدا نشد' }, 404);
   await deleteAttachment(aid);
   const now = new Date().toISOString();
   for (const e of (snap.expenses || []).filter((x) => x.attachmentId === aid)) {

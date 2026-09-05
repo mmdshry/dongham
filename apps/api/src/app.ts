@@ -386,6 +386,12 @@ app.post('/periods', async (c) => {
       role?: MemberRole;
       isPot?: boolean;
       weightDefault?: number;
+      excludeFromNew?: boolean;
+      cardNumber?: string;
+      sheba?: string;
+      cardHolderName?: string;
+      bankName?: string;
+      unitLabel?: string;
     }[];
     kind?: PeriodKind;
     template?: PeriodTemplate;

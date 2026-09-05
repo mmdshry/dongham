@@ -24,9 +24,9 @@ ALTER TABLE activity MODIFY period_id VARCHAR(7) CHARACTER SET utf8mb4 COLLATE u
 ALTER TABLE telegram_links MODIFY period_id VARCHAR(7) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL;
 
 ALTER TABLE members
-  ADD COLUMN pot_period VARCHAR(7) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin
-    AS (IF(is_pot = 1, period_id, NULL)) STORED,
+  ADD COLUMN pot_period VARCHAR(7) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
   ADD UNIQUE KEY uq_member_one_pot (pot_period);
+UPDATE members SET pot_period = period_id WHERE is_pot = 1;
 
 ALTER TABLE members ADD CONSTRAINT fk_members_period FOREIGN KEY (period_id) REFERENCES periods(id) ON DELETE CASCADE;
 ALTER TABLE attachments ADD CONSTRAINT fk_att_period FOREIGN KEY (period_id) REFERENCES periods(id) ON DELETE CASCADE;

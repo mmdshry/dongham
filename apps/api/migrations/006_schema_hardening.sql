@@ -19,8 +19,9 @@ ALTER TABLE members
   MODIFY period_id VARCHAR(7) NOT NULL;
 
 ALTER TABLE members
-  ADD COLUMN pot_period VARCHAR(7) AS (IF(is_pot = 1, period_id, NULL)) STORED,
+  ADD COLUMN pot_period VARCHAR(7) NULL,
   ADD UNIQUE KEY uq_member_one_pot (pot_period);
+UPDATE members SET pot_period = period_id WHERE is_pot = 1;
 
 ALTER TABLE attachments MODIFY period_id VARCHAR(7) NOT NULL;
 ALTER TABLE expenses MODIFY period_id VARCHAR(7) NOT NULL;

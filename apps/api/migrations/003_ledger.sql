@@ -84,11 +84,7 @@ CREATE TABLE payments (
   receipt_data_url     LONGTEXT      NULL,
   index_asset          ENUM('none','gold','usd') NOT NULL DEFAULT 'none',
   index_rate_at_create DECIMAL(18,8) NULL,
-  pending_edge VARCHAR(120) AS (
-    IF(status = 'pending_confirm' AND deleted_at IS NULL,
-       CONCAT(period_id, '#', from_member_id, '#', to_member_id),
-       NULL)
-  ) STORED,
+  pending_edge VARCHAR(120) NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_payment_pending_edge (pending_edge),
   KEY ix_pay_period (period_id),

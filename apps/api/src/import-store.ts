@@ -43,7 +43,7 @@ function looksLikeRedactedAdminExport(raw: Partial<DbShape>): boolean {
 }
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2).filter((a) => a !== '--force');
+  const args = process.argv.slice(2).filter((a) => a !== '--force' && a !== '--');
   const force = process.argv.includes('--force');
   const filePath = args[0] || defaultPath;
   if (!existsSync(filePath)) {

@@ -415,9 +415,9 @@ async function existingUserId(conn: PoolConnection, userId: string | null | unde
 async function writeMember(conn: PoolConnection, m: MemberRecord, _enc: boolean): Promise<void> {
   const userId = await existingUserId(conn, m.userId);
   await conn.query(
-    `INSERT INTO members (id, period_id, user_id, guest_key, display_name, weight_default, role, phone, email, card_number, sheba, card_holder_name, bank_name, exclude_from_new, is_pot, unit_label)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-     ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), guest_key=VALUES(guest_key), display_name=VALUES(display_name), weight_default=VALUES(weight_default), role=VALUES(role), phone=VALUES(phone), email=VALUES(email), card_number=VALUES(card_number), sheba=VALUES(sheba), card_holder_name=VALUES(card_holder_name), bank_name=VALUES(bank_name), exclude_from_new=VALUES(exclude_from_new), is_pot=VALUES(is_pot), unit_label=VALUES(unit_label)`,
+    `INSERT INTO members (id, period_id, user_id, guest_key, display_name, weight_default, role, phone, email, card_number, sheba, card_holder_name, bank_name, exclude_from_new, is_pot, unit_label, pot_period)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON DUPLICATE KEY UPDATE user_id=VALUES(user_id), guest_key=VALUES(guest_key), display_name=VALUES(display_name), weight_default=VALUES(weight_default), role=VALUES(role), phone=VALUES(phone), email=VALUES(email), card_number=VALUES(card_number), sheba=VALUES(sheba), card_holder_name=VALUES(card_holder_name), bank_name=VALUES(bank_name), exclude_from_new=VALUES(exclude_from_new), is_pot=VALUES(is_pot), unit_label=VALUES(unit_label), pot_period=VALUES(pot_period)`,
     [
       m.id,
       m.periodId,
@@ -435,6 +435,7 @@ async function writeMember(conn: PoolConnection, m: MemberRecord, _enc: boolean)
       m.excludeFromNew ? 1 : 0,
       m.isPot ? 1 : 0,
       m.unitLabel || null,
+      m.isPot ? m.periodId : null,
     ],
   );
 }
@@ -521,9 +522,9 @@ export async function upsertPayment(payment: PaymentRecord): Promise<void> {
 
 async function writePayment(conn: PoolConnection, p: PaymentRecord, _enc: boolean): Promise<void> {
   await conn.query(
-    `INSERT INTO payments (id, period_id, from_member_id, to_member_id, amount, currency, kind, note, fx_rate, created_at, updated_at, deleted_at, version, status, receipt_data_url, index_asset, index_rate_at_create)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-     ON DUPLICATE KEY UPDATE amount=VALUES(amount), currency=VALUES(currency), kind=VALUES(kind), note=VALUES(note), fx_rate=VALUES(fx_rate), updated_at=VALUES(updated_at), deleted_at=VALUES(deleted_at), version=VALUES(version), status=VALUES(status), receipt_data_url=VALUES(receipt_data_url), index_asset=VALUES(index_asset), index_rate_at_create=VALUES(index_rate_at_create)`,
+    `INSERT INTO payments (id, period_id, from_member_id, to_member_id, amount, currency, kind, note, fx_rate, created_at, updated_at, deleted_at, version, status, receipt_data_url, index_asset, index_rate_at_create, pending_edge)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON DUPLICATE KEY UPDATE amount=VALUES(amount), currency=VALUES(currency), kind=VALUES(kind), note=VALUES(note), fx_rate=VALUES(fx_rate), updated_at=VALUES(updated_at), deleted_at=VALUES(deleted_at), version=VALUES(version), status=VALUES(status), receipt_data_url=VALUES(receipt_data_url), index_asset=VALUES(index_asset), index_rate_at_create=VALUES(index_rate_at_create), pending_edge=VALUES(pending_edge)`,
     [
       p.id,
       p.periodId,
@@ -542,6 +543,9 @@ async function writePayment(conn: PoolConnection, p: PaymentRecord, _enc: boolea
       p.receiptDataUrl || null,
       p.indexAsset || 'none',
       p.indexRateAtCreate ?? null,
+      (p.status || 'settled') === 'pending_confirm' && !p.deletedAt
+        ? `${p.periodId}#${p.fromMemberId}#${p.toMemberId}`
+        : null,
     ],
   );
 }

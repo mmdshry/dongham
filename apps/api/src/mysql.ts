@@ -551,6 +551,7 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
       'exclude_from_new',
       'is_pot',
       'unit_label',
+      'pot_period',
     ],
     db.members
       .filter((m) => validPeriods.has(asPeriodId(m.periodId) || ''))
@@ -571,6 +572,7 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
         m.excludeFromNew ? 1 : 0,
         m.isPot ? 1 : 0,
         nullStr(m.unitLabel, 40),
+        m.isPot ? asPeriodId(m.periodId) : null,
       ]),
   );
 
@@ -702,6 +704,7 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
       'receipt_data_url',
       'index_asset',
       'index_rate_at_create',
+      'pending_edge',
     ],
     db.payments
       .filter((p) => validPeriods.has(asPeriodId(p.periodId) || ''))
@@ -723,6 +726,9 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
         nullStr(p.receiptDataUrl),
         asIndexAsset(p.indexAsset),
         p.indexRateAtCreate == null ? null : num(p.indexRateAtCreate),
+        asStatus(p.status) === 'pending_confirm' && !p.deletedAt
+          ? `${asPeriodId(p.periodId)}#${clip(p.fromMemberId, 32)}#${clip(p.toMemberId, 32)}`
+          : null,
       ]),
   );
 
