@@ -52,7 +52,7 @@ export function DesktopNav() {
   const location = useLocation();
   return (
     <nav
-      className="sticky top-0 z-40 hidden border-b border-brand-700/10 bg-white/90 pt-[env(safe-area-inset-top)] backdrop-blur md:block"
+      className="sticky top-0 z-40 hidden border-b border-brand-700/10 bg-surface/90 pt-[env(safe-area-inset-top)] backdrop-blur md:block"
       aria-label="ناوبری اصلی"
     >
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-2">
@@ -67,7 +67,7 @@ export function DesktopNav() {
                   `inline-flex min-h-11 items-center gap-2 rounded-2xl px-3 text-sm font-semibold ${
                     navActive(item.to, location.pathname, isActive)
                       ? 'bg-brand-100 text-brand-800'
-                      : 'text-ink-700/70 hover:bg-white'
+                      : 'text-ink-700/70 hover:bg-surface'
                   }`
                 }
               >
@@ -86,7 +86,7 @@ export function BottomNav() {
   const kb = useKeyboardInset();
   return (
     <nav
-      className={`fixed inset-x-0 bottom-0 z-40 border-t border-brand-700/10 bg-white/90 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur transition-transform md:hidden ${
+      className={`fixed inset-x-0 bottom-0 z-40 border-t border-brand-700/10 bg-surface/90 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur transition-transform md:hidden ${
         kb > 60 ? 'pointer-events-none translate-y-full' : ''
       }`}
       aria-label="ناوبری اصلی"

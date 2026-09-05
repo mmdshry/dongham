@@ -19,7 +19,7 @@ export function BankIcon({
         alt={bank.name}
         width={size}
         height={size}
-        className={`shrink-0 rounded-2xl bg-white object-contain ring-1 ring-black/10 ${className}`}
+        className={`shrink-0 rounded-2xl bg-surface object-contain ring-1 ring-black/10 ${className}`}
         style={{ width: size, height: size }}
       />
     );

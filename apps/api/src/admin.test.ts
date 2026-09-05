@@ -1,7 +1,7 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeAll, beforeEach } from 'vitest';
 import { app } from './app.js';
 import { resetAdminRateLimits } from './admin.js';
-import { getDb, mutate, resetDb } from './db.js';
+import { getDb, initStore, mutate, resetDb } from './db.js';
 
 async function json(res: Response) {
   return res.json();
@@ -41,8 +41,12 @@ async function userLogin(phone: string) {
 }
 
 describe('admin panel api', () => {
-  beforeEach(() => {
-    resetDb();
+  beforeAll(async () => {
+    await initStore();
+  });
+
+  beforeEach(async () => {
+    await resetDb();
     resetAdminRateLimits();
     process.env.ADMIN_PHONES = '09190755375,09306057083';
   });
@@ -97,37 +101,27 @@ describe('admin panel api', () => {
       body: JSON.stringify({ title: 'سفر', currency: 'IRT' }),
     });
     const { period } = (await json(periodRes)) as { period: { id: string; version: number } };
-    const memberId = getDb().members.find((m) => m.periodId === period.id)?.id || user.id;
+    const memberId = (await getDb()).members.find((m) => m.periodId === period.id)?.id || user.id;
 
-    const syncRes = await app.request(`/periods/${period.id}/sync`, {
+    const expRes = await app.request(`/periods/${period.id}/expenses`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${userToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        deviceId: 'user-dev',
-        baseVersion: period.version,
-        ops: [
-          {
-            entity: 'expense',
-            action: 'upsert',
-            payload: {
-              id: 'exp-admin-1',
-              title: 'ناهار',
-              amount: 100000,
-              currency: 'IRT',
-              payerId: memberId,
-              splitMode: 'equal',
-              shares: [{ memberId, value: 1 }],
-              tax: { type: 'none', value: 0 },
-              tags: [],
-              fxRate: 1,
-              createdAt: new Date().toISOString(),
-            },
-          },
-        ],
+        id: 'exp-admin-1',
+        title: 'ناهار',
+        amount: 100000,
+        currency: 'IRT',
+        payerId: memberId,
+        splitMode: 'equal',
+        shares: [{ memberId, value: 1 }],
+        tax: { type: 'none', value: 0 },
+        tags: [],
+        fxRate: 1,
+        createdAt: new Date().toISOString(),
       }),
     });
-    expect(syncRes.status).toBe(200);
-    const afterSync = (await json(syncRes)) as { version: number };
+    expect(expRes.status).toBe(200);
+    const afterSync = (await json(expRes)) as { version: number };
     const before = afterSync.version;
 
     const { token: adminToken } = await adminLogin();
@@ -137,9 +131,10 @@ describe('admin panel api', () => {
       body: JSON.stringify({ title: 'شام', amount: 150000 }),
     });
     expect(patch.status).toBe(200);
-    const periodRow = getDb().periods.find((p) => p.id === period.id);
+    const afterPatch = await getDb();
+    const periodRow = afterPatch.periods.find((p) => p.id === period.id);
     expect(periodRow?.version).toBeGreaterThan(before);
-    const expense = getDb().expenses.find((e) => e.id === 'exp-admin-1');
+    const expense = afterPatch.expenses.find((e) => e.id === 'exp-admin-1');
     expect(expense?.title).toBe('شام');
     expect(expense?.amount).toBe(150000);
   });
@@ -166,7 +161,7 @@ describe('admin panel api', () => {
     expect(firstBody.user.id).toBe(user.id);
     expect(firstBody.token).toBeTruthy();
 
-    mutate((d) => {
+    await mutate((d) => {
       const row = (d.impersonationTickets || []).find((t) => t.code === code);
       if (row) row.consumedAt = Date.now() - 20_000;
     });
@@ -195,8 +190,8 @@ describe('admin panel api', () => {
       body: JSON.stringify({ title: 'حذف‌شو', currency: 'IRT' }),
     });
     const { period } = (await json(periodRes)) as { period: { id: string } };
-    const memberId = getDb().members.find((m) => m.periodId === period.id)?.id || user.id;
-    mutate((d) => {
+    const memberId = (await getDb()).members.find((m) => m.periodId === period.id)?.id || user.id;
+    await mutate((d) => {
       d.chat.push({
         id: 'chat-del-1',
         periodId: period.id,
@@ -238,12 +233,13 @@ describe('admin panel api', () => {
       headers: { Authorization: `Bearer ${adminToken}` },
     });
     expect(del.status).toBe(200);
-    expect(getDb().periods.find((p) => p.id === period.id)).toBeUndefined();
-    expect(getDb().members.some((m) => m.periodId === period.id)).toBe(false);
-    expect(getDb().chat.some((c) => c.periodId === period.id)).toBe(false);
-    expect(getDb().invites.some((i) => i.periodId === period.id)).toBe(false);
-    expect(getDb().attachments.some((a) => a.periodId === period.id)).toBe(false);
-    expect(getDb().recurring.some((r) => r.periodId === period.id)).toBe(false);
+    const afterDel = await getDb();
+    expect(afterDel.periods.find((p) => p.id === period.id)).toBeUndefined();
+    expect(afterDel.members.some((m) => m.periodId === period.id)).toBe(false);
+    expect(afterDel.chat.some((c) => c.periodId === period.id)).toBe(false);
+    expect(afterDel.invites.some((i) => i.periodId === period.id)).toBe(false);
+    expect(afterDel.attachments.some((a) => a.periodId === period.id)).toBe(false);
+    expect(afterDel.recurring.some((r) => r.periodId === period.id)).toBe(false);
   });
 
   it('bans a user and rejects their JWT', async () => {
@@ -271,13 +267,13 @@ describe('admin panel api', () => {
       body: JSON.stringify({ days: 30 }),
     });
     expect(prem.status).toBe(200);
-    const events = getDb().billingEvents || [];
+    const events = (await getDb()).billingEvents || [];
     expect(events.some((e) => e.userId === user.id && e.source === 'admin')).toBe(true);
   });
 
   it('export omits passwordHash and otp codes', async () => {
     const { user } = await userLogin('09129990000');
-    mutate((d) => {
+    await mutate((d) => {
       const row = d.users.find((u) => u.id === user.id);
       if (row) {
         row.passwordHash = 'secret-hash';
@@ -290,10 +286,19 @@ describe('admin panel api', () => {
       headers: { Authorization: `Bearer ${token}` },
     });
     expect(res.status).toBe(200);
-    const dump = (await json(res)) as {
-      users: { passwordHash?: string }[];
-      otps: { code?: string; phone: string }[];
+    const packed = (await json(res)) as {
+      format: string;
+      version: number;
+      kind: string;
+      payload: {
+        users: { passwordHash?: string }[];
+        otps: { code?: string; phone: string }[];
+      };
     };
+    expect(packed.format).toBe('dongham');
+    expect(packed.version).toBe(3);
+    expect(packed.kind).toBe('server');
+    const dump = packed.payload;
     expect(dump.users.every((u) => u.passwordHash === undefined)).toBe(true);
     expect(dump.otps.some((o) => o.phone === '09129990000')).toBe(true);
     expect(dump.otps.every((o) => o.code === undefined)).toBe(true);
@@ -314,9 +319,10 @@ describe('admin panel api', () => {
     });
     expect(res.status).toBe(200);
     const body = (await json(res)) as { sent: number };
-    const active = getDb().users.filter((u) => !u.deletedAt).length;
+    const afterNotif = await getDb();
+    const active = afterNotif.users.filter((u) => !u.deletedAt).length;
     expect(body.sent).toBe(active);
-    expect(getDb().notifications.filter((n) => n.title === 'اعلام').length).toBe(active);
+    expect(afterNotif.notifications.filter((n) => n.title === 'اعلام').length).toBe(active);
   });
 
   it('keeps period.ownerId and member.role in sync', async () => {
@@ -328,7 +334,7 @@ describe('admin panel api', () => {
       body: JSON.stringify({ title: 'مالک', currency: 'IRT' }),
     });
     const { period } = (await json(periodRes)) as { period: { id: string } };
-    mutate((d) => {
+    await mutate((d) => {
       const m = d.members.find((row) => row.periodId === period.id);
       if (m) m.userId = owner.id;
       d.members.push({
@@ -347,10 +353,11 @@ describe('admin panel api', () => {
       body: JSON.stringify({ ownerId: other.id }),
     });
     expect(patch.status).toBe(200);
-    const stored = getDb().periods.find((p) => p.id === period.id);
+    const storedDb = await getDb();
+    const stored = storedDb.periods.find((p) => p.id === period.id);
     expect(stored?.ownerId).toBe(other.id);
-    expect(getDb().members.find((m) => m.userId === other.id && m.periodId === period.id)?.role).toBe('owner');
-    expect(getDb().members.find((m) => m.userId === owner.id && m.periodId === period.id)?.role).toBe('member');
+    expect(storedDb.members.find((m) => m.userId === other.id && m.periodId === period.id)?.role).toBe('owner');
+    expect(storedDb.members.find((m) => m.userId === owner.id && m.periodId === period.id)?.role).toBe('member');
     void memberToken;
   });
 });

@@ -32,7 +32,7 @@ export async function updateProfile(patch: Partial<LocalProfile>): Promise<Local
   return next;
 }
 
-export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8787';
+export const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
 export class ApiError extends Error {
   status: number;

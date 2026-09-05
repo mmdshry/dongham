@@ -1,13 +1,19 @@
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeAll, beforeEach } from 'vitest';
 import { app } from './app.js';
-import { getDb, mutate, resetDb } from './db.js';
+import { getDb, initStore, mutate, resetDb } from './db.js';
 
 async function json(res: Response) {
   return res.json();
 }
 
 describe('api auth & sync', () => {
-  beforeEach(() => resetDb());
+  beforeAll(async () => {
+    await initStore();
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+  });
 
   it('health', async () => {
     const res = await app.request('/health');
@@ -53,41 +59,47 @@ describe('api auth & sync', () => {
     const { token: inviteToken } = (await json(inviteRes)) as { token: string };
     expect(inviteToken).toBeTruthy();
 
-    const syncRes = await app.request(`/periods/${period.id}/sync`, {
+    const expRes = await app.request(`/periods/${period.id}/expenses`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
-        deviceId: 'dev1',
-        baseVersion: 1,
-        ops: [
-          {
-            entity: 'expense',
-            action: 'upsert',
-            payload: {
-              id: 'exp1',
-              title: 'ناهار',
-              amount: 300000,
-              currency: 'IRR',
-              payerId: user.id,
-              splitMode: 'equal',
-              shares: [{ memberId: user.id, value: 1 }],
-              tax: { type: 'none', value: 0 },
-              tags: [],
-              fxRate: 1,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-              version: 0,
-            },
-          },
-        ],
+        id: 'exp1',
+        title: 'ناهار',
+        amount: 300000,
+        currency: 'IRR',
+        payerId: user.id,
+        splitMode: 'equal',
+        shares: [{ memberId: user.id, value: 1 }],
+        tax: { type: 'none', value: 0 },
+        tags: [],
+        fxRate: 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        version: 0,
       }),
     });
-    expect(syncRes.status).toBe(200);
-    const snap = (await json(syncRes)) as { expenses: unknown[] };
+    expect(expRes.status).toBe(200);
+    const pull = await app.request(`/periods/${period.id}/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ deviceId: 'dev1' }),
+    });
+    expect(pull.status).toBe(200);
+    const snap = (await json(pull)) as { expenses: unknown[] };
     expect(snap.expenses.length).toBe(1);
+
+    const rejected = await app.request(`/periods/${period.id}/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        deviceId: 'dev1',
+        ops: [{ entity: 'expense', action: 'upsert', payload: { id: 'x' } }],
+      }),
+    });
+    expect(rejected.status).toBe(410);
   });
 
   it('returns fx rates with source and missing', async () => {
@@ -153,49 +165,29 @@ describe('api auth & sync', () => {
     });
     const { period } = (await json(periodRes)) as { period: { id: string } };
 
-    await app.request(`/periods/${period.id}/sync`, {
+    await app.request(`/periods/${period.id}/members`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        deviceId: 'd1',
-        baseVersion: 1,
-        ops: [
-          {
-            entity: 'member',
-            action: 'upsert',
-            payload: { id: 'viewer-m', displayName: 'بیننده', userId: user2.id, role: 'viewer' },
-          },
-        ],
-      }),
+      body: JSON.stringify({ id: 'viewer-m', displayName: 'بیننده', userId: user2.id, role: 'viewer' }),
     });
 
-    const denied = await app.request(`/periods/${period.id}/sync`, {
+    const denied = await app.request(`/periods/${period.id}/expenses`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token2}` },
       body: JSON.stringify({
-        deviceId: 'd2',
-        baseVersion: 2,
-        ops: [
-          {
-            entity: 'expense',
-            action: 'upsert',
-            payload: {
-              id: 'x',
-              title: 'ممنوع',
-              amount: 1,
-              currency: 'IRT',
-              payerId: user.id,
-              splitMode: 'equal',
-              shares: [{ memberId: user.id, value: 1 }],
-              tax: { type: 'none', value: 0 },
-              tags: [],
-              fxRate: 1,
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-              version: 0,
-            },
-          },
-        ],
+        id: 'x',
+        title: 'ممنوع',
+        amount: 1,
+        currency: 'IRT',
+        payerId: user.id,
+        splitMode: 'equal',
+        shares: [{ memberId: user.id, value: 1 }],
+        tax: { type: 'none', value: 0 },
+        tags: [],
+        fxRate: 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        version: 0,
       }),
     });
     expect(denied.status).toBe(403);
@@ -304,8 +296,8 @@ describe('api auth & sync', () => {
     const body = (await json(snap)) as { expenses: { title: string }[]; version: number };
     expect(body.expenses.some((e) => e.title === 'ناهار')).toBe(true);
     expect(body.version).toBe(2);
-    expect(getDb().activity.some((a) => a.periodId === period.id && a.action === 'expense.upsert')).toBe(true);
-    expect(getDb().telegramLinks?.find((l) => l.chatId === '99')?.payerMemberId).toBeTruthy();
+    expect((await getDb()).activity.some((a) => a.periodId === period.id && a.action === 'expense.upsert')).toBe(true);
+    expect((await getDb()).telegramLinks?.find((l) => l.chatId === '99')?.payerMemberId).toBeTruthy();
 
     const { handleTelegramUpdate } = await import('./telegram.js');
     const bal = await handleTelegramUpdate({
@@ -348,47 +340,30 @@ describe('api auth & sync', () => {
       status: 'pending_confirm',
     };
 
-    const first = await app.request(`/periods/${period.id}/sync`, {
+    const first = await app.request(`/periods/${period.id}/payments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        deviceId: 'pay1',
-        baseVersion: 1,
-        ops: [{ entity: 'payment', action: 'upsert', payload: { ...pendingPayload, id: 'pay-a' } }],
-      }),
+      body: JSON.stringify({ ...pendingPayload, id: 'pay-a' }),
     });
     expect(first.status).toBe(200);
 
-    const second = await app.request(`/periods/${period.id}/sync`, {
+    const second = await app.request(`/periods/${period.id}/payments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        deviceId: 'pay1',
-        baseVersion: 2,
-        ops: [{ entity: 'payment', action: 'upsert', payload: { ...pendingPayload, id: 'pay-b' } }],
-      }),
+      body: JSON.stringify({ ...pendingPayload, id: 'pay-b' }),
     });
-    expect(second.status).toBe(200);
-    const dupBody = (await json(second)) as { payments: { id: string }[] };
-    expect(dupBody.payments.map((p) => p.id)).toEqual(['pay-a']);
+    expect(second.status).toBe(409);
 
-    const otherEdge = await app.request(`/periods/${period.id}/sync`, {
+    const otherEdge = await app.request(`/periods/${period.id}/payments`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        deviceId: 'pay1',
-        baseVersion: 3,
-        ops: [
-          {
-            entity: 'payment',
-            action: 'upsert',
-            payload: { ...pendingPayload, id: 'pay-c', toMemberId: 'sara' },
-          },
-        ],
-      }),
+      body: JSON.stringify({ ...pendingPayload, id: 'pay-c', toMemberId: 'sara' }),
     });
     expect(otherEdge.status).toBe(200);
-    const otherBody = (await json(otherEdge)) as { payments: { id: string }[] };
+    const snap = await app.request(`/periods/${period.id}/snapshot`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const otherBody = (await json(snap)) as { payments: { id: string }[] };
     expect(otherBody.payments.map((p) => p.id).sort()).toEqual(['pay-a', 'pay-c']);
   });
 
@@ -602,7 +577,7 @@ describe('api auth & sync', () => {
       }),
     });
     const { token } = (await json(verify)) as { token: string };
-    mutate((d) => {
+    await mutate((d) => {
       d.sessions = [];
     });
     const listed = await app.request('/friends', { headers: { Authorization: `Bearer ${token}` } });
@@ -625,34 +600,36 @@ async function signup(phone: string, displayName: string, deviceId: string) {
   return json(verify) as Promise<{ token: string; user: { id: string } }>;
 }
 
-function expenseOp(id: string, title: string, extra: Record<string, unknown> = {}) {
+function expensePayload(id: string, title: string, extra: Record<string, unknown> = {}) {
   const now = new Date().toISOString();
   return {
-    entity: 'expense' as const,
-    action: 'upsert' as const,
-    payload: {
-      id,
-      title,
-      amount: 1000,
-      currency: 'IRT',
-      payerId: 'payer',
-      splitMode: 'equal',
-      shares: [{ memberId: 'payer', value: 1 }],
-      tax: { type: 'none', value: 0 },
-      tags: [],
-      fxRate: 1,
-      createdAt: now,
-      updatedAt: now,
-      version: 0,
-      ...extra,
-    },
+    id,
+    title,
+    amount: 1000,
+    currency: 'IRT',
+    payerId: 'payer',
+    splitMode: 'equal',
+    shares: [{ memberId: 'payer', value: 1 }],
+    tax: { type: 'none', value: 0 },
+    tags: [],
+    fxRate: 1,
+    createdAt: now,
+    updatedAt: now,
+    version: 0,
+    ...extra,
   };
 }
 
 describe('period conflict and tombstones', () => {
-  beforeEach(() => resetDb());
+  beforeAll(async () => {
+    await initStore();
+  });
 
-  it('returns 409 with snapshot when baseVersion is stale, then accepts retry', async () => {
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  it('rejects write ops on /sync with 410 and last-write-wins via REST', async () => {
     const { token } = await signup('09120001001', 'مالک', 'dev-a');
     const periodRes = await app.request('/periods', {
       method: 'POST',
@@ -662,50 +639,40 @@ describe('period conflict and tombstones', () => {
     const { period } = (await json(periodRes)) as { period: { id: string; version: number } };
     expect(period.version).toBe(1);
 
-    const first = await app.request(`/periods/${period.id}/sync`, {
+    const first = await app.request(`/periods/${period.id}/expenses`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        deviceId: 'dev-a',
-        baseVersion: 1,
-        ops: [expenseOp('exp-server', 'از دستگاه دیگر')],
-      }),
+      body: JSON.stringify(expensePayload('exp-server', 'از دستگاه دیگر')),
     });
     expect(first.status).toBe(200);
     const firstBody = (await json(first)) as { version: number };
     expect(firstBody.version).toBe(2);
 
-    const conflicted = await app.request(`/periods/${period.id}/sync`, {
+    const rejected = await app.request(`/periods/${period.id}/sync`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
         deviceId: 'dev-b',
         baseVersion: 1,
-        ops: [expenseOp('exp-local', 'تغییر لوکال')],
+        ops: [{ entity: 'expense', action: 'upsert', payload: expensePayload('exp-local', 'تغییر لوکال') }],
       }),
     });
-    expect(conflicted.status).toBe(409);
-    const conflictBody = (await json(conflicted)) as {
-      serverVersion: number;
-      snapshot: { expenses: { id: string }[]; version: number };
-    };
-    expect(conflictBody.serverVersion).toBe(2);
-    expect(conflictBody.snapshot.expenses.map((e) => e.id)).toContain('exp-server');
-    expect(conflictBody.snapshot.expenses.map((e) => e.id)).not.toContain('exp-local');
+    expect(rejected.status).toBe(410);
 
-    const retry = await app.request(`/periods/${period.id}/sync`, {
+    const second = await app.request(`/periods/${period.id}/expenses`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        deviceId: 'dev-b',
-        baseVersion: conflictBody.serverVersion,
-        ops: [expenseOp('exp-local', 'تغییر لوکال')],
-      }),
+      body: JSON.stringify(expensePayload('exp-local', 'تغییر لوکال')),
     });
-    expect(retry.status).toBe(200);
-    const retryBody = (await json(retry)) as { version: number; expenses: { id: string }[] };
+    expect(second.status).toBe(200);
+    const retryBody = (await json(second)) as { version: number };
     expect(retryBody.version).toBe(3);
-    expect(retryBody.expenses.map((e) => e.id).sort()).toEqual(['exp-local', 'exp-server']);
+
+    const snap = await app.request(`/periods/${period.id}/snapshot`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const snapBody = (await json(snap)) as { expenses: { id: string }[] };
+    expect(snapBody.expenses.map((e) => e.id).sort()).toEqual(['exp-local', 'exp-server']);
   });
 
   it('includes soft-deleted expenses in snapshots', async () => {
@@ -717,29 +684,20 @@ describe('period conflict and tombstones', () => {
     });
     const { period } = (await json(periodRes)) as { period: { id: string } };
 
-    await app.request(`/periods/${period.id}/sync`, {
+    const created = await app.request(`/periods/${period.id}/expenses`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        deviceId: 'dev-del',
-        baseVersion: 1,
-        ops: [expenseOp('exp-gone', 'حذف می‌شود')],
-      }),
+      body: JSON.stringify(expensePayload('exp-gone', 'حذف می‌شود')),
     });
+    expect(created.status).toBe(200);
 
-    const del = await app.request(`/periods/${period.id}/sync`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        deviceId: 'dev-del',
-        baseVersion: 2,
-        ops: [{ entity: 'expense', action: 'delete', payload: { id: 'exp-gone' } }],
-      }),
+    const del = await app.request(`/periods/${period.id}/expenses/exp-gone`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
     });
     expect(del.status).toBe(200);
-    const delBody = (await json(del)) as { expenses: { id: string; deletedAt?: string }[] };
-    const deleted = delBody.expenses.find((e) => e.id === 'exp-gone');
-    expect(deleted?.deletedAt).toBeTruthy();
+    const delBody = (await json(del)) as { expense: { id: string; deletedAt?: string } };
+    expect(delBody.expense.deletedAt).toBeTruthy();
 
     const snap = await app.request(`/periods/${period.id}/snapshot`, {
       headers: { Authorization: `Bearer ${token}` },
@@ -798,8 +756,7 @@ describe('period conflict and tombstones', () => {
     const ruleSnap = (await json(afterRule)) as { version: number; recurring: { id: string }[] };
     expect(ruleSnap.version).toBe(3);
 
-    const { mutate } = await import('./db.js');
-    mutate((d) => {
+    await mutate((d) => {
       const row = d.recurring.find((r) => r.periodId === period.id);
       if (row) row.nextAt = new Date(Date.now() - 1000).toISOString();
     });
@@ -927,7 +884,7 @@ describe('period conflict and tombstones', () => {
     expect(out.status).toBe(200);
     const me = await app.request('/auth/me', { headers: { Authorization: `Bearer ${token}` } });
     expect(me.status).toBe(401);
-    expect(getDb().sessions.some((s) => s.token === token)).toBe(false);
+    expect((await getDb()).sessions.some((s) => s.token === token)).toBe(false);
   });
 
   it('downgrades expired premium on /auth/me', async () => {
@@ -943,7 +900,7 @@ describe('period conflict and tombstones', () => {
       body: JSON.stringify({ phone: '09120002222', code: devCode, displayName: 'منقضی', deviceId: 'exp-dev' }),
     });
     const session = (await json(verify)) as { token: string; user: { id: string } };
-    mutate((d) => {
+    await mutate((d) => {
       const row = d.users.find((u) => u.id === session.user.id);
       if (row) {
         row.plan = 'premium';
@@ -955,6 +912,153 @@ describe('period conflict and tombstones', () => {
     expect(me.status).toBe(200);
     expect(body.user.plan).toBe('free');
     expect(body.profile.plan).toBe('free');
-    expect(getDb().users.find((u) => u.id === session.user.id)?.plan).toBe('free');
+    expect((await getDb()).users.find((u) => u.id === session.user.id)?.plan).toBe('free');
+  });
+
+  it('rejects otp verify and password login for banned users', async () => {
+    const req = await app.request('/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09123334444' }),
+    });
+    const { devCode } = (await json(req)) as { devCode: string };
+    const verify = await app.request('/auth/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone: '09123334444',
+        code: devCode,
+        displayName: 'مسدود',
+        deviceId: 'ban-dev',
+      }),
+    });
+    const { user } = (await json(verify)) as { user: { id: string } };
+    await mutate((d) => {
+      const row = d.users.find((u) => u.id === user.id);
+      if (row) row.bannedAt = new Date().toISOString();
+    });
+    const again = await app.request('/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09123334444' }),
+    });
+    const { devCode: code2 } = (await json(again)) as { devCode: string };
+    const blocked = await app.request('/auth/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09123334444', code: code2, displayName: 'مسدود', deviceId: 'ban-dev-2' }),
+    });
+    expect(blocked.status).toBe(403);
+
+    const emailUser = await app.request('/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'banned@example.com',
+        password: 'secret1',
+        displayName: 'ایمیل',
+        deviceId: 'ban-mail',
+      }),
+    });
+    const registered = (await json(emailUser)) as { user: { id: string } };
+    await mutate((d) => {
+      const row = d.users.find((u) => u.id === registered.user.id);
+      if (row) row.bannedAt = new Date().toISOString();
+    });
+    const login = await app.request('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'banned@example.com', password: 'secret1', deviceId: 'ban-mail-2' }),
+    });
+    expect(login.status).toBe(403);
+  });
+
+  it('does not let REST member create promote a member to owner', async () => {
+    const req = await app.request('/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09125556666' }),
+    });
+    const { devCode } = (await json(req)) as { devCode: string };
+    const verify = await app.request('/auth/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09125556666', code: devCode, displayName: 'مالک', deviceId: 'own-dev' }),
+    });
+    const { token, user } = (await json(verify)) as { token: string; user: { id: string } };
+    const periodRes = await app.request('/periods', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ title: 'مالکیت', currency: 'IRT' }),
+    });
+    const { period } = (await json(periodRes)) as { period: { id: string; ownerId: string; version: number } };
+    const created = await app.request(`/periods/${period.id}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ id: 'intruder', displayName: 'مهمان', role: 'owner', userId: 'someone-else' }),
+    });
+    expect(created.status).toBe(200);
+    const body = (await json(created)) as { member: { id: string; role: string } };
+    expect(body.member.role).toBe('member');
+    const snap = await app.request(`/periods/${period.id}/snapshot`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const snapBody = (await json(snap)) as { members: { id: string; role: string }[]; invites?: unknown[] };
+    expect(snapBody.members.find((m) => m.id === 'intruder')?.role).toBe('member');
+    expect((await getDb()).periods.find((p) => p.id === period.id)?.ownerId).toBe(user.id);
+    expect(Array.isArray(snapBody.invites)).toBe(true);
+  });
+
+  it('returns chat from GET /periods/:id/chat and 403 for forbidden attachments', async () => {
+    const req = await app.request('/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09127778888' }),
+    });
+    const { devCode } = (await json(req)) as { devCode: string };
+    const verify = await app.request('/auth/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09127778888', code: devCode, displayName: 'چت', deviceId: 'chat-dev' }),
+    });
+    const { token } = (await json(verify)) as { token: string };
+    const periodRes = await app.request('/periods', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ title: 'چت', currency: 'IRT' }),
+    });
+    const { period } = (await json(periodRes)) as { period: { id: string } };
+    const member = (await getDb()).members.find((m) => m.periodId === period.id)!;
+    await app.request(`/periods/${period.id}/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ senderMemberId: member.id, body: 'سلام' }),
+    });
+    const chatRes = await app.request(`/periods/${period.id}/chat`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const chatBody = (await json(chatRes)) as { chat: { body: string }[]; messages?: unknown };
+    expect(chatRes.status).toBe(200);
+    expect(chatBody.chat[0]?.body).toBe('سلام');
+    expect(chatBody.messages).toBeUndefined();
+
+    const otherReq = await app.request('/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09127779999' }),
+    });
+    const { devCode: otherCode } = (await json(otherReq)) as { devCode: string };
+    const otherVerify = await app.request('/auth/otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09127779999', code: otherCode, displayName: 'غریبه', deviceId: 'chat-other' }),
+    });
+    const { token: otherToken } = (await json(otherVerify)) as { token: string };
+    const att = await app.request('/attachments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${otherToken}` },
+      body: JSON.stringify({ periodId: period.id, mime: 'text/plain', dataBase64: 'QQ==' }),
+    });
+    expect(att.status).toBe(403);
   });
 });

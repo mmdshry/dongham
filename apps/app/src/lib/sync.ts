@@ -1,7 +1,7 @@
 import { nanoid } from 'nanoid';
 import type { PeriodKind, PeriodTemplate, PeriodVisibility, RoundTo } from '@dongham/ledger';
-import { newPeriodId } from '@dongham/ledger';
-import { ApiError, api, ensureProfile, getDeviceId } from './api';
+import { isInviteExpired, newPeriodId } from '@dongham/ledger';
+import { ApiError, api, ensureProfile } from './api';
 import { useUiStore } from '../store/ui';
 import {
   db,
@@ -36,6 +36,7 @@ type PeriodSyncResult = {
   activity?: LocalActivity[];
   recurring?: LocalRecurring[];
   period?: Partial<LocalPeriod>;
+  invites?: { token: string; periodId: string; createdAt: string; expiresAt?: string }[];
 };
 
 export function coalesceSyncOps(ops: SyncOp[]): SyncOp[] {
@@ -73,27 +74,117 @@ async function postPeriodToCloud(period: LocalPeriod) {
       members,
     }),
   });
+  if (typeof res.period?.version === 'number') {
+    await db.periods.update(period.id, { synced: true, version: res.period.version });
+  }
   return { members, version: res.period?.version };
 }
 
-async function enqueueMembers(periodId: string, members: LocalMember[]) {
-  for (const m of members) {
-    await queueOp(periodId, 'member', 'upsert', m);
-  }
+function isOnline(): boolean {
+  return typeof navigator === 'undefined' || navigator.onLine;
 }
 
-async function postPeriodSync(periodId: string, pending: SyncOp[], baseVersion: number) {
-  return api<PeriodSyncResult>(`/periods/${periodId}/sync`, {
-    method: 'POST',
-    body: JSON.stringify({
-      deviceId: await getDeviceId(),
-      baseVersion,
-      ops: coalesceSyncOps(pending),
-    }),
+type WriteResult = { version?: number; period?: { version?: number } };
+
+function versionOf(res: WriteResult | void): number | undefined {
+  if (!res) return undefined;
+  if (typeof res.version === 'number') return res.version;
+  if (typeof res.period?.version === 'number') return res.period.version;
+  return undefined;
+}
+
+async function fetchPeriodVersion(periodId: string): Promise<number | undefined> {
+  const { periods } = await api<{ periods: { id: string; version?: number }[] }>('/periods');
+  return periods.find((p) => p.id === periodId)?.version;
+}
+
+async function markPeriodSynced(periodId: string, version?: number) {
+  const next = typeof version === 'number' ? version : await fetchPeriodVersion(periodId).catch(() => undefined);
+  await db.periods.update(periodId, {
+    synced: true,
+    updatedAt: new Date().toISOString(),
+    ...(typeof next === 'number' ? { version: next } : {}),
   });
 }
 
-export async function queueOp(
+async function flushOneOp(periodId: string, op: SyncOp): Promise<number | undefined> {
+  const payload = (op.payload && typeof op.payload === 'object' ? op.payload : {}) as Record<string, unknown> & {
+    id?: string;
+    deletedAt?: string;
+  };
+  if (op.entity === 'expense') {
+    if (op.action === 'delete' || payload.deletedAt) {
+      if (payload.id) {
+        return versionOf(await api<WriteResult>(`/periods/${periodId}/expenses/${payload.id}`, { method: 'DELETE' }));
+      }
+      return undefined;
+    }
+    return versionOf(
+      await api<WriteResult>(`/periods/${periodId}/expenses`, {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, periodId }),
+      }),
+    );
+  }
+  if (op.entity === 'payment') {
+    if (op.action === 'delete' || payload.deletedAt) {
+      if (payload.id) {
+        return versionOf(await api<WriteResult>(`/periods/${periodId}/payments/${payload.id}`, { method: 'DELETE' }));
+      }
+      return undefined;
+    }
+    return versionOf(
+      await api<WriteResult>(`/periods/${periodId}/payments`, {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, periodId }),
+      }),
+    );
+  }
+  if (op.entity === 'member') {
+    return versionOf(
+      await api<WriteResult>(`/periods/${periodId}/members`, {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, periodId }),
+      }),
+    );
+  }
+  if (op.entity === 'chat') {
+    return versionOf(await api<WriteResult>(`/periods/${periodId}/chat`, { method: 'POST', body: JSON.stringify(payload) }));
+  }
+  if (op.entity === 'period') {
+    const local = await db.periods.get(periodId);
+    const members = await db.members.where('periodId').equals(periodId).toArray();
+    return versionOf(
+      await api<WriteResult>('/periods', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: periodId,
+          title: local?.title,
+          currency: local?.currency,
+          ...payload,
+          members,
+        }),
+      }),
+    );
+  }
+  if (op.entity === 'activity') {
+    return versionOf(
+      await api<WriteResult>(`/periods/${periodId}/activity`, { method: 'POST', body: JSON.stringify(payload) }),
+    );
+  }
+  if (op.entity === 'recurring') {
+    return versionOf(
+      await api<WriteResult>(`/periods/${periodId}/recurring`, {
+        method: 'POST',
+        body: JSON.stringify({ ...payload, periodId }),
+      }),
+    );
+  }
+  return undefined;
+}
+
+
+async function enqueueOp(
   periodId: string,
   entity: OutboxEntity,
   action: 'upsert' | 'delete',
@@ -109,12 +200,35 @@ export async function queueOp(
   });
 }
 
+export async function queueOp(
+  periodId: string,
+  entity: OutboxEntity,
+  action: 'upsert' | 'delete',
+  payload: unknown,
+) {
+  const profile = await ensureProfile();
+  if (profile.token && isOnline()) {
+    try {
+      const version = await flushOneOp(periodId, { entity, action, payload });
+      await markPeriodSynced(periodId, version);
+      return;
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        const conflict = parseSyncConflict(e, periodId);
+        if (conflict) useUiStore.getState().setSyncConflict(conflict);
+      }
+    }
+  }
+  await enqueueOp(periodId, entity, action, payload);
+}
+
 export async function logActivity(
   periodId: string,
   actorName: string,
   action: string,
   summary: string,
   entityId?: string,
+  opts?: { localOnly?: boolean },
 ) {
   const row = {
     id: nanoid(),
@@ -126,6 +240,7 @@ export async function logActivity(
     entityId,
   };
   await db.activity.put(row);
+  if (opts?.localOnly) return;
   await queueOp(periodId, 'activity', 'upsert', row);
 }
 
@@ -144,7 +259,7 @@ export type CloudPeriodSnapshot = {
   chat?: LocalChat[];
   activity?: LocalActivity[];
   recurring?: LocalRecurring[];
-  invites?: { token: string; periodId: string; createdAt: string }[];
+  invites?: { token: string; periodId: string; createdAt: string; expiresAt?: string }[];
   version?: number;
 };
 
@@ -341,10 +456,33 @@ export async function applyPeriodSnapshot(snap: PeriodSnapshot): Promise<void> {
     await dropMissingIds(db.recurring, pid, new Set(snap.recurring.map((r) => r.id)));
   }
   if (Array.isArray(snap.invites)) {
+    const keep = new Set<string>();
     for (const inv of snap.invites) {
-      if (!inv.token) continue;
-      await db.invites.put({ token: inv.token, periodId: pid, createdAt: inv.createdAt || new Date().toISOString() });
+      if (!inv.token || isInviteExpired(inv)) continue;
+      keep.add(inv.token);
+      await db.invites.put({
+        token: inv.token,
+        periodId: pid,
+        createdAt: inv.createdAt || new Date().toISOString(),
+        expiresAt: inv.expiresAt,
+      });
     }
+    const localInvites = await db.invites.where('periodId').equals(pid).toArray();
+    const drop = localInvites.filter((row) => !keep.has(row.token) || isInviteExpired(row)).map((row) => row.token);
+    if (drop.length) await db.invites.bulkDelete(drop);
+  }
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  const row = await db.notifications.get(id);
+  if (!row || row.read) return;
+  await db.notifications.update(id, { read: true });
+  const profile = await ensureProfile();
+  if (!profile.token || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
+  try {
+    await api(`/notifications/${id}/read`, { method: 'POST' });
+  } catch {
+    /* offline ok */
   }
 }
 
@@ -477,6 +615,9 @@ export async function createPeriodLocal(input: {
     lunchTurnMemberId: period.lunchTurnMemberId,
     visibility: period.visibility,
   });
+  for (const member of await db.members.where('periodId').equals(id).toArray()) {
+    await queueOp(id, 'member', 'upsert', member);
+  }
   await logActivity(id, profile.displayName, 'period.create', `دوره «${period.title}» ساخته شد`);
   return id;
 }
@@ -492,7 +633,7 @@ export async function upsertExpense(expense: LocalExpense) {
     occurredAt: expense.occurredAt || expense.createdAt,
   };
   await db.expenses.put(normalized);
-  await db.periods.update(expense.periodId, { updatedAt: expense.updatedAt, synced: false });
+  await db.periods.update(expense.periodId, { updatedAt: expense.updatedAt });
   await queueOp(expense.periodId, 'expense', 'upsert', normalized);
   const profile = await ensureProfile();
   const isUpdate = !!prev && !expense.deletedAt;
@@ -506,12 +647,13 @@ export async function upsertExpense(expense: LocalExpense) {
         ? `ویرایش هزینه «${expense.title}»`
         : `ثبت هزینه «${expense.title}»`,
     expense.id,
+    { localOnly: true },
   );
 }
 
 export async function upsertPayment(payment: LocalPayment) {
   await db.payments.put(payment);
-  await db.periods.update(payment.periodId, { updatedAt: payment.updatedAt, synced: false });
+  await db.periods.update(payment.periodId, { updatedAt: payment.updatedAt });
   await queueOp(payment.periodId, 'payment', 'upsert', payment);
   const profile = await ensureProfile();
   await logActivity(
@@ -520,6 +662,7 @@ export async function upsertPayment(payment: LocalPayment) {
     'payment.upsert',
     payment.kind === 'loan' ? 'ثبت قرض' : 'ثبت تسویه',
     payment.id,
+    { localOnly: true },
   );
 }
 
@@ -583,7 +726,7 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
 export async function flushOutbox(periodId?: string): Promise<{ ok: boolean; error?: string }> {
   const profile = await ensureProfile();
   if (!profile.token) return { ok: false, error: 'برای همگام‌سازی وارد شوید' };
-  if (typeof navigator !== 'undefined' && !navigator.onLine) return { ok: false, error: 'آفلاین هستید' };
+  if (!isOnline()) return { ok: false, error: 'آفلاین هستید' };
 
   const items = periodId
     ? await db.outbox.where('periodId').equals(periodId).sortBy('createdAt')
@@ -596,65 +739,39 @@ export async function flushOutbox(periodId?: string): Promise<{ ok: boolean; err
     byPeriod.set(item.periodId, list);
   }
 
-  let conflictError: string | undefined;
   try {
-    for (const [pid] of byPeriod) {
-      const existingConflict = useUiStore.getState().syncConflict;
-      if (existingConflict?.periodId === pid) {
-        conflictError = existingConflict.message;
-        continue;
-      }
-
-      let period = await db.periods.get(pid);
+    for (const [pid, rawPending] of byPeriod) {
+      const period = await db.periods.get(pid);
       if (!period) continue;
 
-      if (!period.synced) {
-        const { members } = await postPeriodToCloud(period);
-        await enqueueMembers(pid, members);
-      }
+      const pending = coalesceSyncOps(
+        rawPending.map((item) => ({ entity: item.entity, action: item.action, payload: item.payload })),
+      );
 
-      period = (await db.periods.get(pid))!;
-      let pending = await db.outbox.where('periodId').equals(pid).sortBy('createdAt');
-      let res: PeriodSyncResult;
       try {
-        res = await postPeriodSync(pid, pending, period.version);
+        await api<PeriodSnapshot>(`/periods/${pid}/snapshot`);
       } catch (e) {
-        if (e instanceof ApiError && e.status === 409) {
-          const conflict = parseSyncConflict(e, pid);
-          if (conflict) useUiStore.getState().setSyncConflict(conflict);
-          conflictError = conflict?.message || e.message;
-          continue;
+        if (e instanceof ApiError && e.status === 404) {
+          await postPeriodToCloud(period);
+        } else {
+          throw e;
         }
-        if (!(e instanceof ApiError) || e.status !== 404) throw e;
-        const created = await postPeriodToCloud(period);
-        await enqueueMembers(pid, created.members);
-        pending = await db.outbox.where('periodId').equals(pid).sortBy('createdAt');
-        res = await postPeriodSync(pid, pending, created.version ?? 1);
       }
 
-      await applyPeriodSnapshot({
-        period: {
-          id: pid,
-          title: period.title,
-          currency: period.currency,
-          createdAt: period.createdAt,
-          updatedAt: new Date().toISOString(),
-          version: res.version,
-          ...res.period,
-        },
-        members: res.members,
-        expenses: res.expenses,
-        payments: res.payments,
-        chat: res.chat,
-        activity: res.activity,
-        recurring: res.recurring,
-      });
-      await db.periods.update(pid, { synced: true, version: res.version });
+      for (const item of pending) {
+        await flushOneOp(pid, item);
+      }
+      for (const item of rawPending) {
+        if (item.id != null) await db.outbox.delete(item.id);
+      }
+
+      const latest = await api<PeriodSnapshot>(`/periods/${pid}/snapshot`);
+      await applyPeriodSnapshot(latest);
+      await db.periods.update(pid, { synced: true, version: latest.version ?? latest.period.version });
       await db.outbox.where('periodId').equals(pid).delete();
       const resolved = useUiStore.getState().syncConflict;
       if (resolved?.periodId === pid) useUiStore.getState().setSyncConflict(null);
     }
-    if (conflictError) return { ok: false, error: conflictError };
     return { ok: true };
   } catch (e) {
     if (e instanceof ApiError && e.status === 409) {

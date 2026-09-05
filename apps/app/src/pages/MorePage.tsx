@@ -1,4 +1,5 @@
 ﻿import { useLiveQuery } from 'dexie-react-hooks';
+import { nanoid } from 'nanoid';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
@@ -7,6 +8,7 @@ import { CardPayoutPanel } from '../components/CardPayoutPanel';
 import { FxRatesPanel } from '../components/FxRatesPanel';
 import { ConfirmDialog, PromptDialog } from '../components/Dialog';
 import { SyncBanner } from '../components/SyncBanner';
+import { ThemeToggle } from '../components/ThemeToggle';
 import { Shell } from '../components/ui';
 import { updateAccountPrefs } from '../lib/cloudProfile';
 import { useCalendarMode } from '../lib/calendarPref';
@@ -21,7 +23,7 @@ import { downloadJson, exportBackup, importBackup } from '../lib/backup';
 import { db } from '../lib/db';
 import { toPersianDigits } from '../lib/format';
 import { importPeriodSnapshot, parseSnapshot } from '../lib/snapshot';
-import { flushOutbox, pullCloud } from '../lib/sync';
+import { flushOutbox, markNotificationRead, pullCloud } from '../lib/sync';
 import { useUiStore } from '../store/ui';
 
 const SUPPORT_TG = import.meta.env.VITE_SUPPORT_TELEGRAM || 'https://t.me/dongham';
@@ -70,7 +72,7 @@ export function MorePage() {
 
   const testNotif = async () => {
     const n = {
-      id: crypto.randomUUID(),
+      id: nanoid(),
       title: 'دونگ‌هام',
       body: 'نوتیفیکیشن آزمایشی',
       read: false,
@@ -176,6 +178,7 @@ export function MorePage() {
             />
             تقویم میلادی (به‌جای شمسی)
           </label>
+          <ThemeToggle />
         </div>
 
         <FxRatesPanel />
@@ -295,9 +298,15 @@ export function MorePage() {
           </button>
           <ul className="space-y-2 text-sm">
             {notifications.map((n) => (
-              <li key={n.id} className="rounded-2xl bg-brand-50 px-3 py-2">
-                <p className="font-semibold">{n.title}</p>
-                <p className="text-ink-700/70">{n.body}</p>
+              <li key={n.id}>
+                <button
+                  type="button"
+                  className={`w-full rounded-2xl px-3 py-2 text-right ${n.read ? 'bg-brand-50' : 'bg-brand-100 ring-1 ring-brand-200'}`}
+                  onClick={() => void markNotificationRead(n.id)}
+                >
+                  <p className="font-semibold">{n.title}</p>
+                  <p className="text-ink-700/70">{n.body}</p>
+                </button>
               </li>
             ))}
           </ul>
@@ -306,7 +315,7 @@ export function MorePage() {
         <div className="card-surface space-y-2">
           <h2 className="font-bold">حریم خصوصی</h2>
           <p className="text-xs text-ink-700/70">
-            کارت و شبا روی این دستگاه با AES-GCM رمز می‌شود و پس از ورود با حساب همگام می‌گردد. اسنپ‌شات خروجی فقط در صورت وارد کردن عبارت عبور رمز می‌شود. می‌توانید داده دستگاه را پاک کنید یا حساب ابری را حذف کنید.
+            کارت و شبا روی این دستگاه با AES-GCM رمز می‌شود. پس از ورود، نسخهٔ خوانا برای همگام‌سازی ابری به سرور فرستاده می‌شود. اسنپ‌شات خروجی فقط در صورت وارد کردن عبارت عبور رمز می‌شود. اگر «رمز دوره» روشن باشد، سرور یادداشت، رسید، چت و کارت/شبا را در ستون‌های حساس با AES-256-GCM نگه می‌دارد. می‌توانید داده دستگاه را پاک کنید یا حساب ابری را حذف کنید.
           </p>
           <button type="button" className="btn-ghost w-full text-rose-700" onClick={() => setConfirmWipe(true)}>
             پاک‌سازی داده محلی

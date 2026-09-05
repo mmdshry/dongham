@@ -5,8 +5,11 @@
   "scripts": {
     "dev": "tsx watch --env-file .env --env-file ../../.env src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node --env-file=../../.env dist/index.js",
-    "test": "vitest run"
+    "start": "node --env-file=.env --env-file=../../.env dist/index.js",
+    "test": "vitest run",
+    "migrate": "tsx --env-file .env --env-file ../../.env src/migrate.ts",
+    "import-store": "tsx --env-file .env --env-file ../../.env src/import-store.ts",
+    "load-sync": "tsx src/load-sync.harness.ts"
   },
   "dependencies": {
     "@hono/node-server": "^1.14.1",
@@ -14,13 +17,12 @@
     "hono": "^4.7.5",
     "jose": "^6.0.10",
     "nanoid": "^5.1.5",
-    "pg": "^8.14.1",
-    "@dongham/ledger": "*"
+    "mysql2": "^3.14.1",
+    "@dongham/ledger": "workspace:*"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/node": "^22.13.10",
-    "@types/pg": "^8.11.11",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vitest": "^3.0.9"

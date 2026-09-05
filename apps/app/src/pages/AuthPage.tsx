@@ -235,14 +235,14 @@ export function AuthPage() {
             <div className="flex gap-2">
               <button
                 type="button"
-                className={`chip flex-1 ${mode === 'otp' ? 'bg-brand-700 text-white' : 'bg-white/80 ring-1 ring-brand-700/10'}`}
+                className={`chip flex-1 ${mode === 'otp' ? 'bg-brand-700 text-white' : 'bg-surface/80 ring-1 ring-brand-700/10'}`}
                 onClick={() => setMode('otp')}
               >
                 موبایل
               </button>
               <button
                 type="button"
-                className={`chip flex-1 ${mode === 'email' ? 'bg-brand-700 text-white' : 'bg-white/80 ring-1 ring-brand-700/10'}`}
+                className={`chip flex-1 ${mode === 'email' ? 'bg-brand-700 text-white' : 'bg-surface/80 ring-1 ring-brand-700/10'}`}
                 onClick={() => setMode('email')}
               >
                 ایمیل / رمز

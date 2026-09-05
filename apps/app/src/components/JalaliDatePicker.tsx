@@ -97,7 +97,7 @@ export function JalaliDatePicker({
       {open ? (
         <>
           <div
-            className="fixed inset-0 z-50 bg-ink-900/40 md:hidden"
+            className="fixed inset-0 z-50 bg-scrim/40 md:hidden"
             aria-hidden
             onClick={() => setOpen(false)}
           />
@@ -105,7 +105,7 @@ export function JalaliDatePicker({
             role="dialog"
             aria-modal="true"
             aria-label={label}
-            className="fixed inset-x-0 bottom-0 z-[51] rounded-t-3xl bg-white p-4 shadow-soft md:absolute md:inset-auto md:top-full md:z-50 md:mt-2 md:w-full md:rounded-3xl"
+            className="fixed inset-x-0 bottom-0 z-[51] rounded-t-3xl bg-surface p-4 shadow-soft md:absolute md:inset-auto md:top-full md:z-50 md:mt-2 md:w-full md:rounded-3xl"
           >
             <div className="mb-3 flex gap-1 rounded-2xl bg-brand-50 p-1">
               <button

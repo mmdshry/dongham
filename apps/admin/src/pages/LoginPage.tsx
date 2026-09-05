@@ -1,10 +1,18 @@
 import { useState } from 'react';
 import { api, getDeviceId, normalizeIranMobile, normalizeOtp } from '../lib/api';
 import { useSession } from '../lib/session';
+import { useThemePref, type ThemePref } from '../lib/themePref';
 import type { AdminUser } from '../lib/types';
+
+const themeOptions: { id: ThemePref; label: string }[] = [
+  { id: 'light', label: 'روشن' },
+  { id: 'dark', label: 'تیره' },
+  { id: 'system', label: 'سیستم' },
+];
 
 export function LoginPage() {
   const { login, setToast, toast } = useSession();
+  const [themePref, setThemePref] = useThemePref();
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [devCode, setDevCode] = useState('');
@@ -56,6 +64,20 @@ export function LoginPage() {
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-md flex-col justify-center p-6">
+      <div className="mb-3 flex gap-1 self-end rounded-xl bg-brand-50 p-1">
+        {themeOptions.map((opt) => (
+          <button
+            key={opt.id}
+            type="button"
+            className={`rounded-lg px-2 py-1.5 text-[11px] font-semibold ${
+              themePref === opt.id ? 'bg-brand-700 text-white' : 'text-ink-800'
+            }`}
+            onClick={() => setThemePref(opt.id)}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
       <div className="card animate-rise space-y-4">
         <div>
           <p className="text-xs font-semibold text-brand-700">admin.dongham.ir</p>

@@ -1,3 +1,5 @@
+export { inviteExpiresAt, isInviteExpired } from '@dongham/ledger';
+
 export function appPublicUrl(): string {
   const raw = (process.env.APP_PUBLIC_URL || '').trim().replace(/\/$/, '');
   if (raw) return raw;
@@ -14,12 +16,3 @@ export function telegramMiniAppInviteUrl(token: string): string | undefined {
   return `https://t.me/${bot}/app?startapp=${encodeURIComponent(token)}`;
 }
 
-export function inviteExpiresAt(from = new Date()): string {
-  return new Date(from.getTime() + 30 * 86400_000).toISOString();
-}
-
-export function isInviteExpired(invite: { expiresAt?: string }, now = Date.now()): boolean {
-  if (!invite.expiresAt) return false;
-  const ts = Date.parse(invite.expiresAt);
-  return Number.isNaN(ts) ? false : ts <= now;
-}

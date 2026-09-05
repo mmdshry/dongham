@@ -1,0 +1,50 @@
+{
+  "users": [
+    {
+      "id": "u-smoke-1",
+      "displayName": "دود ایمپورت",
+      "phone": "09120000001",
+      "createdAt": "2026-01-01T00:00:00.000Z"
+    }
+  ],
+  "periods": [
+    {
+      "id": "Smk-Imp",
+      "title": "دود ایمپورت",
+      "currency": "IRT",
+      "ownerId": "u-smoke-1",
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "version": 1
+    }
+  ],
+  "members": [
+    {
+      "id": "m-smoke-1",
+      "periodId": "Smk-Imp",
+      "userId": "u-smoke-1",
+      "displayName": "دود ایمپورت",
+      "weightDefault": 1,
+      "role": "owner"
+    }
+  ],
+  "expenses": [
+    {
+      "id": "e-smoke-1",
+      "periodId": "Smk-Imp",
+      "title": "نان",
+      "amount": 1000,
+      "currency": "IRT",
+      "payerId": "m-smoke-1",
+      "splitMode": "equal",
+      "shares": [{ "memberId": "m-smoke-1", "value": 1 }],
+      "tax": { "type": "none", "value": 0 },
+      "tags": [],
+      "fxRate": 1,
+      "createdAt": "2026-01-01T00:00:00.000Z",
+      "updatedAt": "2026-01-01T00:00:00.000Z",
+      "version": 1
+    }
+  ],
+  "payments": []
+}

@@ -1,7 +1,23 @@
+import { isPeriodOwner } from '@dongham/ledger';
+
 export type SettlementActor = {
   id: string;
   role: 'owner' | 'member' | 'viewer';
+  userId?: string;
+  guestKey?: string;
+  ownerId?: string;
+  ownerGuestKey?: string;
 } | null | undefined;
+
+function actorIsOwner(me: NonNullable<SettlementActor>): boolean {
+  return isPeriodOwner({
+    ownerId: me.ownerId,
+    ownerGuestKey: me.ownerGuestKey,
+    userId: me.userId,
+    guestKey: me.guestKey,
+    memberRole: me.role,
+  });
+}
 
 export type PendingPaymentEdge = {
   fromMemberId: string;
@@ -17,12 +33,12 @@ export function canMarkPaid(me: SettlementActor, fromMemberId: string): boolean 
 
 export function canRecordWithoutConfirm(me: SettlementActor, fromMemberId: string): boolean {
   if (!me || me.role === 'viewer') return false;
-  return me.id === fromMemberId || me.role === 'owner';
+  return me.id === fromMemberId || actorIsOwner(me);
 }
 
 export function canConfirmPayment(me: SettlementActor, toMemberId: string): boolean {
   if (!me || me.role === 'viewer') return false;
-  return me.id === toMemberId || me.role === 'owner';
+  return me.id === toMemberId || actorIsOwner(me);
 }
 
 export function hasPendingForEdge(

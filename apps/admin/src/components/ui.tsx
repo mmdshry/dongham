@@ -18,12 +18,12 @@ export function ConfirmDialog({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/40 p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-md animate-pop rounded-2xl bg-white p-5 shadow-soft">
+      <div className="w-full max-w-md animate-pop rounded-2xl bg-surface p-5 shadow-soft">
         <h2 className="text-base font-bold">{title}</h2>
         <p className="mt-2 text-sm text-ink-700/80">{message}</p>
         <div className="mt-4 flex justify-end gap-2">

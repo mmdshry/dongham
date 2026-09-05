@@ -11,7 +11,7 @@ export function ToastHost() {
   return (
     <div
       role="status"
-      className="fixed left-1/2 z-50 max-w-[90vw] -translate-x-1/2 animate-pop rounded-2xl bg-ink-900 px-4 py-3 text-sm text-white shadow-soft bottom-[max(5.5rem,calc(var(--keyboard-inset,0px)+1rem))] md:bottom-[max(2rem,calc(var(--keyboard-inset,0px)+1rem))]"
+      className="toast-bar fixed left-1/2 z-50 max-w-[90vw] -translate-x-1/2 animate-pop bottom-[max(5.5rem,calc(var(--keyboard-inset,0px)+1rem))] md:bottom-[max(2rem,calc(var(--keyboard-inset,0px)+1rem))]"
     >
       {toast}
     </div>
@@ -71,7 +71,7 @@ export function Shell({
     <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 pb-28 pt-[max(1rem,env(safe-area-inset-top))] md:pb-10 md:pt-6">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:rounded-xl focus:bg-white focus:px-3 focus:py-2"
+        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:rounded-xl focus:bg-surface focus:px-3 focus:py-2"
       >
         پرش به محتوا
       </a>

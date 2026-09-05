@@ -1,4 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-cd /home/dongham/public_html/apps/api
-exec /usr/local/bin/node --env-file=/home/dongham/public_html/.env dist/index.js
+ROOT=/home/dongham/public_html
+cd "$ROOT/apps/api"
+# MYSQL_* and secrets: root .env wins over apps/api/.env (same order as local start).
+exec /usr/local/bin/node --env-file="$ROOT/apps/api/.env" --env-file="$ROOT/.env" dist/index.js

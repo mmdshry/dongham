@@ -103,6 +103,7 @@ export interface LocalExpense {
   tip: Charge;
   tags: string[];
   note?: string;
+  attachmentId?: string;
   attachmentDataUrl?: string;
   fxRate: number;
   createdAt: string;
@@ -164,6 +165,7 @@ export interface LocalInvite {
   token: string;
   periodId: string;
   createdAt: string;
+  expiresAt?: string;
 }
 
 export interface LocalRecurring {

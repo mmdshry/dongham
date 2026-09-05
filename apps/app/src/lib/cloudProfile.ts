@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import { api, ensureProfile, updateProfile } from './api';
 import { FX_WATCH_META, LAST_USER_META, readCalendarMode, writeCalendarMode } from './calendarPref';
+import type { CloudPayoutMethod, CloudProfile } from '@dongham/ledger';
 import { encryptText } from './crypto';
 import { db, type LocalProfile, type PayoutMethod } from './db';
 import { parseWatchlist } from './fx';
@@ -12,30 +13,7 @@ import {
   shouldResetLocalAccount,
 } from './accountSync';
 
-export type CloudPayoutMethod = {
-  id: string;
-  label?: string;
-  cardNumber: string;
-  sheba?: string;
-  cardHolderName?: string;
-  bankName?: string;
-  accountNumber?: string;
-  isDefault?: boolean;
-};
-
-export type CloudProfile = {
-  displayName: string;
-  phone?: string;
-  email?: string;
-  plan: 'free' | 'premium';
-  premiumUntil?: string;
-  usePersianDigits: boolean;
-  debtReminders: boolean;
-  calendarMode: 'jalali' | 'gregorian';
-  fxWatchlist: string[];
-  payoutMethods?: CloudPayoutMethod[];
-  prefsUpdatedAt?: string;
-};
+export type { CloudPayoutMethod, CloudProfile };
 
 export type AuthUser = {
   id: string;

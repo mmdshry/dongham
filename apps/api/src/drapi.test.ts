@@ -1,6 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { app } from './app.js';
-import { resetDb } from './db.js';
+import { initStore, resetDb } from './db.js';
 import { resetDrapiToken, warmupDrapiToken } from './drapi.js';
 
 const CARD_A = '6274121199004409';
@@ -32,8 +32,12 @@ function mockDrapi() {
 }
 
 describe('card to sheba', () => {
-  beforeEach(() => {
-    resetDb();
+  beforeAll(async () => {
+    await initStore();
+  });
+
+  beforeEach(async () => {
+    await resetDb();
     resetDrapiToken();
     process.env.DRAPI_USERNAME = 'test-user';
     process.env.DRAPI_PASSWORD = 'test-pass';

@@ -75,7 +75,7 @@ export function CurrencySelect({
       ? createPortal(
           <div
             ref={menuRef}
-            className="fixed z-[60] max-h-72 overflow-hidden rounded-2xl bg-white shadow-soft ring-1 ring-brand-700/10"
+            className="fixed z-[60] max-h-72 overflow-hidden rounded-2xl bg-surface shadow-soft ring-1 ring-brand-700/10"
             style={{ top: box.top, left: box.left, width: box.width }}
           >
             <input

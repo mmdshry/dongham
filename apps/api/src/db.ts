@@ -1,112 +1,59 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { isPeriodId, migratePeriodIds } from '@dongham/ledger';
+import { initMysql } from './mysql.js';
+import { loadDb, replaceDb, truncateAll } from './repo.js';
 import type { DbShape } from './types.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_PATH = join(__dirname, '..', 'data', 'store.json');
+export { emptyDb } from './types-empty.js';
 
-const emptyDb = (): DbShape => ({
-  users: [],
-  sessions: [],
-  periods: [],
-  members: [],
-  expenses: [],
-  payments: [],
-  invites: [],
-  chat: [],
-  friends: [],
-  attachments: [],
-  otps: [],
-  notifications: [],
-  recurring: [],
-  activity: [],
-  zarinpalPending: [],
-  telegramLinks: [],
-  shebaLookups: [],
-  adminAudit: [],
-  impersonationTickets: [],
-  billingEvents: [],
-  platformSettings: { extraAdminPhones: [] },
-});
-
-export function loadDb(): DbShape {
-  try {
-    if (!existsSync(DATA_PATH)) return emptyDb();
-    return { ...emptyDb(), ...JSON.parse(readFileSync(DATA_PATH, 'utf8')) };
-  } catch {
-    return emptyDb();
-  }
-}
-
-export function saveDb(db: DbShape): void {
-  mkdirSync(dirname(DATA_PATH), { recursive: true });
-  writeFileSync(DATA_PATH, JSON.stringify(db, null, 2), 'utf8');
-}
-
-let db = loadDb();
-let persistPg: ((d: DbShape) => Promise<void>) | null = null;
-
-export async function initStore(): Promise<void> {
-  if (process.env.DATABASE_URL) {
-    const pg = await import('./pg.js');
-    const loaded = await pg.initPostgres();
-    persistPg = pg.persistPostgres;
-    if (loaded) db = { ...emptyDb(), ...loaded };
-    else await persistPg(db);
-  }
-  await migrateStoredPeriodIds();
-}
-
-async function migrateStoredPeriodIds(): Promise<void> {
-  const ids = db.periods.map((p) => p.id);
+export async function rewriteLegacyPeriodIds(d: DbShape): Promise<boolean> {
+  const ids = d.periods.map((p) => p.id);
   const needsId = ids.some((id) => !isPeriodId(id));
-  const needsVis = db.periods.some((p) => !p.visibility);
-  if (!needsId && !needsVis) return;
+  const needsVis = d.periods.some((p) => !p.visibility);
+  if (!needsId && !needsVis) return false;
   const map = needsId ? await migratePeriodIds(ids) : new Map(ids.map((id) => [id, id] as const));
   const rewrite = (pid: string) => map.get(pid) || pid;
-  mutate((d) => {
-    d.periods = d.periods.map((p) => ({
-      ...p,
-      id: rewrite(p.id),
-      visibility: p.visibility || 'private',
-    }));
-    const retarget = <T extends { periodId?: string }>(rows: T[] | undefined): T[] | undefined => {
-      if (!rows) return rows;
-      return rows.map((row) => (row.periodId ? { ...row, periodId: rewrite(row.periodId) } : row));
-    };
-    d.members = retarget(d.members)!;
-    d.expenses = retarget(d.expenses)!;
-    d.payments = retarget(d.payments)!;
-    d.invites = retarget(d.invites)!;
-    d.chat = retarget(d.chat)!;
-    d.attachments = retarget(d.attachments)!;
-    d.activity = retarget(d.activity)!;
-    d.recurring = retarget(d.recurring)!;
-    if (d.telegramLinks) d.telegramLinks = retarget(d.telegramLinks);
-  });
+  d.periods = d.periods.map((p) => ({
+    ...p,
+    id: rewrite(p.id),
+    visibility: p.visibility || 'private',
+  }));
+  const retarget = <T extends { periodId?: string }>(rows: T[] | undefined): T[] | undefined => {
+    if (!rows) return rows;
+    return rows.map((row) => (row.periodId ? { ...row, periodId: rewrite(row.periodId) } : row));
+  };
+  d.members = retarget(d.members)!;
+  d.expenses = retarget(d.expenses)!;
+  d.payments = retarget(d.payments)!;
+  d.invites = retarget(d.invites)!;
+  d.chat = retarget(d.chat)!;
+  d.attachments = retarget(d.attachments)!;
+  d.activity = retarget(d.activity)!;
+  d.recurring = retarget(d.recurring)!;
+  if (d.telegramLinks) d.telegramLinks = retarget(d.telegramLinks);
+  return true;
 }
 
-export function bumpPeriodVersion(d: DbShape, periodId: string): void {
-  const p = d.periods.find((x) => x.id === periodId);
-  if (!p) return;
-  p.version += 1;
-  p.updatedAt = new Date().toISOString();
+export async function initStore(): Promise<void> {
+  await initMysql();
 }
 
-export function getDb(): DbShape {
-  return db;
+export async function resetDb(): Promise<void> {
+  await truncateAll();
 }
 
-export function mutate(fn: (d: DbShape) => void): DbShape {
-  fn(db);
-  if (persistPg) void persistPg(db);
-  else saveDb(db);
-  return db;
+/** Read-only snapshot from MySQL (tests / admin export). */
+export async function getDb(): Promise<DbShape> {
+  return loadDb();
 }
 
-export function resetDb(): void {
-  db = emptyDb();
-  saveDb(db);
+/** Test/import helper: write a full graph through MySQL. */
+export async function replaceStore(db: DbShape): Promise<void> {
+  await replaceDb(db);
+}
+
+/** Test helper: load the full graph, apply a mutation, persist. Request handlers must not use this. */
+export async function mutate(fn: (db: DbShape) => void | Promise<void>): Promise<void> {
+  const db = await loadDb();
+  await fn(db);
+  await replaceDb(db);
 }

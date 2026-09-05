@@ -3,18 +3,61 @@
 @tailwind utilities;
 
 :root {
-  --ink: #0f172a;
-  --brand: #0f766e;
+  --ink: 28 25 23;
+  --ink-700: 63 58 52;
+  --ink-800: 28 25 23;
+  --ink-900: 20 18 16;
+  --brand: 74 107 92;
+  --brand-50: 238 243 239;
+  --brand-100: 221 230 223;
+  --brand-200: 184 203 190;
+  --brand-500: 107 143 124;
+  --brand-600: 88 120 102;
+  --brand-700: 74 107 92;
+  --brand-800: 58 85 72;
+  --brand-900: 42 62 52;
+  --surface: 255 250 245;
+  --bg: 244 241 234;
+  --bg-accent: 238 243 239;
+  --clay: 212 165 116;
+  --clay-50: 244 232 214;
+  --clay-800: 122 78 40;
+  --scrim: 20 18 16;
+  color-scheme: light;
+}
+
+html[data-theme='dark'] {
+  --ink: 232 238 242;
+  --ink-700: 168 174 178;
+  --ink-800: 232 238 242;
+  --ink-900: 248 250 252;
+  --brand: 74 107 92;
+  --brand-50: 26 36 32;
+  --brand-100: 36 51 44;
+  --brand-200: 58 85 72;
+  --brand-500: 107 143 124;
+  --brand-600: 122 157 136;
+  --brand-700: 74 107 92;
+  --brand-800: 168 197 181;
+  --brand-900: 197 209 200;
+  --surface: 20 26 34;
+  --bg: 11 15 20;
+  --bg-accent: 26 36 32;
+  --clay: 212 165 116;
+  --clay-50: 58 46 32;
+  --clay-800: 232 212 184;
+  --scrim: 11 15 20;
+  color-scheme: dark;
 }
 
 body {
   margin: 0;
   min-height: 100dvh;
   font-family: Vazirmatn, Tahoma, sans-serif;
-  color: var(--ink);
+  color: rgb(var(--ink));
   background:
-    radial-gradient(1200px 600px at 100% -10%, rgba(20, 184, 166, 0.18), transparent 55%),
-    linear-gradient(180deg, #f0fdfa 0%, #f8fafc 50%, #eef2ff 100%);
+    radial-gradient(1200px 600px at 100% -10%, rgb(var(--brand-500) / 0.14), transparent 55%),
+    linear-gradient(180deg, rgb(var(--bg)) 0%, rgb(var(--bg-accent)) 50%, rgb(var(--bg)) 100%);
 }
 
 #root {
@@ -26,25 +69,25 @@ body {
     @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition disabled:opacity-50;
   }
   .btn-primary {
-    @apply btn bg-brand-700 text-white shadow-soft hover:bg-brand-800;
+    @apply btn bg-brand-700 text-white shadow-soft hover:bg-brand-600;
   }
   .btn-ghost {
-    @apply btn bg-white text-ink-800 ring-1 ring-brand-700/10 hover:bg-brand-50;
+    @apply btn bg-surface text-ink-800 ring-1 ring-brand-700/10 hover:bg-brand-50;
   }
   .btn-danger {
     @apply btn bg-rose-600 text-white hover:bg-rose-700;
   }
   .input {
-    @apply w-full rounded-xl border border-brand-700/10 bg-white px-3 py-2 text-sm outline-none ring-brand-600 focus:ring-2;
+    @apply w-full rounded-xl border border-brand-700/10 bg-surface px-3 py-2 text-sm outline-none ring-brand-600 focus:ring-2;
   }
   .label {
     @apply mb-1 block text-xs font-medium text-ink-700/70;
   }
   .card {
-    @apply rounded-2xl bg-white/85 p-4 shadow-soft ring-1 ring-brand-700/10 backdrop-blur;
+    @apply rounded-2xl bg-surface/80 p-4 shadow-soft ring-1 ring-brand-700/10 backdrop-blur;
   }
   .table-wrap {
-    @apply overflow-x-auto rounded-2xl bg-white/85 ring-1 ring-brand-700/10;
+    @apply overflow-x-auto rounded-2xl bg-surface/80 ring-1 ring-brand-700/10;
   }
   .data-table {
     @apply w-full min-w-[640px] text-right text-sm;
@@ -57,5 +100,14 @@ body {
   }
   .data-table tr:hover td {
     @apply bg-brand-50/40;
+  }
+  .toast-bar {
+    @apply rounded-2xl px-4 py-3 text-sm shadow-soft;
+    background: rgb(var(--scrim));
+    color: #fff;
+  }
+  html[data-theme='dark'] .toast-bar {
+    background: rgb(var(--surface));
+    color: rgb(var(--ink-900));
   }
 }

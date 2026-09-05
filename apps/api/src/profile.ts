@@ -1,19 +1,19 @@
 import { nanoid } from 'nanoid';
 import { expirePremium, sanitizeFxWatchlist, toLatinDigits } from '@dongham/ledger';
-import { mutate } from './db.js';
+import type { CloudPayoutMethod, CloudProfile } from '@dongham/ledger';
+import { getUserById, updateUser } from './repo.js';
 import type { UserRecord } from './types.js';
 
-export function persistPremiumExpiry(u: UserRecord): UserRecord {
+export type { CloudPayoutMethod, CloudProfile };
+
+export async function persistPremiumExpiry(u: UserRecord): Promise<UserRecord> {
   if (!expirePremium(u)) return u;
-  mutate((db) => {
-    const row = db.users.find((x) => x.id === u.id);
-    if (row) row.plan = 'free';
-  });
+  await updateUser(u);
   return u;
 }
 
 export function publicUser(u: UserRecord) {
-  persistPremiumExpiry(u);
+  expirePremium(u);
   return {
     id: u.id,
     phone: u.phone,
@@ -27,31 +27,6 @@ export function publicUser(u: UserRecord) {
     premiumUntil: u.premiumUntil,
   };
 }
-
-export type CloudPayoutMethod = {
-  id: string;
-  label?: string;
-  cardNumber: string;
-  sheba?: string;
-  cardHolderName?: string;
-  bankName?: string;
-  accountNumber?: string;
-  isDefault?: boolean;
-};
-
-export type CloudProfile = {
-  displayName: string;
-  phone?: string;
-  email?: string;
-  plan: 'free' | 'premium';
-  premiumUntil?: string;
-  usePersianDigits: boolean;
-  debtReminders: boolean;
-  calendarMode: 'jalali' | 'gregorian';
-  fxWatchlist: string[];
-  payoutMethods?: CloudPayoutMethod[];
-  prefsUpdatedAt?: string;
-};
 
 export type UserProfilePatch = {
   displayName?: string;
@@ -116,7 +91,7 @@ export function sanitizePayoutMethods(input: unknown): CloudPayoutMethod[] {
 }
 
 export function cloudProfile(u: UserRecord): CloudProfile {
-  persistPremiumExpiry(u);
+  expirePremium(u);
   return {
     displayName: u.displayName,
     phone: u.phone,
@@ -132,28 +107,26 @@ export function cloudProfile(u: UserRecord): CloudProfile {
   };
 }
 
-export function authSession(token: string, user: UserRecord) {
+export async function authSession(token: string, user: UserRecord) {
+  await persistPremiumExpiry(user);
   return { token, user: publicUser(user), profile: cloudProfile(user) };
 }
 
-export function applyUserProfilePatch(userId: string, patch: UserProfilePatch): UserRecord | null {
-  let next: UserRecord | null = null;
-  mutate((db) => {
-    const row = db.users.find((u) => u.id === userId && !u.deletedAt);
-    if (!row) return;
-    if (typeof patch.displayName === 'string') {
-      const name = patch.displayName.trim().slice(0, 40);
-      if (name) row.displayName = name;
-    }
-    if (typeof patch.usePersianDigits === 'boolean') row.usePersianDigits = patch.usePersianDigits;
-    if (typeof patch.debtReminders === 'boolean') row.debtReminders = patch.debtReminders;
-    if (patch.calendarMode === 'jalali' || patch.calendarMode === 'gregorian') {
-      row.calendarMode = patch.calendarMode;
-    }
-    if (patch.fxWatchlist !== undefined) row.fxWatchlist = sanitizeFxWatchlist(patch.fxWatchlist);
-    if (patch.payoutMethods !== undefined) row.payoutMethods = sanitizePayoutMethods(patch.payoutMethods);
-    row.prefsUpdatedAt = new Date().toISOString();
-    next = { ...row };
-  });
-  return next;
+export async function applyUserProfilePatch(userId: string, patch: UserProfilePatch): Promise<UserRecord | null> {
+  const row = await getUserById(userId);
+  if (!row || row.deletedAt) return null;
+  if (typeof patch.displayName === 'string') {
+    const name = patch.displayName.trim().slice(0, 40);
+    if (name) row.displayName = name;
+  }
+  if (typeof patch.usePersianDigits === 'boolean') row.usePersianDigits = patch.usePersianDigits;
+  if (typeof patch.debtReminders === 'boolean') row.debtReminders = patch.debtReminders;
+  if (patch.calendarMode === 'jalali' || patch.calendarMode === 'gregorian') {
+    row.calendarMode = patch.calendarMode;
+  }
+  if (patch.fxWatchlist !== undefined) row.fxWatchlist = sanitizeFxWatchlist(patch.fxWatchlist);
+  if (patch.payoutMethods !== undefined) row.payoutMethods = sanitizePayoutMethods(patch.payoutMethods);
+  row.prefsUpdatedAt = new Date().toISOString();
+  await updateUser(row);
+  return row;
 }

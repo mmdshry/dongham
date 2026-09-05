@@ -61,6 +61,7 @@ export type Expense = {
   createdAt: string;
   deletedAt?: string;
   attachmentId?: string;
+  attachmentDataUrl?: string;
   hasAttachment?: boolean;
 };
 
@@ -74,6 +75,8 @@ export type Payment = {
   kind: 'settlement' | 'loan';
   status?: string;
   note?: string;
+  receiptDataUrl?: string;
+  hasReceipt?: boolean;
   deletedAt?: string;
 };
 

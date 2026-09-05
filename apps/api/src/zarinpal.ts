@@ -1,7 +1,13 @@
 import { nanoid } from 'nanoid';
-import { getDb, mutate } from './db.js';
 import { premiumUntilFromNow, recordBillingEvent } from './billing.js';
 import { appPublicUrl } from './publicUrl.js';
+import {
+  deleteZarinpalPendingForUserSku,
+  getUserById,
+  getZarinpalPending,
+  insertZarinpalPending,
+  updateUser,
+} from './repo.js';
 
 const SKU_RIAL: Record<string, number> = {
   premium_monthly: Number(process.env.ZARINPAL_MONTHLY_RIAL || 490_000),
@@ -42,15 +48,12 @@ export async function zarinpalRequest(input: {
 
   if (!merchantId()) {
     const authority = `dev-${nanoid()}`;
-    mutate((db) => {
-      db.zarinpalPending = db.zarinpalPending || [];
-      db.zarinpalPending.push({
-        authority,
-        userId: input.userId,
-        sku: input.sku,
-        amount,
-        createdAt: new Date().toISOString(),
-      });
+    await insertZarinpalPending({
+      authority,
+      userId: input.userId,
+      sku: input.sku,
+      amount,
+      createdAt: new Date().toISOString(),
     });
     const appUrl = appPublicUrl();
     return {
@@ -72,15 +75,12 @@ export async function zarinpalRequest(input: {
   const json = (await res.json()) as { data?: { authority?: string; code?: number }; errors?: unknown };
   const authority = json.data?.authority;
   if (!authority) throw new Error('درگاه زرین‌پال پاسخ نداد');
-  mutate((db) => {
-    db.zarinpalPending = db.zarinpalPending || [];
-    db.zarinpalPending.push({
-      authority,
-      userId: input.userId,
-      sku: input.sku,
-      amount,
-      createdAt: new Date().toISOString(),
-    });
+  await insertZarinpalPending({
+    authority,
+    userId: input.userId,
+    sku: input.sku,
+    amount,
+    createdAt: new Date().toISOString(),
   });
   return { authority, url: startPay(authority) };
 }
@@ -92,11 +92,11 @@ export async function zarinpalVerify(input: {
   if (input.status && input.status.toUpperCase() !== 'OK') {
     return { ok: false, error: 'پرداخت لغو شد' };
   }
-  const pending = (getDb().zarinpalPending || []).find((p) => p.authority === input.authority);
+  const pending = await getZarinpalPending(input.authority);
   if (!pending) return { ok: false, error: 'تراکنش پیدا نشد' };
 
   if (!merchantId() && input.authority.startsWith('dev-')) {
-    applyPremium(pending.userId, pending.sku, pending.amount);
+    await applyPremium(pending.userId, pending.sku, pending.amount);
     return { ok: true, userId: pending.userId, sku: pending.sku };
   }
 
@@ -113,19 +113,18 @@ export async function zarinpalVerify(input: {
   if (json.data?.code !== 100 && json.data?.code !== 101) {
     return { ok: false, error: 'تأیید زرین‌پال ناموفق بود' };
   }
-  applyPremium(pending.userId, pending.sku, pending.amount);
+  await applyPremium(pending.userId, pending.sku, pending.amount);
   return { ok: true, userId: pending.userId, sku: pending.sku };
 }
 
-function applyPremium(userId: string, sku: string, amount?: number) {
+async function applyPremium(userId: string, sku: string, amount?: number) {
   const until = premiumUntilFromNow(skuDays(sku));
-  mutate((db) => {
-    const u = db.users.find((x) => x.id === userId);
-    if (u) {
-      u.plan = 'premium';
-      u.premiumUntil = until;
-    }
-    db.zarinpalPending = (db.zarinpalPending || []).filter((p) => p.userId !== userId || p.sku !== sku);
-  });
-  recordBillingEvent({ userId, source: 'zarinpal', sku, amount, until });
+  const u = await getUserById(userId);
+  if (u) {
+    u.plan = 'premium';
+    u.premiumUntil = until;
+    await updateUser(u);
+  }
+  await deleteZarinpalPendingForUserSku(userId, sku);
+  await recordBillingEvent({ userId, source: 'zarinpal', sku, amount, until });
 }

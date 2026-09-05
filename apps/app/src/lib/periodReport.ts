@@ -6,7 +6,7 @@ import { formatCalendarDate, formatMoney, toPersianDigits } from './format';
 import { settlementPaySentence } from './share';
 
 export const REPORT_WIDTH_PX = 794;
-export const REPORT_BG = '#F0FDFA';
+export const REPORT_BG = '#F4F1EA';
 
 export type ReportVariant = 'full' | 'summary';
 
@@ -113,8 +113,8 @@ export function balanceStatusLabel(balance: number): string {
   return 'تسویه';
 }
 
-const TD = 'padding:8px 10px;border-bottom:1px solid rgba(15,118,110,0.12);text-align:right;vertical-align:top';
-const TH = `${TD};background:rgba(15,118,110,0.08);font-weight:700;color:#0F766E`;
+const TD = 'padding:8px 10px;border-bottom:1px solid rgba(74,107,92,0.12);text-align:right;vertical-align:top';
+const TH = `${TD};background:rgba(74,107,92,0.08);font-weight:700;color:#4A6B5C`;
 const TABLE = 'width:100%;border-collapse:collapse;font-size:13px';
 
 function money(amount: number, currency: string) {
@@ -266,7 +266,7 @@ export function buildPeriodReportHtml(
       ? `<tr><td colspan="3" style="${TD};text-align:center;color:#64748b">${escapeHtml(REPORT_EMPTY.members)}</td></tr>`
       : model.balances
           .map((row) => {
-            const color = row.amount < -0.5 ? '#BE123C' : row.amount > 0.5 ? '#0F766E' : '#134E4A';
+            const color = row.amount < -0.5 ? '#BE123C' : row.amount > 0.5 ? '#4A6B5C' : '#2A3E34';
             return `<tr>
         <td style="${TD}">${escapeHtml(row.name)}</td>
         <td style="${TD}">${escapeHtml(row.status)}</td>
@@ -277,11 +277,11 @@ export function buildPeriodReportHtml(
 
   const settlementItems =
     model.settlements.length === 0
-      ? `<p style="margin:8px 0 0;font-size:14px;color:#134E4A">${escapeHtml(REPORT_EMPTY.settlements)}</p>`
+      ? `<p style="margin:8px 0 0;font-size:14px;color:#2A3E34">${escapeHtml(REPORT_EMPTY.settlements)}</p>`
       : `<ul style="margin:10px 0 0;padding:0;list-style:none">${model.settlements
           .map(
             (s) =>
-              `<li style="margin:0 0 8px;padding:10px 12px;border-radius:12px;background:rgba(15,118,110,0.08);font-size:14px;line-height:1.7">${escapeHtml(s.sentence)}</li>`,
+              `<li style="margin:0 0 8px;padding:10px 12px;border-radius:12px;background:rgba(74,107,92,0.08);font-size:14px;line-height:1.7">${escapeHtml(s.sentence)}</li>`,
           )
           .join('')}</ul>`;
 
@@ -320,7 +320,7 @@ export function buildPeriodReportHtml(
     variant === 'full'
       ? `
     <section style="margin-top:22px">
-      <h2 style="margin:0 0 8px;font-size:16px;color:#0F766E">هزینه‌ها</h2>
+      <h2 style="margin:0 0 8px;font-size:16px;color:#4A6B5C">هزینه‌ها</h2>
       <table style="${TABLE}">
         <thead>
           <tr>
@@ -336,7 +336,7 @@ export function buildPeriodReportHtml(
       </table>
     </section>
     <section style="margin-top:22px">
-      <h2 style="margin:0 0 8px;font-size:16px;color:#0F766E">پرداخت‌ها</h2>
+      <h2 style="margin:0 0 8px;font-size:16px;color:#4A6B5C">پرداخت‌ها</h2>
       <table style="${TABLE}">
         <thead>
           <tr>
@@ -352,21 +352,21 @@ export function buildPeriodReportHtml(
     </section>`
       : '';
 
-  return `<article dir="rtl" lang="fa" data-period-report="${variant}" style="width:${REPORT_WIDTH_PX}px;box-sizing:border-box;padding:28px 32px 36px;background:${REPORT_BG};color:#134E4A;font-family:Vazirmatn,Tahoma,sans-serif;line-height:1.6">
+  return `<article dir="rtl" lang="fa" data-period-report="${variant}" style="width:${REPORT_WIDTH_PX}px;box-sizing:border-box;padding:28px 32px 36px;background:${REPORT_BG};color:#2A3E34;font-family:Vazirmatn,Tahoma,sans-serif;line-height:1.6">
     <header>
-      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:13px;color:#0F766E">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px;font-size:13px;color:#4A6B5C">
         <span style="font-weight:800">دونگ‌هام</span>
         <span>${escapeHtml(model.exportDate)}</span>
       </div>
-      <h1 style="margin:10px 0 6px;font-size:28px;line-height:1.3;color:#0F766E">${escapeHtml(model.title)}</h1>
+      <h1 style="margin:10px 0 6px;font-size:28px;line-height:1.3;color:#4A6B5C">${escapeHtml(model.title)}</h1>
       <p style="margin:0;font-size:14px">${toPersianDigits(model.memberCount)} عضو · ${escapeHtml(model.currencyFa)}</p>
     </header>
-    <section style="margin-top:20px;padding:14px 16px;border-radius:16px;background:#fff;border:1px solid rgba(15,118,110,0.12)">
+    <section style="margin-top:20px;padding:14px 16px;border-radius:16px;background:#FFFAF5;border:1px solid rgba(74,107,92,0.12)">
       <p style="margin:0;font-size:13px;color:#64748b">جمع هزینه‌ها</p>
-      <p style="margin:4px 0 0;font-size:22px;font-weight:800;color:#0F766E">${escapeHtml(model.totalLabel)}</p>
+      <p style="margin:4px 0 0;font-size:22px;font-weight:800;color:#4A6B5C">${escapeHtml(model.totalLabel)}</p>
     </section>
     <section style="margin-top:22px">
-      <h2 style="margin:0 0 8px;font-size:16px;color:#0F766E">حساب اعضا</h2>
+      <h2 style="margin:0 0 8px;font-size:16px;color:#4A6B5C">حساب اعضا</h2>
       <table style="${TABLE}">
         <thead>
           <tr>
@@ -379,7 +379,7 @@ export function buildPeriodReportHtml(
       </table>
     </section>
     <section style="margin-top:22px">
-      <h2 style="margin:0 0 4px;font-size:16px;color:#0F766E">تسویه حساب</h2>
+      <h2 style="margin:0 0 4px;font-size:16px;color:#4A6B5C">تسویه حساب</h2>
       ${settlementItems}
     </section>
     ${tables}

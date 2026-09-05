@@ -3,7 +3,7 @@ import Base from '../layouts/Base.astro';
 ---
 <Base
   title="دونگ‌هام | تقسیم هزینه گروهی آنلاین و آفلاین"
-  description="Dongham اپلیکیشن تقسیم هزینه برای سفر، خوابگاه و خانه — Offline-first، دعوت با QR، تسویه هوشمند، رمزنگاری محلی."
+  description="Dongham اپلیکیشن تقسیم هزینه برای سفر، خوابگاه و خانه — Offline-first، دعوت با QR، تسویه هوشمند، رمز AES روی سرور برای دوره‌های قفل‌شده."
 >
   <section class="hero">
     <p class="brand">Dongham</p>
@@ -39,8 +39,8 @@ import Base from '../layouts/Base.astro';
     gap: 1rem;
     padding: 2.5rem 0 2rem;
     background:
-      radial-gradient(800px 400px at 90% 10%, rgba(20,184,166,.25), transparent 60%),
-      linear-gradient(180deg, #f0fdfa, #f8fafc 70%);
+      radial-gradient(800px 400px at 90% 10%, color-mix(in srgb, var(--brand-soft) 28%, transparent), transparent 60%),
+      linear-gradient(180deg, var(--bg), var(--surface) 70%);
   }
   .brand {
     margin: 0;

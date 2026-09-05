@@ -3,7 +3,7 @@ import { nanoid } from 'nanoid';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { nextRecurringAt } from '@dongham/ledger';
+import { inviteExpiresAt, isPeriodOwner, nextRecurringAt } from '@dongham/ledger';
 import { PromptDialog } from '../components/Dialog';
 import { MessengerShare } from '../components/MessengerShare';
 import { MemberPicker } from '../components/MemberPicker';
@@ -110,10 +110,26 @@ export function PeriodPage() {
     };
   }, [id]);
 
-  const me = members.find(
+  const meMember = members.find(
     (m) => m.guestKey === profile?.guestKey || (profile?.userId && m.userId === profile.userId),
   );
-  const isOwner = me?.role === 'owner' || (!!profile?.userId && period?.ownerId === profile.userId);
+  const me = meMember
+    ? {
+        id: meMember.id,
+        role: meMember.role,
+        userId: profile?.userId,
+        guestKey: profile?.guestKey,
+        ownerId: period?.ownerId,
+        ownerGuestKey: period?.ownerGuestKey,
+      }
+    : undefined;
+  const isOwner = isPeriodOwner({
+    ownerId: period?.ownerId,
+    ownerGuestKey: period?.ownerGuestKey,
+    userId: profile?.userId,
+    guestKey: profile?.guestKey,
+    memberRole: me?.role,
+  });
   const isViewer = me?.role === 'viewer' || (!me && period?.visibility === 'public');
 
   const analytics = useMemo(
@@ -183,14 +199,17 @@ export function PeriodPage() {
     try {
       const p = await ensureProfile();
       let token: string;
+      let expiresAt = inviteExpiresAt();
       if (p.token) {
-        const res = await api<{ token: string }>(`/periods/${id}/invites`, { method: 'POST' });
+        const res = await api<{ token: string; expiresAt?: string }>(`/periods/${id}/invites`, { method: 'POST' });
         token = res.token;
+        expiresAt = res.expiresAt || inviteExpiresAt();
       } else {
         token = nanoid(12);
+        expiresAt = inviteExpiresAt();
         setToast('برای دعوت از گوشی دیگر وارد شوید. این لینک فقط روی همین دستگاه کار می‌کند.');
       }
-      await db.invites.put({ token, periodId: id, createdAt: new Date().toISOString() });
+      await db.invites.put({ token, periodId: id, createdAt: new Date().toISOString(), expiresAt });
       const link = `${window.location.origin}/i/${token}`;
       setInviteLink(link);
       const dataUrl = await QRCode.toDataURL(link, { margin: 1, width: 280 });
@@ -251,7 +270,18 @@ export function PeriodPage() {
   };
 
   const setRole = async (member: LocalMember, role: LocalMember['role']) => {
-    if (isViewer || member.role === 'owner') return;
+    if (
+      isViewer ||
+      isPeriodOwner({
+        ownerId: period.ownerId,
+        ownerGuestKey: period.ownerGuestKey,
+        userId: member.userId,
+        guestKey: member.guestKey,
+        memberRole: member.role,
+      })
+    ) {
+      return;
+    }
     const next = { ...member, role };
     await db.members.put(next);
     await queueOp(id, 'member', 'upsert', next);
@@ -436,7 +466,7 @@ export function PeriodPage() {
     const next = !period.encrypted;
     await db.periods.update(id, { encrypted: next });
     await queueOp(id, 'period', 'upsert', { encrypted: next });
-    setToast(next ? 'اسنپ‌شات این دوره رمز می‌شود' : 'رمزنگاری دوره خاموش شد');
+    setToast(next ? 'رمز AES سرور برای این دوره روشن شد' : 'رمز AES سرور خاموش شد');
   };
 
   const setVisibility = async (visibility: 'private' | 'public') => {
@@ -485,7 +515,7 @@ export function PeriodPage() {
               type="button"
               role="tab"
               aria-selected={tab === t.id}
-              className={`chip ${tab === t.id ? 'bg-brand-700 text-white' : 'bg-white/80 text-ink-800 ring-1 ring-brand-700/10'}`}
+              className={`chip ${tab === t.id ? 'bg-brand-700 text-white' : 'bg-surface/80 text-ink-800 ring-1 ring-brand-700/10'}`}
               onClick={() => setTab(t.id)}
             >
               {t.label}
@@ -648,7 +678,7 @@ export function PeriodPage() {
                               ) : null}
                             </div>
                           ) : null}
-                          <details className="more-panel rounded-2xl bg-white/80 px-3">
+                          <details className="more-panel rounded-2xl bg-surface/80 px-3">
                             <summary>اشتراک‌گذاری</summary>
                             <div className="flex flex-wrap gap-2 pb-3">
                               <button
@@ -991,12 +1021,12 @@ export function PeriodPage() {
               ) : null}
               <div className="card-surface space-y-2">
                 <h3 className="font-bold">همگام QR آفلاین</h3>
-                <p className="text-xs text-ink-700/70">بدون سرور، اسنپ‌شات دوره را با QR یا فایل بین دستگاه‌ها رد و بدل کنید. رمز فقط روی همین خروجی است، نه دادهٔ داخل اپ.</p>
+                <p className="text-xs text-ink-700/70">بدون سرور، اسنپ‌شات دوره را با QR یا فایل بین دستگاه‌ها رد و بدل کنید. تیک زیر فقط AES ستون‌های حساس روی سرور را روشن می‌کند. عبارت عبور QR جدا و اختیاری است.</p>
                 <label className="flex items-center gap-2 text-sm">
                   <input type="checkbox" checked={!!period.encrypted} onChange={() => void toggleEncrypt()} disabled={isViewer} />
-                  رمز روی خروجی / اسنپ‌شات
+                  رمز AES داده روی سرور
                 </label>
-                <button type="button" className="btn-ghost w-full" onClick={() => (period.encrypted ? setSnapPrompt(true) : void exportOfflineSnap())}>
+                <button type="button" className="btn-ghost w-full" onClick={() => setSnapPrompt(true)}>
                   ساخت QR / فایل دوره
                 </button>
                 {snapQr ? <img src={snapQr} alt="QR همگام آفلاین" className="mx-auto max-w-full rounded-2xl" width={220} height={220} /> : null}

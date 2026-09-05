@@ -15,8 +15,8 @@ export default defineConfig({
         description: 'تقسیم هزینه گروهی — آنلاین و آفلاین',
         lang: 'fa',
         dir: 'rtl',
-        theme_color: '#0F766E',
-        background_color: '#F0FDFA',
+        theme_color: '#4A6B5C',
+        background_color: '#F4F1EA',
         display: 'standalone',
         start_url: '/',
         icons: [
@@ -68,5 +68,12 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+    },
   },
 });

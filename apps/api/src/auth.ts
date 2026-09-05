@@ -2,7 +2,21 @@ import { SignJWT, jwtVerify, createRemoteJWKSet } from 'jose';
 import bcrypt from 'bcryptjs';
 import { nanoid } from 'nanoid';
 import { normalizeEmail, normalizeIranMobile, normalizeOtpCode } from '@dongham/ledger';
-import { getDb, mutate } from './db.js';
+import {
+  claimMemberships,
+  consumeOtp,
+  deleteSessionByToken,
+  extraAdminPhones as loadExtraAdminPhones,
+  findSession,
+  findUserByEmail as repoFindUserByEmail,
+  findUserByGoogleId as repoFindUserByGoogleId,
+  findUserByPhone as repoFindUserByPhone,
+  getUserById,
+  insertSession,
+  insertUser,
+  storeOtp as repoStoreOtp,
+  updateUser,
+} from './repo.js';
 import type { UserRecord } from './types.js';
 
 const secret = () => new TextEncoder().encode(process.env.JWT_SECRET || 'dongham-dev-secret');
@@ -31,25 +45,31 @@ export function adminPhones(): string[] {
     .filter((p): p is string => Boolean(p));
 }
 
-export function extraAdminPhones(): string[] {
-  return (getDb().platformSettings?.extraAdminPhones || [])
+export async function extraAdminPhones(): Promise<string[]> {
+  return (await loadExtraAdminPhones())
     .map((s) => normalizeIranMobile(s))
     .filter((p): p is string => Boolean(p));
 }
 
-export function isAdminPhone(phone?: string): boolean {
+export async function isAdminPhone(phone?: string): Promise<boolean> {
   const local = normalizeIranMobile(phone);
   if (!local) return false;
-  return adminPhones().includes(local) || extraAdminPhones().includes(local);
+  return adminPhones().includes(local) || (await extraAdminPhones()).includes(local);
 }
 
-export function revokeSession(token: string): void {
-  mutate((db) => {
-    db.sessions = db.sessions.filter((s) => s.token !== token);
-  });
+export async function revokeSession(token: string): Promise<void> {
+  await deleteSessionByToken(token);
+}
+
+export function isUserBanned(user?: UserRecord | null): boolean {
+  return Boolean(user?.bannedAt);
 }
 
 export async function issueToken(userId: string, deviceId: string, opts?: IssuedTokenOpts): Promise<string> {
+  const existing = await getUserById(userId);
+  if (!existing || existing.deletedAt || isUserBanned(existing)) {
+    throw new Error('این حساب مسدود است');
+  }
   const claims: Record<string, unknown> = { sub: userId, deviceId };
   if (opts?.role === 'admin') claims.role = 'admin';
   if (opts?.impersonatedBy) claims.impersonatedBy = opts.impersonatedBy;
@@ -58,14 +78,12 @@ export async function issueToken(userId: string, deviceId: string, opts?: Issued
     .setIssuedAt()
     .setExpirationTime(opts?.expiresIn || '30d')
     .sign(secret());
-  mutate((db) => {
-    db.sessions.push({
-      id: nanoid(),
-      userId,
-      deviceId,
-      token,
-      createdAt: new Date().toISOString(),
-    });
+  await insertSession({
+    id: nanoid(),
+    userId,
+    deviceId,
+    token,
+    createdAt: new Date().toISOString(),
   });
   return token;
 }
@@ -79,11 +97,9 @@ export async function verifyToken(token: string): Promise<{
   try {
     const { payload } = await jwtVerify(token, secret());
     if (!payload.sub || typeof payload.deviceId !== 'string') return null;
-    const db = getDb();
-    const user = db.users.find((u) => u.id === payload.sub && !u.deletedAt);
-    if (!user || user.bannedAt) return null;
-    const session = db.sessions.find((s) => s.token === token && s.userId === payload.sub);
-    if (!session) return null;
+    const user = await getUserById(payload.sub);
+    if (!user || user.deletedAt || isUserBanned(user)) return null;
+    if (!(await findSession(token, payload.sub))) return null;
     const role: TokenRole = payload.role === 'admin' ? 'admin' : 'user';
     const impersonatedBy = typeof payload.impersonatedBy === 'string' ? payload.impersonatedBy : undefined;
     return { userId: payload.sub, deviceId: payload.deviceId, role, impersonatedBy };
@@ -92,31 +108,29 @@ export async function verifyToken(token: string): Promise<{
   }
 }
 
-export function findUserByPhone(phone: string): UserRecord | undefined {
+export async function findUserByPhone(phone: string): Promise<UserRecord | undefined> {
   const local = normalizeIranMobile(phone);
   if (!local) return undefined;
-  return getDb().users.find((u) => normalizeIranMobile(u.phone) === local && !u.deletedAt);
+  return repoFindUserByPhone(local);
 }
 
-export function findUserByEmail(email: string): UserRecord | undefined {
+export async function findUserByEmail(email: string): Promise<UserRecord | undefined> {
   const normalized = normalizeEmail(email);
   if (!normalized) return undefined;
-  return getDb().users.find((u) => normalizeEmail(u.email) === normalized && !u.deletedAt);
+  return repoFindUserByEmail(normalized);
 }
 
-export function findUserByGoogleId(googleId: string): UserRecord | undefined {
-  return getDb().users.find((u) => u.googleId === googleId && !u.deletedAt);
+export async function findUserByGoogleId(googleId: string): Promise<UserRecord | undefined> {
+  return repoFindUserByGoogleId(googleId);
 }
 
-function storeOtp(phone: string, code: string) {
-  mutate((db) => {
-    db.otps = db.otps.filter((o) => o.phone !== phone);
-    db.otps.push({ phone, code, expiresAt: Date.now() + 5 * 60_000 });
-  });
+async function storeOtp(phone: string, code: string) {
+  await repoStoreOtp(phone, code, Date.now() + 5 * 60_000);
 }
 
 export function otpProvider(): string {
   const explicit = (process.env.OTP_PROVIDER || '').trim().toLowerCase();
+  if (explicit === 'mock') return 'mock';
   if (explicit === 'kavenegar') return 'kavenegar';
   if (explicit === 'senator') return 'senator';
   if (process.env.SENATOR_API_KEY) return 'senator';
@@ -227,7 +241,7 @@ export async function sendOtp(phone: string): Promise<string> {
     console.error('[otp send]', err instanceof Error ? err.message : err);
     throw err;
   }
-  storeOtp(local, code);
+  await storeOtp(local, code);
   return code;
 }
 
@@ -235,45 +249,28 @@ export function isOtpMock(): boolean {
   return otpProvider() === 'mock';
 }
 
-export function verifyOtp(phone: string, code: string): boolean {
+export async function verifyOtp(phone: string, code: string): Promise<boolean> {
   const local = normalizeIranMobile(phone);
   const otp = normalizeOtpCode(code);
   if (!local || !otp) return false;
-  const db = getDb();
-  const row = db.otps.find((o) => o.phone === local && o.code === otp && o.expiresAt > Date.now());
-  if (!row) return false;
-  mutate((d) => {
-    d.otps = d.otps.filter((o) => o.phone !== local);
-  });
-  return true;
+  return consumeOtp(local, otp);
 }
 
-export function claimListedMemberships(user: UserRecord): void {
-  const phone = normalizeIranMobile(user.phone);
-  const email = normalizeEmail(user.email);
-  if (!phone && !email) return;
-  mutate((db) => {
-    const claimedPeriods = new Set<string>();
-    for (const m of db.members) {
-      if (m.userId || m.isPot) continue;
-      if (claimedPeriods.has(m.periodId)) continue;
-      const phoneMatch = phone && normalizeIranMobile(m.phone) === phone;
-      const emailMatch = email && normalizeEmail(m.email) === email;
-      if (phoneMatch || emailMatch) {
-        m.userId = user.id;
-        claimedPeriods.add(m.periodId);
-      }
-    }
+export async function claimListedMemberships(user: UserRecord): Promise<void> {
+  await claimMemberships({
+    ...user,
+    phone: normalizeIranMobile(user.phone) || user.phone,
+    email: normalizeEmail(user.email) || user.email,
   });
 }
 
-export function createUser(data: {
+export async function createUser(data: {
   displayName: string;
   phone?: string;
   email?: string;
   passwordHash?: string;
   googleId?: string;
-}): UserRecord {
+}): Promise<UserRecord> {
   const user: UserRecord = {
     id: nanoid(),
     displayName: data.displayName,
@@ -284,7 +281,7 @@ export function createUser(data: {
     createdAt: new Date().toISOString(),
     plan: 'free',
   };
-  mutate((db) => db.users.push(user));
+  await insertUser(user);
   return user;
 }
 
@@ -317,23 +314,23 @@ export async function loginWithGoogle(
   deviceId: string,
 ): Promise<{ token: string; user: UserRecord }> {
   const claims = await verifyGoogleIdToken(idToken);
-  let user = findUserByGoogleId(claims.googleId);
+  let user = await findUserByGoogleId(claims.googleId);
   if (!user && claims.email) {
-    user = findUserByEmail(claims.email);
+    user = await findUserByEmail(claims.email);
     if (user) {
-      mutate((db) => {
-        const row = db.users.find((u) => u.id === user!.id);
-        if (row) row.googleId = claims.googleId;
-      });
       user = { ...user, googleId: claims.googleId };
+      await updateUser(user);
     }
   }
   if (!user) {
-    user = createUser({
+    user = await createUser({
       displayName: claims.displayName,
       email: claims.email,
       googleId: claims.googleId,
     });
+  }
+  if (isUserBanned(user)) {
+    throw new Error('این حساب مسدود است');
   }
   const token = await issueToken(user.id, deviceId || nanoid());
   return { token, user };

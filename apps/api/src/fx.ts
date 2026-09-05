@@ -1,5 +1,5 @@
 import type { FxCacheRecord } from './types.js';
-import { getDb, mutate } from './db.js';
+import { getFxCache, setFxCache } from './repo.js';
 
 const NEEDED = ['USD', 'EUR', 'TRY', 'AED', 'IQD', 'XAU'] as const;
 const CACHE_MS = 60_000;
@@ -56,7 +56,7 @@ export async function getFxRates(opts?: { force?: boolean }): Promise<{
   fetchedAt: string;
   missing: string[];
 }> {
-  const cached = getDb().fxCache;
+  const cached = await getFxCache();
   if (!opts?.force && cached && Date.now() - new Date(cached.fetchedAt).getTime() < CACHE_MS) {
     return {
       rates: cached.rates,
@@ -69,9 +69,7 @@ export async function getFxRates(opts?: { force?: boolean }): Promise<{
   const live = await fetchLiveRates();
   if (live && Object.keys(live.rates).length) {
     const fetchedAt = new Date().toISOString();
-    mutate((db) => {
-      db.fxCache = { rates: live.rates, fetchedAt, source: live.source } satisfies FxCacheRecord;
-    });
+    await setFxCache({ rates: live.rates, fetchedAt, source: live.source } satisfies FxCacheRecord);
     return { rates: live.rates, source: live.source, fetchedAt, missing: missingFxCodes(live.rates) };
   }
 

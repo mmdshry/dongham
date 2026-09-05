@@ -1,34 +1,43 @@
 /** @type {import('tailwindcss').Config} */
+const rgb = (name) => `rgb(var(${name}) / <alpha-value>)`;
+
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       colors: {
         brand: {
-          50: '#F0FDFA',
-          100: '#CCFBF1',
-          200: '#99F6E4',
-          500: '#14B8A6',
-          600: '#0D9488',
-          700: '#0F766E',
-          800: '#115E59',
-          900: '#134E4A',
+          50: rgb('--brand-50'),
+          100: rgb('--brand-100'),
+          200: rgb('--brand-200'),
+          500: rgb('--brand-500'),
+          600: rgb('--brand-600'),
+          700: rgb('--brand-700'),
+          800: rgb('--brand-800'),
+          900: rgb('--brand-900'),
         },
         ink: {
-          700: '#1E293B',
-          800: '#0F172A',
-          900: '#020617',
+          700: rgb('--ink-700'),
+          800: rgb('--ink-800'),
+          900: rgb('--ink-900'),
         },
+        surface: rgb('--surface'),
+        clay: {
+          DEFAULT: rgb('--clay'),
+          50: rgb('--clay-50'),
+          800: rgb('--clay-800'),
+        },
+        scrim: rgb('--scrim'),
         sand: {
-          50: '#F8FAFC',
-          100: '#F1F5F9',
+          50: rgb('--bg'),
+          100: rgb('--brand-100'),
         },
       },
       fontFamily: {
         sans: ['Vazirmatn', 'Tahoma', 'sans-serif'],
       },
       boxShadow: {
-        soft: '0 10px 40px -20px rgba(15, 118, 110, 0.35)',
+        soft: '0 10px 40px -20px rgb(var(--brand-700) / 0.35)',
       },
       keyframes: {
         rise: {

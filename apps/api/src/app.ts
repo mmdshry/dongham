@@ -2,9 +2,20 @@ import type { Context, Next } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { nanoid } from 'nanoid';
-import { inferCadence, isPeriodId, migratePeriodIds, newPeriodId, nextRecurringAt, normalizeEmail, normalizeIranMobile, normalizeOtpCode } from '@dongham/ledger';
+import {
+  inferCadence,
+  isPeriodId,
+  migratePeriodIds,
+  newPeriodId,
+  nextRecurringAt,
+  normalizeEmail,
+  normalizeIranMobile,
+  normalizeOtpCode,
+  syncedMemberRole,
+} from '@dongham/ledger';
+import { canAccessPeriod, periodRole } from './access.js';
 import { adminApp, consumeImpersonation } from './admin.js';
-import { applyUserProfilePatch, authSession, cloudProfile, publicUser } from './profile.js';
+import { applyUserProfilePatch, authSession, cloudProfile, persistPremiumExpiry, publicUser } from './profile.js';
 import {
   claimListedMemberships,
   createUser,
@@ -12,6 +23,7 @@ import {
   findUserByPhone,
   hashPassword,
   isOtpMock,
+  isUserBanned,
   issueToken,
   loginWithGoogle,
   sendOtp,
@@ -21,13 +33,47 @@ import {
   revokeSession,
 } from './auth.js';
 import { premiumUntilFromNow, recordBillingEvent, verifyBazaarPurchase, verifyMyketPurchase } from './billing.js';
-import { bumpPeriodVersion, getDb, mutate } from './db.js';
 import { lookupCardSheba, lookupIdentity, quotaFor } from './drapi.js';
 import { getFxRates } from './fx.js';
 import { handleTelegramUpdate, telegramSend } from './telegram.js';
-import type { ActivityRecord, ExpenseRecord, MemberRole, PaymentRecord, PeriodKind, PeriodTemplate, RecurringCadence, RoundTo } from './types.js';
+import type { ExpenseRecord, MemberRecord, MemberRole, PaymentRecord, PeriodKind, PeriodRecord, PeriodTemplate, RecurringCadence, RoundTo } from './types.js';
 import { zarinpalRequest, zarinpalVerify } from './zarinpal.js';
 import { appPublicUrl, inviteExpiresAt, isInviteExpired } from './publicUrl.js';
+import {
+  bumpPeriodVersion,
+  deleteFriend,
+  deleteSessionsForUser,
+  getAttachment,
+  getExpense,
+  getInvite,
+  getMember,
+  getPayment,
+  getPeriod,
+  getUserById,
+  hasPendingPayment,
+  insertActivity,
+  insertAttachment,
+  insertChat,
+  insertInvite,
+  insertPeriod,
+  listChat,
+  listDueRecurring,
+  listFriends,
+  listMembers,
+  listNotifications,
+  listPeriodIds,
+  listPeriodsForUser,
+  loadPeriodSnapshot,
+  markNotificationRead,
+  notifyPeriodMembers,
+  updatePeriod,
+  updateUser,
+  upsertExpense,
+  upsertFriend,
+  upsertMember,
+  upsertPayment,
+  upsertRecurring,
+} from './repo.js';
 
 type Variables = {
   userId?: string;
@@ -47,6 +93,10 @@ const defaultCorsOrigins = [
   'https://admin.dongham.ir',
   'https://dongham.ir',
   'https://www.dongham.ir',
+  'https://localhost',
+  'http://localhost',
+  'capacitor://localhost',
+  'ionic://localhost',
 ];
 
 app.use(
@@ -91,80 +141,43 @@ function requireUser(c: Context<{ Variables: Variables }>): string | null {
   return c.get('userId') ?? null;
 }
 
-function findPeriod(periodId: string) {
-  return getDb().periods.find((p) => p.id === periodId);
+function periodAccessDenied(c: Context<{ Variables: Variables }>, userId: string | null) {
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  return c.json({ error: 'اجازه ندارید' }, 403);
 }
 
-function periodSnapshotBody(periodId: string) {
-  const db = getDb();
-  const period = db.periods.find((p) => p.id === periodId);
-  if (!period) return null;
+async function requireWrite(c: Context<{ Variables: Variables }>, periodId: string) {
+  const userId = requireUser(c);
+  if (!userId) return { error: c.json({ error: 'وارد نشده‌اید' }, 401) };
+  if (!(await canAccessPeriod(userId, periodId, 'write'))) {
+    return { error: c.json({ error: 'اجازه ندارید' }, 403) };
+  }
+  const role = await periodRole(userId, periodId);
+  if (!role || role === 'viewer') return { error: c.json({ error: 'نقش بیننده اجازهٔ تغییر ندارد' }, 403) };
+  return { userId, role };
+}
+
+function snapshotJson(snap: NonNullable<Awaited<ReturnType<typeof loadPeriodSnapshot>>>) {
   return {
-    period,
-    members: db.members.filter((m) => m.periodId === periodId),
-    expenses: db.expenses.filter((e) => e.periodId === periodId),
-    payments: db.payments.filter((p) => p.periodId === periodId),
-    chat: db.chat.filter((m) => m.periodId === periodId),
-    invites: db.invites.filter((i) => i.periodId === periodId),
-    recurring: db.recurring.filter((r) => r.periodId === periodId),
-    activity: (db.activity || []).filter((a) => a.periodId === periodId),
-    version: period.version,
+    period: snap.period,
+    members: snap.members,
+    expenses: snap.expenses,
+    payments: snap.payments,
+    chat: snap.chat,
+    invites: snap.invites,
+    recurring: snap.recurring,
+    activity: snap.activity,
+    version: snap.version,
   };
 }
 
-function memberMatchesUser(periodId: string, userId: string): boolean {
-  const db = getDb();
-  const user = db.users.find((u) => u.id === userId);
-  const phone = normalizeIranMobile(user?.phone);
-  const email = normalizeEmail(user?.email);
-  return db.members.some((m) => {
-    if (m.periodId !== periodId) return false;
-    if (m.userId === userId) return true;
-    if (phone && normalizeIranMobile(m.phone) === phone) return true;
-    if (email && m.email && normalizeEmail(m.email) === email) return true;
-    return false;
-  });
-}
-
-function canAccessPeriod(userId: string | null, periodId: string, mode: 'read' | 'write' = 'read'): boolean {
-  const period = findPeriod(periodId);
-  if (!period) return false;
-  if (mode === 'read' && (period.visibility || 'private') === 'public') return true;
-  if (!userId) return false;
-  if (period.ownerId === userId) return true;
-  return memberMatchesUser(periodId, userId);
-}
-
-function periodRole(userId: string, periodId: string): MemberRole | null {
-  const db = getDb();
-  const period = findPeriod(periodId);
-  if (!period) return null;
-  if (period.ownerId === userId) return 'owner';
-  const mine = db.members.find((m) => m.periodId === periodId && m.userId === userId);
-  if (mine) return mine.role === 'owner' ? 'member' : mine.role;
-  if (memberMatchesUser(periodId, userId)) {
-    const matched = db.members.find((m) => {
-      if (m.periodId !== periodId) return false;
-      const user = db.users.find((u) => u.id === userId);
-      const phone = normalizeIranMobile(user?.phone);
-      const email = normalizeEmail(user?.email);
-      if (phone && normalizeIranMobile(m.phone) === phone) return true;
-      if (email && m.email && normalizeEmail(m.email) === email) return true;
-      return false;
-    });
-    return matched?.role === 'viewer' ? 'viewer' : 'member';
-  }
-  return null;
-}
-
-// ——— Auth ———
 app.route('/admin', adminApp);
 
 async function handleImpersonateConsume(c: Context<{ Variables: Variables }>, code: string | undefined, deviceId: string) {
   if (!code) return c.json({ error: 'کد نامعتبر است' }, 400);
   const result = await consumeImpersonation(code, deviceId);
   if ('error' in result) return c.json({ error: result.error }, result.status);
-  return c.json(authSession(result.token, result.user));
+  return c.json(await authSession(result.token, result.user));
 }
 
 app.post('/auth/impersonate/consume', async (c) => {
@@ -181,19 +194,13 @@ app.post('/auth/impersonate/consume', async (c) => {
 });
 
 app.get('/auth/impersonate/consume', async (c) => {
-  return handleImpersonateConsume(
-    c,
-    c.req.query('code'),
-    c.req.header('X-Device-Id') || nanoid(),
-  );
+  return handleImpersonateConsume(c, c.req.query('code'), c.req.header('X-Device-Id') || nanoid());
 });
 
 app.post('/auth/otp/request', async (c) => {
   const { phone } = await c.req.json<{ phone: string }>();
   const local = normalizeIranMobile(phone);
-  if (!local) {
-    return c.json({ error: 'شماره موبایل نامعتبر است' }, 400);
-  }
+  if (!local) return c.json({ error: 'شماره موبایل نامعتبر است' }, 400);
   try {
     const code = await sendOtp(local);
     const body: Record<string, unknown> = { ok: true };
@@ -213,14 +220,15 @@ app.post('/auth/otp/verify', async (c) => {
   }>();
   const local = normalizeIranMobile(phone);
   const otp = normalizeOtpCode(code);
-  if (!local || !otp || !verifyOtp(local, otp)) return c.json({ error: 'کد نامعتبر است' }, 400);
-  let user = findUserByPhone(local);
+  if (!local || !otp || !(await verifyOtp(local, otp))) return c.json({ error: 'کد نامعتبر است' }, 400);
+  let user = await findUserByPhone(local);
   if (!user) {
-    user = createUser({ phone: local, displayName: displayName || `کاربر ${local.slice(-4)}` });
+    user = await createUser({ phone: local, displayName: displayName || `کاربر ${local.slice(-4)}` });
   }
-  claimListedMemberships(user);
+  if (isUserBanned(user)) return c.json({ error: 'این حساب مسدود است' }, 403);
+  await claimListedMemberships(user);
   const token = await issueToken(user.id, deviceId || nanoid());
-  return c.json(authSession(token, user));
+  return c.json(await authSession(token, user));
 });
 
 app.post('/auth/register', async (c) => {
@@ -234,15 +242,15 @@ app.post('/auth/register', async (c) => {
   if (!normalizedEmail || !password || password.length < 6) {
     return c.json({ error: 'ایمیل یا رمز نامعتبر است' }, 400);
   }
-  if (findUserByEmail(normalizedEmail)) return c.json({ error: 'این ایمیل قبلاً ثبت شده' }, 409);
-  const user = createUser({
+  if (await findUserByEmail(normalizedEmail)) return c.json({ error: 'این ایمیل قبلاً ثبت شده' }, 409);
+  const user = await createUser({
     email: normalizedEmail,
     displayName: displayName || normalizedEmail.split('@')[0],
     passwordHash: await hashPassword(password),
   });
-  claimListedMemberships(user);
+  await claimListedMemberships(user);
   const token = await issueToken(user.id, deviceId || nanoid());
-  return c.json(authSession(token, user));
+  return c.json(await authSession(token, user));
 });
 
 app.post('/auth/login', async (c) => {
@@ -251,13 +259,14 @@ app.post('/auth/login', async (c) => {
     password: string;
     deviceId: string;
   }>();
-  const user = findUserByEmail(email);
+  const user = await findUserByEmail(email);
   if (!user?.passwordHash || !(await verifyPassword(password, user.passwordHash))) {
     return c.json({ error: 'ایمیل یا رمز اشتباه است' }, 401);
   }
-  claimListedMemberships(user);
+  if (isUserBanned(user)) return c.json({ error: 'این حساب مسدود است' }, 403);
+  await claimListedMemberships(user);
   const token = await issueToken(user.id, deviceId || nanoid());
-  return c.json(authSession(token, user));
+  return c.json(await authSession(token, user));
 });
 
 app.post('/auth/google', async (c) => {
@@ -268,26 +277,30 @@ app.post('/auth/google', async (c) => {
   }
   try {
     const result = await loginWithGoogle(idToken, deviceId || nanoid());
-    claimListedMemberships(result.user);
-    return c.json(authSession(result.token, result.user));
-  } catch {
+    await claimListedMemberships(result.user);
+    return c.json(await authSession(result.token, result.user));
+  } catch (e) {
+    if (e instanceof Error && e.message === 'این حساب مسدود است') {
+      return c.json({ error: e.message }, 403);
+    }
     return c.json({ error: 'ورود گوگل نامعتبر است' }, 401);
   }
 });
 
-app.get('/auth/me', (c) => {
+app.get('/auth/me', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  const user = getDb().users.find((u) => u.id === userId && !u.deletedAt);
-  if (!user) return c.json({ error: 'پیدا نشد' }, 404);
+  const user = await getUserById(userId);
+  if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
+  await persistPremiumExpiry(user);
   return c.json({ user: publicUser(user), profile: cloudProfile(user) });
 });
 
-app.post('/auth/logout', (c) => {
+app.post('/auth/logout', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const header = c.req.header('Authorization');
-  if (header?.startsWith('Bearer ')) revokeSession(header.slice(7));
+  if (header?.startsWith('Bearer ')) await revokeSession(header.slice(7));
   return c.json({ ok: true });
 });
 
@@ -307,7 +320,7 @@ app.put('/auth/me', async (c) => {
   } catch {
     return c.json({ error: 'بدنه نامعتبر است' }, 400);
   }
-  const next = applyUserProfilePatch(userId, {
+  const next = await applyUserProfilePatch(userId, {
     displayName: body.displayName,
     usePersianDigits: body.usePersianDigits,
     debtReminders: body.debtReminders,
@@ -322,40 +335,38 @@ app.put('/auth/me', async (c) => {
 app.post('/auth/delete-account', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  mutate((db) => {
-    const u = db.users.find((x) => x.id === userId);
-    if (u) {
-      u.deletedAt = new Date().toISOString();
-      u.phone = undefined;
-      u.email = undefined;
-      u.googleId = undefined;
-      u.passwordHash = undefined;
-      u.displayName = 'حساب حذف‌شده';
-      u.payoutMethods = undefined;
-      u.fxWatchlist = undefined;
-      u.prefsUpdatedAt = undefined;
-    }
-    db.sessions = db.sessions.filter((s) => s.userId !== userId);
-  });
+  const u = await getUserById(userId);
+  if (u) {
+    u.deletedAt = new Date().toISOString();
+    u.phone = undefined;
+    u.email = undefined;
+    u.googleId = undefined;
+    u.passwordHash = undefined;
+    u.displayName = 'حساب حذف‌شده';
+    u.payoutMethods = undefined;
+    u.fxWatchlist = undefined;
+    u.prefsUpdatedAt = undefined;
+    await updateUser(u);
+  }
+  await deleteSessionsForUser(userId);
   return c.json({ ok: true });
 });
 
-// ——— Periods & sync ———
-app.get('/periods', (c) => {
+app.get('/periods', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  const db = getDb();
-  const periods = db.periods
-    .filter((p) => p.ownerId === userId || memberMatchesUser(p.id, userId))
-    .map((p) => ({
+  const user = await getUserById(userId);
+  const periods = await listPeriodsForUser(userId, user?.phone, user?.email);
+  return c.json({
+    periods: periods.map((p) => ({
       id: p.id,
       title: p.title,
       currency: p.currency,
       version: p.version,
       updatedAt: p.updatedAt,
       visibility: p.visibility || 'private',
-    }));
-  return c.json({ periods });
+    })),
+  });
 });
 
 app.post('/periods', async (c) => {
@@ -385,7 +396,7 @@ app.post('/periods', async (c) => {
     encrypted?: boolean;
     visibility?: 'private' | 'public';
   }>();
-  const taken = getDb().periods.map((p) => p.id);
+  const taken = await listPeriodIds();
   let id = body.id;
   if (id && !isPeriodId(id)) {
     const mapped = await migratePeriodIds([...taken, id]);
@@ -393,79 +404,109 @@ app.post('/periods', async (c) => {
   }
   if (!id) id = newPeriodId(taken);
   const now = new Date().toISOString();
-  const existing = getDb().periods.find((p) => p.id === id);
+  const existing = await getPeriod(id);
   if (existing) {
     if (existing.ownerId !== userId) return c.json({ error: 'اجازه ندارید' }, 403);
-    mutate((db) => {
-      const p = db.periods.find((x) => x.id === id)!;
-      if (body.title) p.title = body.title;
-      if (body.currency) p.currency = body.currency;
-      if (body.kind) p.kind = body.kind;
-      if (body.template) p.template = body.template;
-      if (body.roundTo !== undefined) p.roundTo = body.roundTo;
-      if (body.bankerMemberId) p.bankerMemberId = body.bankerMemberId;
-      if (body.buildingCharge !== undefined) p.buildingCharge = body.buildingCharge;
-      if (body.lunchTurnMemberId) p.lunchTurnMemberId = body.lunchTurnMemberId;
-      if (body.encrypted !== undefined) p.encrypted = body.encrypted;
-      if (body.visibility === 'public' || body.visibility === 'private') p.visibility = body.visibility;
-      bumpPeriodVersion(db, id!);
-      p.updatedAt = now;
-    });
-    return c.json({ period: getDb().periods.find((p) => p.id === id) });
-  }
-  mutate((db) => {
-    db.periods.push({
-      id,
-      title: body.title,
-      currency: body.currency || 'IRT',
-      ownerId: userId,
-      createdAt: now,
-      updatedAt: now,
-      version: 1,
-      kind: body.kind || 'split',
-      template: body.template || 'custom',
-      roundTo: body.roundTo ?? 0,
-      bankerMemberId: body.bankerMemberId,
-      buildingCharge: body.buildingCharge,
-      lunchTurnMemberId: body.lunchTurnMemberId,
-      encrypted: body.encrypted,
-      visibility: body.visibility === 'public' ? 'public' : 'private',
-    });
+    if (body.title) existing.title = body.title;
+    if (body.currency) existing.currency = body.currency;
+    if (body.kind) existing.kind = body.kind;
+    if (body.template) existing.template = body.template;
+    if (body.roundTo !== undefined) existing.roundTo = body.roundTo;
+    if (body.bankerMemberId) existing.bankerMemberId = body.bankerMemberId;
+    if (body.buildingCharge !== undefined) existing.buildingCharge = body.buildingCharge;
+    if (body.lunchTurnMemberId) existing.lunchTurnMemberId = body.lunchTurnMemberId;
+    if (body.encrypted !== undefined) existing.encrypted = body.encrypted;
+    if (body.visibility === 'public' || body.visibility === 'private') existing.visibility = body.visibility;
+    existing.updatedAt = now;
+    await updatePeriod(existing);
     if (body.members?.length) {
       for (const m of body.members) {
-        db.members.push({
-          id: m.id || nanoid(),
+        if (!m.id || !m.displayName) continue;
+        await upsertMember({
+          id: m.id,
           periodId: id,
           guestKey: m.guestKey,
-          userId: m.userId || (m.role === 'owner' ? userId : undefined),
+          userId: m.userId,
           displayName: m.displayName,
           weightDefault: m.weightDefault ?? 1,
-          role: m.role || 'member',
+          role: syncedMemberRole(m.role, m.userId, userId),
           phone: normalizeIranMobile(m.phone) || m.phone,
           email: normalizeEmail(m.email) || m.email,
           isPot: m.isPot,
+          excludeFromNew: m.excludeFromNew,
+          cardNumber: m.cardNumber,
+          sheba: m.sheba,
+          cardHolderName: m.cardHolderName,
+          bankName: m.bankName,
+          unitLabel: m.unitLabel,
         });
       }
-    } else {
-      db.members.push({
-        id: nanoid(),
+    }
+    await bumpPeriodVersion(id);
+    return c.json({ period: await getPeriod(id) });
+  }
+  const period: PeriodRecord = {
+    id,
+    title: body.title,
+    currency: body.currency || 'IRT',
+    ownerId: userId,
+    createdAt: now,
+    updatedAt: now,
+    version: 1,
+    kind: body.kind || 'split',
+    template: body.template || 'custom',
+    roundTo: body.roundTo ?? 0,
+    bankerMemberId: body.bankerMemberId,
+    buildingCharge: body.buildingCharge,
+    lunchTurnMemberId: body.lunchTurnMemberId,
+    encrypted: body.encrypted,
+    visibility: body.visibility === 'public' ? 'public' : 'private',
+  };
+  await insertPeriod(period);
+  if (body.members?.length) {
+    let ownerAssigned = false;
+    for (const m of body.members) {
+      let memberUserId = m.userId;
+      if (!memberUserId && m.role === 'owner' && !ownerAssigned) {
+        memberUserId = userId;
+        ownerAssigned = true;
+      } else if (memberUserId === userId) {
+        ownerAssigned = true;
+      }
+      await upsertMember({
+        id: m.id || nanoid(),
         periodId: id,
-        userId,
-        displayName: db.users.find((u) => u.id === userId)?.displayName || 'من',
-        weightDefault: 1,
-        role: 'owner',
+        guestKey: m.guestKey,
+        userId: memberUserId,
+        displayName: m.displayName,
+        weightDefault: m.weightDefault ?? 1,
+        role: syncedMemberRole(m.role, memberUserId, userId),
+        phone: normalizeIranMobile(m.phone) || m.phone,
+        email: normalizeEmail(m.email) || m.email,
+        isPot: m.isPot,
       });
     }
-  });
-  return c.json({ period: getDb().periods.find((p) => p.id === id) });
+  } else {
+    const user = await getUserById(userId);
+    await upsertMember({
+      id: `own-${id}`,
+      periodId: id,
+      userId,
+      displayName: user?.displayName || 'من',
+      weightDefault: 1,
+      role: 'owner',
+    });
+  }
+  return c.json({ period: await getPeriod(id) });
 });
 
-app.get('/periods/:id/snapshot', (c) => {
+app.get('/periods/:id/snapshot', async (c) => {
   const userId = requireUser(c);
   const periodId = c.req.param('id');
-  const period = findPeriod(periodId);
-  if (!period || !canAccessPeriod(userId, periodId, 'read')) return c.json({ error: 'پیدا نشد' }, 404);
-  return c.json(periodSnapshotBody(periodId));
+  const period = await getPeriod(periodId);
+  if (!period || !(await canAccessPeriod(userId, periodId, 'read'))) return c.json({ error: 'پیدا نشد' }, 404);
+  const snap = await loadPeriodSnapshot(periodId);
+  return c.json(snap ? snapshotJson(snap) : { error: 'پیدا نشد' });
 });
 
 app.post('/periods/:id/sync', async (c) => {
@@ -473,249 +514,20 @@ app.post('/periods/:id/sync', async (c) => {
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const periodId = c.req.param('id');
   const body = await c.req.json<{
-    deviceId: string;
-    baseVersion: number;
-    ops: {
-      entity: 'expense' | 'payment' | 'member' | 'chat' | 'period' | 'activity' | 'recurring';
-      action: 'upsert' | 'delete';
-      payload: Record<string, unknown>;
-    }[];
-  }>();
+    deviceId?: string;
+    baseVersion?: number;
+    ops?: unknown[];
+  }>().catch(() => ({ ops: [] as unknown[] }));
 
-  const db = getDb();
-  const period = db.periods.find((p) => p.id === periodId);
-  if (!period) return c.json({ error: 'پیدا نشد' }, 404);
-  if (!canAccessPeriod(userId, periodId, 'write')) return c.json({ error: 'اجازه ندارید' }, 403);
+  const period = await getPeriod(periodId);
+  if (!period || !(await canAccessPeriod(userId, periodId, 'read'))) return c.json({ error: 'پیدا نشد' }, 404);
 
-  const myRole = periodRole(userId, periodId);
-  if (!myRole || (myRole === 'viewer' && (body.ops || []).length > 0)) {
-    return c.json({ error: 'نقش بیننده اجازهٔ تغییر ندارد' }, 403);
+  if ((body.ops || []).length) {
+    return c.json({ error: 'از مسیر REST استفاده کنید', code: 'use_rest' }, 410);
   }
 
-  const ops = body.ops || [];
-  if (typeof body.baseVersion === 'number' && body.baseVersion > 0 && body.baseVersion !== period.version && ops.length > 0) {
-    return c.json(
-      {
-        error: 'نسخهٔ سرور با این دستگاه یکی نیست',
-        serverVersion: period.version,
-        snapshot: periodSnapshotBody(periodId),
-      },
-      409,
-    );
-  }
-
-  mutate((d) => {
-    const p = d.periods.find((x) => x.id === periodId)!;
-    for (const op of ops) {
-      if (op.entity === 'expense') {
-        const payload = op.payload as unknown as ExpenseRecord;
-        if (op.action === 'delete') {
-          const row = d.expenses.find((e) => e.id === payload.id);
-          if (row) row.deletedAt = new Date().toISOString();
-        } else {
-          const idx = d.expenses.findIndex((e) => e.id === payload.id);
-          const next = {
-            ...payload,
-            periodId,
-            version: (payload.version || 0) + 1,
-            updatedAt: new Date().toISOString(),
-          };
-          if (idx >= 0) d.expenses[idx] = { ...d.expenses[idx], ...next };
-          else d.expenses.push(next as ExpenseRecord);
-        }
-      }
-      if (op.entity === 'payment') {
-        const payload = op.payload as unknown as PaymentRecord;
-        if (op.action === 'delete') {
-          const row = d.payments.find((e) => e.id === payload.id);
-          if (row) row.deletedAt = new Date().toISOString();
-        } else {
-          const duplicatePending =
-            payload.status === 'pending_confirm' &&
-            d.payments.some(
-              (e) =>
-                e.periodId === periodId &&
-                !e.deletedAt &&
-                e.status === 'pending_confirm' &&
-                e.fromMemberId === payload.fromMemberId &&
-                e.toMemberId === payload.toMemberId &&
-                e.id !== payload.id,
-            );
-          if (duplicatePending) continue;
-          const idx = d.payments.findIndex((e) => e.id === payload.id);
-          const next = {
-            ...payload,
-            periodId,
-            version: (payload.version || 0) + 1,
-            updatedAt: new Date().toISOString(),
-          };
-          if (idx >= 0) d.payments[idx] = { ...d.payments[idx], ...next };
-          else d.payments.push(next as PaymentRecord);
-        }
-      }
-      if (op.entity === 'member' && op.action === 'upsert') {
-        const payload = op.payload as {
-          id: string;
-          displayName: string;
-          guestKey?: string;
-          userId?: string;
-          phone?: string;
-          email?: string;
-          role?: MemberRole;
-          excludeFromNew?: boolean;
-          isPot?: boolean;
-          cardNumber?: string;
-          sheba?: string;
-          cardHolderName?: string;
-          bankName?: string;
-          unitLabel?: string;
-          weightDefault?: number;
-        };
-        const existing = d.members.find((m) => m.id === payload.id);
-        if (existing) {
-          existing.displayName = payload.displayName;
-          if (payload.userId) existing.userId = payload.userId;
-          if (payload.phone !== undefined) existing.phone = normalizeIranMobile(payload.phone) || payload.phone;
-          if (payload.email !== undefined) existing.email = normalizeEmail(payload.email) || payload.email;
-          if (payload.role) existing.role = payload.role;
-          if (payload.excludeFromNew !== undefined) existing.excludeFromNew = payload.excludeFromNew;
-          if (payload.isPot !== undefined) existing.isPot = payload.isPot;
-          if (payload.cardNumber !== undefined) existing.cardNumber = payload.cardNumber;
-          if (payload.sheba !== undefined) existing.sheba = payload.sheba;
-          if (payload.cardHolderName !== undefined) existing.cardHolderName = payload.cardHolderName;
-          if (payload.bankName !== undefined) existing.bankName = payload.bankName;
-          if (payload.unitLabel !== undefined) existing.unitLabel = payload.unitLabel;
-          if (payload.weightDefault !== undefined) existing.weightDefault = payload.weightDefault;
-        } else {
-          d.members.push({
-            id: payload.id,
-            periodId,
-            displayName: payload.displayName,
-            guestKey: payload.guestKey,
-            userId: payload.userId,
-            weightDefault: payload.weightDefault ?? 1,
-            role: payload.role || 'member',
-            phone: normalizeIranMobile(payload.phone) || payload.phone,
-            email: normalizeEmail(payload.email) || payload.email,
-            excludeFromNew: payload.excludeFromNew,
-            isPot: payload.isPot,
-            cardNumber: payload.cardNumber,
-            sheba: payload.sheba,
-            cardHolderName: payload.cardHolderName,
-            bankName: payload.bankName,
-            unitLabel: payload.unitLabel,
-          });
-        }
-      }
-      if (op.entity === 'chat' && op.action === 'upsert') {
-        const payload = op.payload as {
-          id: string;
-          senderMemberId: string;
-          body: string;
-          expenseId?: string;
-          createdAt?: string;
-        };
-        if (!d.chat.find((m) => m.id === payload.id)) {
-          d.chat.push({
-            id: payload.id,
-            periodId,
-            senderMemberId: payload.senderMemberId,
-            body: payload.body,
-            expenseId: payload.expenseId,
-            createdAt: payload.createdAt || new Date().toISOString(),
-          });
-        }
-      }
-      if (op.entity === 'period' && op.action === 'upsert') {
-        const payload = op.payload as {
-          title?: string;
-          currency?: string;
-          kind?: PeriodKind;
-          template?: PeriodTemplate;
-          roundTo?: RoundTo;
-          bankerMemberId?: string;
-          buildingCharge?: number;
-          lunchTurnMemberId?: string;
-          encrypted?: boolean;
-          visibility?: 'private' | 'public';
-        };
-        if (payload.title) p.title = payload.title;
-        if (payload.currency) p.currency = payload.currency;
-        if (payload.kind) p.kind = payload.kind;
-        if (payload.template) p.template = payload.template;
-        if (payload.roundTo !== undefined) p.roundTo = payload.roundTo;
-        if (payload.bankerMemberId) p.bankerMemberId = payload.bankerMemberId;
-        if (payload.buildingCharge !== undefined) p.buildingCharge = payload.buildingCharge;
-        if (payload.lunchTurnMemberId) p.lunchTurnMemberId = payload.lunchTurnMemberId;
-        if (payload.encrypted !== undefined) p.encrypted = payload.encrypted;
-        if (payload.visibility === 'public' || payload.visibility === 'private') p.visibility = payload.visibility;
-      }
-      if (op.entity === 'activity' && op.action === 'upsert') {
-        if (!d.activity) d.activity = [];
-        const payload = op.payload as unknown as ActivityRecord;
-        if (!d.activity.find((a) => a.id === payload.id)) {
-          d.activity.push({
-            id: payload.id,
-            periodId,
-            actorName: payload.actorName,
-            action: payload.action,
-            summary: payload.summary,
-            createdAt: payload.createdAt || new Date().toISOString(),
-            entityId: payload.entityId,
-          });
-        }
-      }
-      if (op.entity === 'recurring' && op.action === 'upsert') {
-        const payload = op.payload as {
-          id: string;
-          title: string;
-          amount: number;
-          currency: string;
-          payerId: string;
-          splitMode: ExpenseRecord['splitMode'];
-          shares: ExpenseRecord['shares'];
-          intervalDays: number;
-          cadence?: RecurringCadence;
-          nextAt?: string;
-          active?: boolean;
-        };
-        const cadence = payload.cadence || inferCadence(payload.intervalDays);
-        const row = {
-          id: payload.id,
-          periodId,
-          title: payload.title,
-          amount: payload.amount,
-          currency: payload.currency,
-          payerId: payload.payerId,
-          splitMode: payload.splitMode,
-          shares: payload.shares,
-          intervalDays: payload.intervalDays,
-          cadence,
-          nextAt: payload.nextAt || nextRecurringAt(new Date().toISOString(), cadence, payload.intervalDays),
-          active: payload.active !== false,
-        };
-        const idx = d.recurring.findIndex((r) => r.id === payload.id);
-        if (idx >= 0) d.recurring[idx] = row;
-        else d.recurring.push(row);
-      }
-    }
-    p.version += 1;
-    p.updatedAt = new Date().toISOString();
-
-    // Notify other members
-    for (const m of d.members.filter((x) => x.periodId === periodId && x.userId && x.userId !== userId)) {
-      d.notifications.push({
-        id: nanoid(),
-        userId: m.userId!,
-        title: 'به‌روزرسانی دوره',
-        body: `دوره «${p.title}» به‌روز شد`,
-        read: false,
-        createdAt: new Date().toISOString(),
-      });
-    }
-  });
-
-  const snap = periodSnapshotBody(periodId)!;
+  const snap = await loadPeriodSnapshot(periodId);
+  if (!snap) return c.json({ error: 'پیدا نشد' }, 404);
   return c.json({
     version: snap.version,
     expenses: snap.expenses,
@@ -725,36 +537,250 @@ app.post('/periods/:id/sync', async (c) => {
     activity: snap.activity,
     recurring: snap.recurring,
     period: snap.period,
+    invites: snap.invites,
   });
 });
 
-// ——— Invites ———
+async function writeExpenseFromBody(periodId: string, body: Partial<ExpenseRecord> & { id?: string }) {
+  const prev = body.id ? await getExpense(body.id) : undefined;
+  const now = new Date().toISOString();
+  const expense: ExpenseRecord = {
+    id: body.id || nanoid(),
+    periodId,
+    title: body.title || prev?.title || 'هزینه',
+    amount: body.amount ?? prev?.amount ?? 0,
+    currency: body.currency || prev?.currency || 'IRT',
+    payerId: body.payerId || prev?.payerId || '',
+    payers: body.payers || prev?.payers,
+    splitMode: body.splitMode || prev?.splitMode || 'equal',
+    shares: body.shares || prev?.shares || [],
+    tax: body.tax || prev?.tax || { type: 'none', value: 0 },
+    service: body.service || prev?.service || { type: 'none', value: 0 },
+    tip: body.tip || prev?.tip || { type: 'none', value: 0 },
+    tags: body.tags || prev?.tags || [],
+    note: body.note !== undefined ? body.note : prev?.note,
+    attachmentId: body.attachmentId !== undefined ? body.attachmentId : prev?.attachmentId,
+    attachmentDataUrl: body.attachmentDataUrl !== undefined ? body.attachmentDataUrl : prev?.attachmentDataUrl,
+    fxRate: body.fxRate ?? prev?.fxRate ?? 1,
+    createdAt: prev?.createdAt || body.createdAt || now,
+    occurredAt: body.occurredAt || prev?.occurredAt || now,
+    updatedAt: now,
+    deletedAt: body.deletedAt || prev?.deletedAt,
+    clientId: body.clientId || prev?.clientId,
+    version: (prev?.version || body.version || 0) + 1,
+  };
+  await upsertExpense(expense);
+  return expense;
+}
+
+app.post('/periods/:id/expenses', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
+  const body = await c.req.json<Partial<ExpenseRecord>>();
+  const expense = await writeExpenseFromBody(periodId, body);
+  await insertActivity({
+    id: nanoid(),
+    periodId,
+    actorName: (await getUserById(gate.userId))?.displayName || 'کاربر',
+    action: 'expense.upsert',
+    summary: `ثبت هزینه «${expense.title}»`,
+    createdAt: expense.updatedAt,
+    entityId: expense.id,
+  });
+  const period = await getPeriod(periodId);
+  return c.json({ expense, version: period?.version ?? 0 });
+});
+
+app.patch('/periods/:id/expenses/:expenseId', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
+  const prev = await getExpense(c.req.param('expenseId'));
+  if (!prev || prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
+  const body = await c.req.json<Partial<ExpenseRecord>>();
+  const expense = await writeExpenseFromBody(periodId, { ...prev, ...body, id: prev.id });
+  const period = await getPeriod(periodId);
+  return c.json({ expense, version: period?.version ?? 0 });
+});
+
+app.delete('/periods/:id/expenses/:expenseId', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
+  const prev = await getExpense(c.req.param('expenseId'));
+  if (!prev || prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
+  const now = new Date().toISOString();
+  prev.deletedAt = now;
+  prev.updatedAt = now;
+  prev.version = (prev.version || 0) + 1;
+  await upsertExpense(prev);
+  const period = await getPeriod(periodId);
+  return c.json({ ok: true, expense: prev, version: period?.version ?? 0 });
+});
+
+async function writePaymentFromBody(periodId: string, body: Partial<PaymentRecord> & { id?: string }) {
+  const prev = body.id ? await getPayment(body.id) : undefined;
+  if ((body.status || prev?.status) === 'pending_confirm') {
+    const from = body.fromMemberId || prev?.fromMemberId;
+    const to = body.toMemberId || prev?.toMemberId;
+    if (from && to && (await hasPendingPayment(periodId, from, to, body.id || prev?.id))) {
+      return { duplicate: true as const };
+    }
+  }
+  const now = new Date().toISOString();
+  const payment: PaymentRecord = {
+    id: body.id || nanoid(),
+    periodId,
+    fromMemberId: body.fromMemberId || prev?.fromMemberId || '',
+    toMemberId: body.toMemberId || prev?.toMemberId || '',
+    amount: body.amount ?? prev?.amount ?? 0,
+    currency: body.currency || prev?.currency || 'IRT',
+    kind: body.kind || prev?.kind || 'settlement',
+    note: body.note !== undefined ? body.note : prev?.note,
+    fxRate: body.fxRate ?? prev?.fxRate ?? 1,
+    createdAt: prev?.createdAt || body.createdAt || now,
+    updatedAt: now,
+    deletedAt: body.deletedAt || prev?.deletedAt,
+    version: (prev?.version || body.version || 0) + 1,
+    status: body.status || prev?.status || 'settled',
+    receiptDataUrl: body.receiptDataUrl !== undefined ? body.receiptDataUrl : prev?.receiptDataUrl,
+    indexAsset: body.indexAsset || prev?.indexAsset,
+    indexRateAtCreate: body.indexRateAtCreate ?? prev?.indexRateAtCreate,
+  };
+  await upsertPayment(payment);
+  return { payment };
+}
+
+app.post('/periods/:id/payments', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
+  const body = await c.req.json<Partial<PaymentRecord>>();
+  const result = await writePaymentFromBody(periodId, body);
+  if ('duplicate' in result) return c.json({ error: 'پرداخت در انتظار تأیید از قبل وجود دارد' }, 409);
+  await insertActivity({
+    id: nanoid(),
+    periodId,
+    actorName: (await getUserById(gate.userId))?.displayName || 'کاربر',
+    action: 'payment.upsert',
+    summary: result.payment.kind === 'loan' ? 'ثبت قرض' : 'ثبت تسویه',
+    createdAt: result.payment.updatedAt,
+    entityId: result.payment.id,
+  });
+  const period = await getPeriod(periodId);
+  return c.json({ ...result, version: period?.version ?? 0 });
+});
+
+app.patch('/periods/:id/payments/:paymentId', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
+  const prev = await getPayment(c.req.param('paymentId'));
+  if (!prev || prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
+  const body = await c.req.json<Partial<PaymentRecord>>();
+  const result = await writePaymentFromBody(periodId, { ...prev, ...body, id: prev.id });
+  if ('duplicate' in result) return c.json({ error: 'پرداخت در انتظار تأیید از قبل وجود دارد' }, 409);
+  const period = await getPeriod(periodId);
+  return c.json({ ...result, version: period?.version ?? 0 });
+});
+
+app.delete('/periods/:id/payments/:paymentId', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
+  const prev = await getPayment(c.req.param('paymentId'));
+  if (!prev || prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
+  const now = new Date().toISOString();
+  prev.deletedAt = now;
+  prev.updatedAt = now;
+  prev.version = (prev.version || 0) + 1;
+  await upsertPayment(prev);
+  const period = await getPeriod(periodId);
+  return c.json({ ok: true, payment: prev, version: period?.version ?? 0 });
+});
+
+app.post('/periods/:id/members', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
+  const period = await getPeriod(periodId);
+  if (!period) return c.json({ error: 'پیدا نشد' }, 404);
+  const body = await c.req.json<Partial<MemberRecord>>();
+  const member: MemberRecord = {
+    id: body.id || nanoid(),
+    periodId,
+    displayName: body.displayName || 'عضو',
+    guestKey: body.guestKey,
+    userId: body.userId,
+    weightDefault: body.weightDefault ?? 1,
+    role: syncedMemberRole(body.role, body.userId, period.ownerId),
+    phone: normalizeIranMobile(body.phone) || body.phone,
+    email: normalizeEmail(body.email) || body.email,
+    excludeFromNew: body.excludeFromNew,
+    isPot: body.isPot,
+    cardNumber: body.cardNumber,
+    sheba: body.sheba,
+    cardHolderName: body.cardHolderName,
+    bankName: body.bankName,
+    unitLabel: body.unitLabel,
+  };
+  await upsertMember(member);
+  const version = await bumpPeriodVersion(periodId);
+  return c.json({ member, version });
+});
+
+app.patch('/periods/:id/members/:memberId', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
+  const period = await getPeriod(periodId);
+  const existing = await getMember(c.req.param('memberId'));
+  if (!period || !existing || existing.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
+  const body = await c.req.json<Partial<MemberRecord>>();
+  if (body.displayName) existing.displayName = body.displayName;
+  if (body.userId) existing.userId = body.userId;
+  if (body.phone !== undefined) existing.phone = normalizeIranMobile(body.phone) || body.phone;
+  if (body.email !== undefined) existing.email = normalizeEmail(body.email) || body.email;
+  if (body.role) existing.role = syncedMemberRole(body.role, existing.userId, period.ownerId);
+  if (body.excludeFromNew !== undefined) existing.excludeFromNew = body.excludeFromNew;
+  if (body.isPot !== undefined) existing.isPot = body.isPot;
+  if (body.cardNumber !== undefined) existing.cardNumber = body.cardNumber;
+  if (body.sheba !== undefined) existing.sheba = body.sheba;
+  if (body.cardHolderName !== undefined) existing.cardHolderName = body.cardHolderName;
+  if (body.bankName !== undefined) existing.bankName = body.bankName;
+  if (body.unitLabel !== undefined) existing.unitLabel = body.unitLabel;
+  if (body.weightDefault !== undefined) existing.weightDefault = body.weightDefault;
+  await upsertMember(existing);
+  const version = await bumpPeriodVersion(periodId);
+  return c.json({ member: existing, version });
+});
+
 app.post('/periods/:id/invites', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const periodId = c.req.param('id');
-  if (!canAccessPeriod(userId, periodId, 'write') || periodRole(userId, periodId) === 'viewer') {
+  if (!(await canAccessPeriod(userId, periodId, 'write')) || (await periodRole(userId, periodId)) === 'viewer') {
     return c.json({ error: 'اجازه ندارید' }, 403);
   }
   const token = nanoid(12);
-  mutate((db) => {
-    db.invites.push({
-      token,
-      periodId,
-      createdBy: userId,
-      createdAt: new Date().toISOString(),
-      expiresAt: inviteExpiresAt(),
-    });
+  const expiresAt = inviteExpiresAt();
+  await insertInvite({
+    token,
+    periodId,
+    createdBy: userId,
+    createdAt: new Date().toISOString(),
+    expiresAt,
   });
-  return c.json({ token, url: `/i/${token}` });
+  return c.json({ token, url: `/i/${token}`, expiresAt });
 });
 
-app.get('/invites/:token', (c) => {
+app.get('/invites/:token', async (c) => {
   const token = c.req.param('token');
-  const invite = getDb().invites.find((i) => i.token === token);
+  const invite = await getInvite(token);
   if (!invite || isInviteExpired(invite)) return c.json({ error: 'پیدا نشد' }, 404);
-  const period = getDb().periods.find((p) => p.id === invite.periodId);
-  const members = getDb().members.filter((m) => m.periodId === invite.periodId);
+  const period = await getPeriod(invite.periodId);
+  const members = await listMembers(invite.periodId);
   return c.json({ invite, period, members });
 });
 
@@ -766,55 +792,50 @@ app.post('/invites/:token/join', async (c) => {
     displayName: string;
     guestKey?: string;
   }>();
-  const invite = getDb().invites.find((i) => i.token === token);
+  const invite = await getInvite(token);
   if (!invite || isInviteExpired(invite)) return c.json({ error: 'پیدا نشد' }, 404);
-  const user = getDb().users.find((u) => u.id === userId && !u.deletedAt);
-  const phone = normalizeIranMobile(user?.phone);
-  const email = normalizeEmail(user?.email);
-  const existing = getDb().members.find((m) => {
-    if (m.periodId !== invite.periodId) return false;
+  const user = await getUserById(userId);
+  if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
+  const phone = normalizeIranMobile(user.phone);
+  const email = normalizeEmail(user.email);
+  const members = await listMembers(invite.periodId);
+  const existing = members.find((m) => {
     if (m.userId === userId || (guestKey && m.guestKey === guestKey)) return true;
     if (phone && normalizeIranMobile(m.phone) === phone) return true;
     if (email && normalizeEmail(m.email) === email) return true;
     return false;
   });
   if (existing) {
-    mutate((db) => {
-      const row = db.members.find((m) => m.id === existing.id);
-      if (row) {
-        row.userId = userId;
-        if (guestKey) row.guestKey = guestKey;
-      }
-      bumpPeriodVersion(db, invite.periodId);
-    });
-    return c.json({ memberId: existing.id, periodId: invite.periodId });
+    existing.userId = userId;
+    if (guestKey) existing.guestKey = guestKey;
+    await upsertMember(existing);
+    const version = await bumpPeriodVersion(invite.periodId);
+    return c.json({ memberId: existing.id, periodId: invite.periodId, version });
   }
   const memberId = nanoid();
-  mutate((db) => {
-    db.members.push({
-      id: memberId,
-      periodId: invite.periodId,
-      userId,
-      guestKey,
-      displayName: displayName || user?.displayName || 'مهمان',
-      weightDefault: 1,
-      role: 'member',
-      phone: phone || undefined,
-      email: email || undefined,
-    });
-    bumpPeriodVersion(db, invite.periodId);
+  await upsertMember({
+    id: memberId,
+    periodId: invite.periodId,
+    userId,
+    guestKey,
+    displayName: displayName || user.displayName || 'مهمان',
+    weightDefault: 1,
+    role: 'member',
+    phone: phone || undefined,
+    email: email || undefined,
   });
-  return c.json({ memberId, periodId: invite.periodId });
+  const version = await bumpPeriodVersion(invite.periodId);
+  return c.json({ memberId, periodId: invite.periodId, version });
 });
 
-function friendContactTaken(
+async function friendContactTaken(
   userId: string,
   input: { phone?: string; email?: string },
   excludeId?: string,
-): 'phone' | 'email' | null {
+): Promise<'phone' | 'email' | null> {
   const nPhone = normalizeIranMobile(input.phone);
   const nEmail = normalizeEmail(input.email);
-  for (const f of getDb().friends.filter((row) => row.userId === userId)) {
+  for (const f of await listFriends(userId)) {
     if (excludeId && f.id === excludeId) continue;
     if (nPhone && normalizeIranMobile(f.phone) === nPhone) return 'phone';
     if (nEmail && normalizeEmail(f.email) === nEmail) return 'email';
@@ -826,11 +847,10 @@ function friendTakenError(taken: 'phone' | 'email') {
   return taken === 'phone' ? 'این شماره قبلاً برای دوست دیگری ثبت شده' : 'این ایمیل قبلاً برای دوست دیگری ثبت شده';
 }
 
-// ——— Friends ———
-app.get('/friends', (c) => {
+app.get('/friends', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  return c.json({ friends: getDb().friends.filter((f) => f.userId === userId) });
+  return c.json({ friends: await listFriends(userId) });
 });
 
 app.post('/friends', async (c) => {
@@ -851,13 +871,9 @@ app.post('/friends', async (c) => {
     email: normalizeEmail(email) || email,
     friendUserId,
   };
-  const taken = friendContactTaken(userId, friend, friend.id);
+  const taken = await friendContactTaken(userId, friend, friend.id);
   if (taken) return c.json({ error: friendTakenError(taken) }, 409);
-  mutate((db) => {
-    const idx = db.friends.findIndex((f) => f.id === friend.id && f.userId === userId);
-    if (idx >= 0) db.friends[idx] = { ...db.friends[idx], ...friend };
-    else db.friends.push(friend);
-  });
+  await upsertFriend(friend);
   return c.json({ friend });
 });
 
@@ -871,34 +887,31 @@ app.put('/friends/:id', async (c) => {
     email?: string;
     friendUserId?: string;
   }>();
-  const existing = getDb().friends.find((f) => f.id === id && f.userId === userId);
+  const existing = (await listFriends(userId)).find((f) => f.id === id);
   if (!existing) return c.json({ error: 'پیدا نشد' }, 404);
-  const taken = friendContactTaken(userId, { phone, email }, id);
+  const taken = await friendContactTaken(userId, { phone, email }, id);
   if (taken) return c.json({ error: friendTakenError(taken) }, 409);
-  mutate((db) => {
-    const row = db.friends.find((f) => f.id === id && f.userId === userId);
-    if (!row) return;
-    row.displayName = displayName;
-    row.phone = normalizeIranMobile(phone) || phone;
-    row.email = normalizeEmail(email) || email;
-    if (friendUserId !== undefined) row.friendUserId = friendUserId;
-  });
-  return c.json({ friend: getDb().friends.find((f) => f.id === id) });
+  const friend = {
+    ...existing,
+    displayName,
+    phone: normalizeIranMobile(phone) || phone,
+    email: normalizeEmail(email) || email,
+    friendUserId: friendUserId !== undefined ? friendUserId : existing.friendUserId,
+  };
+  await upsertFriend(friend);
+  return c.json({ friend });
 });
 
-app.delete('/friends/:id', (c) => {
+app.delete('/friends/:id', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const id = c.req.param('id');
-  const existing = getDb().friends.find((f) => f.id === id && f.userId === userId);
+  const existing = (await listFriends(userId)).find((f) => f.id === id);
   if (!existing) return c.json({ error: 'پیدا نشد' }, 404);
-  mutate((db) => {
-    db.friends = db.friends.filter((f) => !(f.id === id && f.userId === userId));
-  });
+  await deleteFriend(id, userId);
   return c.json({ ok: true });
 });
 
-// ——— Attachments ———
 app.post('/attachments', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
@@ -907,60 +920,53 @@ app.post('/attachments', async (c) => {
     mime: string;
     dataBase64: string;
   }>();
-  if (!canAccessPeriod(userId, periodId, 'write')) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  if (!(await canAccessPeriod(userId, periodId, 'write'))) return periodAccessDenied(c, userId);
   if (!dataBase64 || dataBase64.length > 2_500_000) {
     return c.json({ error: 'فایل نامعتبر یا خیلی بزرگ است' }, 400);
   }
   const id = nanoid();
-  mutate((db) => {
-    db.attachments.push({
-      id,
-      periodId,
-      mime,
-      dataBase64,
-      createdAt: new Date().toISOString(),
-    });
+  await insertAttachment({
+    id,
+    periodId,
+    mime,
+    dataBase64,
+    createdAt: new Date().toISOString(),
   });
-  return c.json({ id });
+  const period = await getPeriod(periodId);
+  return c.json({ id, version: period?.version ?? 0 });
 });
 
-app.get('/attachments/:id', (c) => {
+app.get('/attachments/:id', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  const row = getDb().attachments.find((a) => a.id === c.req.param('id'));
+  const row = await getAttachment(c.req.param('id'));
   if (!row) return c.json({ error: 'پیدا نشد' }, 404);
-  if (!canAccessPeriod(userId, row.periodId)) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  if (!(await canAccessPeriod(userId, row.periodId))) return periodAccessDenied(c, userId);
   return c.json(row);
 });
 
-// ——— Notifications ———
-app.get('/notifications', (c) => {
+app.get('/notifications', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  return c.json({
-    notifications: getDb().notifications.filter((n) => n.userId === userId).slice(-50).reverse(),
-  });
+  return c.json({ notifications: await listNotifications(userId) });
 });
 
-app.post('/notifications/:id/read', (c) => {
+app.post('/notifications/:id/read', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  mutate((db) => {
-    const n = db.notifications.find((x) => x.id === c.req.param('id') && x.userId === userId);
-    if (n) n.read = true;
-  });
+  await markNotificationRead(c.req.param('id'), userId);
   return c.json({ ok: true });
 });
 
-// ——— Recurring ———
 app.post('/periods/:id/recurring', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const periodId = c.req.param('id');
-  if (!canAccessPeriod(userId, periodId, 'write') || periodRole(userId, periodId) === 'viewer') {
+  if (!(await canAccessPeriod(userId, periodId, 'write')) || (await periodRole(userId, periodId)) === 'viewer') {
     return c.json({ error: 'اجازه ندارید' }, 403);
   }
   const body = await c.req.json<{
+    id?: string;
     title: string;
     amount: number;
     currency: string;
@@ -970,74 +976,70 @@ app.post('/periods/:id/recurring', async (c) => {
     intervalDays: number;
     cadence?: RecurringCadence;
   }>();
-  const id = nanoid();
+  const id = body.id || nanoid();
   const cadence = body.cadence || inferCadence(body.intervalDays);
   const nextAt = nextRecurringAt(new Date().toISOString(), cadence, body.intervalDays);
-  mutate((db) => {
-    db.recurring.push({
-      id,
-      periodId,
-      ...body,
-      cadence,
-      nextAt,
-      active: true,
-    });
-    bumpPeriodVersion(db, periodId);
+  await upsertRecurring({
+    id,
+    periodId,
+    ...body,
+    cadence,
+    nextAt,
+    active: true,
   });
-  return c.json({ id, nextAt });
+  const period = await getPeriod(periodId);
+  return c.json({ id, nextAt, version: period?.version ?? 0 });
 });
 
-app.post('/periods/:id/recurring/run', (c) => {
+app.post('/periods/:id/recurring/run', async (c) => {
   const userId = requireUser(c);
   const periodId = c.req.param('id');
-  if (!canAccessPeriod(userId, periodId, 'write')) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  if (!(await canAccessPeriod(userId, periodId, 'write'))) return periodAccessDenied(c, userId);
   const created: string[] = [];
-  mutate((db) => {
-    const now = Date.now();
-    for (const rule of db.recurring.filter((r) => r.periodId === periodId && r.active)) {
-      if (new Date(rule.nextAt).getTime() > now) continue;
-      const expenseId = nanoid();
-      db.expenses.push({
-        id: expenseId,
-        periodId,
-        title: rule.title,
-        amount: rule.amount,
-        currency: rule.currency,
-        payerId: rule.payerId,
-        splitMode: rule.splitMode,
-        shares: rule.shares,
-        tax: { type: 'none', value: 0 },
-        service: { type: 'none', value: 0 },
-        tip: { type: 'none', value: 0 },
-        tags: ['تکراری'],
-        fxRate: 1,
-        createdAt: new Date().toISOString(),
-        occurredAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        version: 1,
-      });
-      rule.nextAt = nextRecurringAt(new Date().toISOString(), rule.cadence || 'days', rule.intervalDays);
-      created.push(expenseId);
-    }
-    if (created.length) bumpPeriodVersion(db, periodId);
-  });
-  return c.json({ created });
+  const due = await listDueRecurring(periodId);
+  for (const rule of due) {
+    const expenseId = nanoid();
+    const now = new Date().toISOString();
+    await upsertExpense({
+      id: expenseId,
+      periodId,
+      title: rule.title,
+      amount: rule.amount,
+      currency: rule.currency,
+      payerId: rule.payerId,
+      splitMode: rule.splitMode,
+      shares: rule.shares,
+      tax: { type: 'none', value: 0 },
+      service: { type: 'none', value: 0 },
+      tip: { type: 'none', value: 0 },
+      tags: ['تکراری'],
+      fxRate: 1,
+      createdAt: now,
+      occurredAt: now,
+      updatedAt: now,
+      version: 1,
+    }, { bump: false });
+    rule.nextAt = nextRecurringAt(now, rule.cadence || 'days', rule.intervalDays);
+    await upsertRecurring(rule, { bump: false });
+    created.push(expenseId);
+  }
+  if (created.length) await bumpPeriodVersion(periodId);
+  const period = await getPeriod(periodId);
+  return c.json({ created, version: period?.version ?? 0 });
 });
 
-// ——— Chat ———
-app.get('/periods/:id/chat', (c) => {
+app.get('/periods/:id/chat', async (c) => {
   const userId = requireUser(c);
   const periodId = c.req.param('id');
-  if (!canAccessPeriod(userId, periodId)) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  return c.json({
-    messages: getDb().chat.filter((m) => m.periodId === periodId),
-  });
+  if (!(await canAccessPeriod(userId, periodId))) return periodAccessDenied(c, userId);
+  return c.json({ chat: await listChat(periodId) });
 });
 
 app.post('/periods/:id/chat', async (c) => {
   const userId = requireUser(c);
   const periodId = c.req.param('id');
-  if (!canAccessPeriod(userId, periodId, 'write') || periodRole(userId!, periodId) === 'viewer') {
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  if (!(await canAccessPeriod(userId, periodId, 'write')) || (await periodRole(userId, periodId)) === 'viewer') {
     return c.json({ error: 'اجازه ندارید' }, 403);
   }
   const { id, senderMemberId, body, expenseId } = await c.req.json<{
@@ -1054,19 +1056,48 @@ app.post('/periods/:id/chat', async (c) => {
     expenseId,
     createdAt: new Date().toISOString(),
   };
-  mutate((db) => db.chat.push(msg));
-  return c.json({ message: msg });
+  await insertChat(msg);
+  const period = await getPeriod(periodId);
+  return c.json({ message: msg, chat: msg, version: period?.version ?? 0 });
+});
+
+app.post('/periods/:id/activity', async (c) => {
+  const userId = requireUser(c);
+  const periodId = c.req.param('id');
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  if (!(await canAccessPeriod(userId, periodId, 'write')) || (await periodRole(userId, periodId)) === 'viewer') {
+    return c.json({ error: 'اجازه ندارید' }, 403);
+  }
+  const body = await c.req.json<{
+    id?: string;
+    actorName?: string;
+    action: string;
+    summary: string;
+    entityId?: string;
+    createdAt?: string;
+  }>();
+  const row = {
+    id: body.id || nanoid(),
+    periodId,
+    actorName: body.actorName || (await getUserById(userId))?.displayName || 'کاربر',
+    action: body.action,
+    summary: body.summary,
+    createdAt: body.createdAt || new Date().toISOString(),
+    entityId: body.entityId,
+  };
+  await insertActivity(row);
+  const period = await getPeriod(periodId);
+  return c.json({ activity: row, version: period?.version ?? 0 });
 });
 
 app.get('/fx', async (c) => {
-  const data = await getFxRates();
-  return c.json(data);
+  return c.json(await getFxRates());
 });
 
-app.get('/payout/sheba-quota', (c) => {
+app.get('/payout/sheba-quota', async (c) => {
   const identity = lookupIdentity(c.get('userId'), c.req.header('X-Device-Id'));
   if (!identity) return c.json({ error: 'شناسه دستگاه لازم است' }, 400);
-  return c.json(quotaFor(identity));
+  return c.json(await quotaFor(identity));
 });
 
 app.post('/payout/card-to-sheba', async (c) => {
@@ -1079,8 +1110,13 @@ app.post('/payout/card-to-sheba', async (c) => {
     const { result, remaining, cached } = await lookupCardSheba(identity, digits);
     return c.json({ ...result, remaining, cached });
   } catch (e) {
-    const status = (e && typeof e === 'object' && 'status' in e && Number((e as { status: number }).status) === 429 ? 429 : 502) as 429 | 502;
-    return c.json({ error: e instanceof Error ? e.message : 'استعلام شبا ناموفق بود', remaining: quotaFor(identity).remaining }, status);
+    const status = (e && typeof e === 'object' && 'status' in e && Number((e as { status: number }).status) === 429
+      ? 429
+      : 502) as 429 | 502;
+    return c.json(
+      { error: e instanceof Error ? e.message : 'استعلام شبا ناموفق بود', remaining: (await quotaFor(identity)).remaining },
+      status,
+    );
   }
 });
 
@@ -1092,15 +1128,14 @@ app.post('/billing/bazaar/verify', async (c) => {
   const result = await verifyBazaarPurchase({ sku, purchaseToken });
   if (!result.ok) return c.json({ error: result.error || 'تأیید نشد' }, 400);
   const until = premiumUntilFromNow(sku.includes('year') ? 365 : 30);
-  mutate((db) => {
-    const u = db.users.find((x) => x.id === userId);
-    if (u) {
-      u.plan = 'premium';
-      u.premiumUntil = until;
-    }
-  });
-  recordBillingEvent({ userId, source: 'bazaar', sku, until });
-  const user = getDb().users.find((x) => x.id === userId);
+  const u = await getUserById(userId);
+  if (u) {
+    u.plan = 'premium';
+    u.premiumUntil = until;
+    await updateUser(u);
+  }
+  await recordBillingEvent({ userId, source: 'bazaar', sku, until });
+  const user = await getUserById(userId);
   return c.json({ ok: true, user: user ? publicUser(user) : undefined });
 });
 
@@ -1112,15 +1147,14 @@ app.post('/billing/myket/verify', async (c) => {
   const result = await verifyMyketPurchase({ sku, purchaseToken });
   if (!result.ok) return c.json({ error: result.error || 'تأیید نشد' }, 400);
   const until = premiumUntilFromNow(sku.includes('year') ? 365 : 30);
-  mutate((db) => {
-    const u = db.users.find((x) => x.id === userId);
-    if (u) {
-      u.plan = 'premium';
-      u.premiumUntil = until;
-    }
-  });
-  recordBillingEvent({ userId, source: 'myket', sku, until });
-  const user = getDb().users.find((x) => x.id === userId);
+  const u = await getUserById(userId);
+  if (u) {
+    u.plan = 'premium';
+    u.premiumUntil = until;
+    await updateUser(u);
+  }
+  await recordBillingEvent({ userId, source: 'myket', sku, until });
+  const user = await getUserById(userId);
   return c.json({ ok: true, user: user ? publicUser(user) : undefined });
 });
 
@@ -1150,7 +1184,7 @@ app.post('/billing/zarinpal/verify', async (c) => {
   const result = await zarinpalVerify({ authority, status: status || 'OK' });
   if (!result.ok) return c.json({ error: result.error || 'تأیید نشد' }, 400);
   if (result.userId && result.userId !== userId) return c.json({ error: 'تراکنش متعلق به این حساب نیست' }, 403);
-  const user = getDb().users.find((x) => x.id === userId);
+  const user = await getUserById(userId);
   return c.json({ ok: true, user: user ? publicUser(user) : undefined });
 });
 

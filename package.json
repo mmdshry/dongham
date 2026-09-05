@@ -2,21 +2,22 @@
   "name": "dongham",
   "private": true,
   "version": "0.1.0",
+  "packageManager": "pnpm@9.15.9",
   "workspaces": [
     "apps/*",
     "packages/*",
     "e2e"
   ],
   "scripts": {
-    "dev": "npm run dev -w @dongham/app",
-    "dev:api": "npm run dev -w @dongham/api",
-    "dev:admin": "npm run dev -w @dongham/admin",
-    "dev:marketing": "npm run dev -w @dongham/marketing",
-    "build": "npm run build -w @dongham/ledger && npm run build -w @dongham/app && npm run build -w @dongham/api && npm run build -w @dongham/marketing && npm run build -w @dongham/admin",
-    "test": "npm run test -w @dongham/ledger && npm run test -w @dongham/api && npm run test -w @dongham/app",
-    "test:e2e": "npm run test -w @dongham/e2e",
-    "lint": "npm run lint -w @dongham/app --if-present",
-    "cap:sync": "npm run build -w @dongham/app && npm exec -w @dongham/app -- cap sync android"
+    "dev": "pnpm --filter @dongham/app dev",
+    "dev:api": "pnpm --filter @dongham/api dev",
+    "dev:admin": "pnpm --filter @dongham/admin dev",
+    "dev:marketing": "pnpm --filter @dongham/marketing dev",
+    "build": "pnpm --filter @dongham/ledger build && pnpm --filter @dongham/app build && pnpm --filter @dongham/api build && pnpm --filter @dongham/marketing build && pnpm --filter @dongham/admin build",
+    "test": "pnpm --filter @dongham/ledger build && pnpm --filter @dongham/ledger test && pnpm --filter @dongham/api test && pnpm --filter @dongham/app test",
+    "test:e2e": "pnpm --filter @dongham/e2e test",
+    "lint": "pnpm --filter @dongham/app lint",
+    "cap:sync": "pnpm --filter @dongham/app build && pnpm --filter @dongham/app exec cap sync android"
   },
   "engines": {
     "node": ">=20"

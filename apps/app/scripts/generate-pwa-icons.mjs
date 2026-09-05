@@ -67,9 +67,9 @@ function paintIcon(x, y, size) {
   })();
   if (!inRoundRect) return [0, 0, 0, 0];
 
-  const bg = [15, 118, 110, 255];
-  const left = { cx: 0.34, cy: 0.44, r: 0.125, c: [153, 246, 228] };
-  const right = { cx: 0.66, cy: 0.44, r: 0.125, c: [204, 251, 241] };
+  const bg = [74, 107, 92, 255];
+  const left = { cx: 0.34, cy: 0.44, r: 0.125, c: [197, 209, 200] };
+  const right = { cx: 0.66, cy: 0.44, r: 0.125, c: [238, 243, 239] };
   const d2 = (c) => {
     const dx = nx - c.cx;
     const dy = ny - c.cy;
@@ -91,9 +91,9 @@ function paintIcon(x, y, size) {
   const smileY = 0.68 + Math.pow((nx - 0.5) / 0.28, 2) * 0.08;
   const smile = Math.abs(ny - smileY) < 0.035 && nx > 0.28 && nx < 0.72;
   if (smile) {
-    r = mix(r, 240, 0.95);
-    g = mix(g, 253, 0.95);
-    b = mix(b, 250, 0.95);
+    r = mix(r, 255, 0.95);
+    g = mix(g, 250, 0.95);
+    b = mix(b, 245, 0.95);
   }
   return [r, g, b, 255];
 }

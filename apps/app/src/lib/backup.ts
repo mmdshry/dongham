@@ -1,8 +1,7 @@
+import { parseDonghamExport, wrapDonghamExport } from '@dongham/ledger';
 import { db } from './db';
 
 export interface BackupPayload {
-  version: 2;
-  exportedAt: string;
   profile: unknown;
   periods: unknown[];
   members: unknown[];
@@ -16,10 +15,15 @@ export interface BackupPayload {
   activity: unknown[];
 }
 
-export async function exportBackup(): Promise<BackupPayload> {
-  return {
-    version: 2,
-    exportedAt: new Date().toISOString(),
+function asPayload(raw: unknown): BackupPayload {
+  const env = parseDonghamExport(raw);
+  const payload = env.payload as BackupPayload & { version?: number };
+  if (!payload || !Array.isArray(payload.periods)) throw new Error('فایل پشتیبان نامعتبر است');
+  return payload;
+}
+
+export async function exportBackup() {
+  const payload: BackupPayload = {
     profile: (await db.profile.toArray())[0] || null,
     periods: await db.periods.toArray(),
     members: await db.members.toArray(),
@@ -32,12 +36,11 @@ export async function exportBackup(): Promise<BackupPayload> {
     notifications: await db.notifications.toArray(),
     activity: await db.activity.toArray(),
   };
+  return wrapDonghamExport('device', payload);
 }
 
-export async function importBackup(payload: BackupPayload): Promise<void> {
-  if (!payload || payload.version !== 2) {
-    throw new Error('فایل پشتیبان نامعتبر است');
-  }
+export async function importBackup(raw: unknown): Promise<void> {
+  const payload = asPayload(raw);
   await db.transaction(
     'rw',
     [

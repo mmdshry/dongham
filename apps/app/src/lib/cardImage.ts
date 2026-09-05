@@ -12,14 +12,14 @@ export async function renderCardToCardImage(input: {
 }): Promise<string> {
   const bank =
     input.bank || detectBank(input.card, input.sheba)?.name || '';
-  const color = detectBank(input.card, input.sheba)?.color || '#0F766E';
+  const color = detectBank(input.card, input.sheba)?.color || '#4A6B5C';
   const canvas = document.createElement('canvas');
   canvas.width = 900;
   canvas.height = 540;
   const ctx = canvas.getContext('2d')!;
   const g = ctx.createLinearGradient(0, 0, 900, 540);
   g.addColorStop(0, color);
-  g.addColorStop(1, '#134E4A');
+  g.addColorStop(1, '#2A3E34');
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, 900, 540);
   ctx.fillStyle = 'rgba(255,255,255,0.08)';
@@ -28,7 +28,7 @@ export async function renderCardToCardImage(input: {
   ctx.fill();
 
   ctx.textAlign = 'right';
-  ctx.fillStyle = '#ECFDF5';
+  ctx.fillStyle = '#FFFAF5';
   ctx.font = 'bold 28px Vazirmatn, Tahoma, sans-serif';
   ctx.fillText('کارت‌به‌کارت', 860, 60);
   ctx.font = '20px Vazirmatn, Tahoma, sans-serif';

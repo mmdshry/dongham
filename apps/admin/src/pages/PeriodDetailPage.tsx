@@ -44,6 +44,32 @@ const TEMPLATES = [
   { id: 'custom', label: 'سفارشی' },
 ];
 
+function ReceiptPreview({ path }: { path: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void api<{ dataUrl?: string }>(path)
+      .then((row) => {
+        if (!cancelled) setUrl(row.dataUrl || null);
+      })
+      .catch(() => {
+        if (!cancelled) setUrl(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path]);
+  if (!url) return null;
+  if (url.startsWith('data:image')) {
+    return <img src={url} alt="رسید" className="mt-1 max-h-24 rounded border" />;
+  }
+  return (
+    <a href={url} download className="mt-1 inline-block text-xs text-brand-800">
+      دانلود رسید
+    </a>
+  );
+}
+
 type DeleteTarget =
   | { type: 'expense' | 'payment' | 'member' | 'chat' | 'recurring' | 'attachment' | 'receipt'; id: string }
   | { type: 'invite'; id: string }
@@ -185,7 +211,7 @@ export function PeriodDetailPage() {
         </div>
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" checked={encrypted} onChange={(e) => setEncrypted(e.target.checked)} />
-          پرچم رمز روی اسنپ‌شات آفلاین (داده سرور رمزنگاری نمی‌شود)
+          رمز ستون‌های حساس روی سرور (یادداشت، رسید، چت، کارت/شبا)
         </label>
         <div className="sm:col-span-3 flex flex-wrap gap-2">
           <button type="button" className="btn-primary" onClick={() => void savePeriod().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'))}>
@@ -262,7 +288,12 @@ export function PeriodDetailPage() {
                   <td>
                     {e.title}
                     {e.deletedAt ? <span className="mr-2 text-xs">حذف‌شده</span> : null}
-                    {e.hasAttachment ? <span className="mr-2 text-xs text-brand-800">رسید</span> : null}
+                    {e.hasAttachment ? (
+                      <span className="mr-2 text-xs text-brand-800">رسید</span>
+                    ) : null}
+                    {e.hasAttachment ? (
+                      <ReceiptPreview path={`/admin/periods/${p.id}/expenses/${e.id}/receipt`} />
+                    ) : null}
                   </td>
                   <td>
                     {faNum(e.amount)} {e.currency}
@@ -320,6 +351,9 @@ export function PeriodDetailPage() {
                   <td>{memberName(pay.toMemberId)}</td>
                   <td>
                     {faNum(pay.amount)} {pay.currency}
+                    {pay.hasReceipt ? (
+                      <ReceiptPreview path={`/admin/periods/${p.id}/payments/${pay.id}/receipt`} />
+                    ) : null}
                   </td>
                   <td>
                     {!pay.deletedAt ? (
@@ -551,8 +585,8 @@ export function PeriodDetailPage() {
       </section>
 
       {editingExpense ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-900/40 p-4">
-          <div className="w-full max-w-md space-y-3 rounded-2xl bg-white p-5">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/40 p-4">
+          <div className="w-full max-w-md space-y-3 rounded-2xl bg-surface p-5">
             <h2 className="font-bold">ویرایش هزینه</h2>
             <input className="input" value={expTitle} onChange={(e) => setExpTitle(e.target.value)} />
             <input className="input" dir="ltr" value={expAmount} onChange={(e) => setExpAmount(e.target.value)} />

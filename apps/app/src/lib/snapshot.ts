@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
 import QRCode from 'qrcode';
+import { parseDonghamExport, wrapDonghamExport } from '@dongham/ledger';
 import { db, noneCharge, type LocalExpense, type LocalMember, type LocalPayment, type LocalPeriod, type LocalRecurring } from './db';
 import { queueOp } from './sync';
 
@@ -31,7 +32,7 @@ export async function buildPeriodSnapshot(periodId: string): Promise<ExportSnaps
 }
 
 export async function serializeSnapshot(snap: ExportSnapshot, passphrase?: string): Promise<string> {
-  const json = JSON.stringify(snap);
+  const json = JSON.stringify(wrapDonghamExport('period', snap));
   if (passphrase) return `DH1:${await encryptWithPass(json, passphrase)}`;
   return json;
 }
@@ -42,9 +43,18 @@ export async function parseSnapshot(raw: string, passphrase?: string): Promise<E
     if (!passphrase) throw new Error('رمز دوره لازم است');
     json = await decryptWithPass(json.slice(4), passphrase);
   }
-  const snap = JSON.parse(json) as ExportSnapshot;
-  if (snap.v !== 1 || !snap.period?.id) throw new Error('اسنپ‌شات نامعتبر است');
-  return snap;
+  const parsed = JSON.parse(json) as unknown;
+  const env = parseDonghamExport(parsed);
+  const payload = env.payload as ExportSnapshot;
+  if (!payload?.period?.id) throw new Error('اسنپ‌شات نامعتبر است');
+  return {
+    v: 1,
+    period: payload.period,
+    members: payload.members || [],
+    expenses: payload.expenses || [],
+    payments: payload.payments || [],
+    recurring: payload.recurring || [],
+  };
 }
 
 export async function snapshotQrDataUrl(payload: string): Promise<string | null> {
@@ -56,6 +66,9 @@ export async function importPeriodSnapshot(snap: ExportSnapshot): Promise<string
   const id = snap.period.id || nanoid();
   const period = { ...snap.period, id, synced: false, updatedAt: new Date().toISOString() };
   await db.periods.put(period);
+  for (const m of snap.members) {
+    await db.members.put({ ...m, periodId: id });
+  }
   await queueOp(id, 'period', 'upsert', {
     title: period.title,
     currency: period.currency,
@@ -70,7 +83,6 @@ export async function importPeriodSnapshot(snap: ExportSnapshot): Promise<string
   });
   for (const m of snap.members) {
     const member = { ...m, periodId: id };
-    await db.members.put(member);
     await queueOp(id, 'member', 'upsert', member);
   }
   for (const e of snap.expenses) {

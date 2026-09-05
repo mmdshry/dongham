@@ -123,6 +123,7 @@ export function FriendsPage() {
                   await db.friends.put(row);
                   next.push(row);
                   added += 1;
+                  void persistCloud('POST', row);
                 }
                 setToast(
                   added
@@ -143,7 +144,13 @@ export function FriendsPage() {
           <ul className="space-y-2">
             {friends.map((f) => (
               <li key={f.id} className="card-surface flex items-center justify-between gap-3 text-sm">
-                <div className="min-w-0">
+                <span
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-clay/25 text-sm font-bold text-clay-800"
+                  aria-hidden
+                >
+                  {f.displayName.slice(0, 1)}
+                </span>
+                <div className="min-w-0 flex-1">
                   <p className="truncate font-semibold">{f.displayName}</p>
                   {f.phone || f.email ? (
                     <p className="mt-0.5 text-xs text-ink-700/60" dir="ltr">

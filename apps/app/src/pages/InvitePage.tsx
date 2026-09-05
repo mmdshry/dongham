@@ -4,6 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Shell } from '../components/ui';
 import { api, ensureProfile } from '../lib/api';
 import { db } from '../lib/db';
+import { isInviteExpired } from '@dongham/ledger';
 import { applyPeriodSnapshot, type PeriodSnapshot } from '../lib/sync';
 import { useUiStore } from '../store/ui';
 
@@ -20,12 +21,23 @@ export function InvitePage() {
 
   useEffect(() => {
     (async () => {
-      const local = await db.invites.get(token);
-      if (local) {
+      const fromDexie = async () => {
+        const local = await db.invites.get(token);
+        if (local && isInviteExpired(local)) {
+          setInfo(null);
+          return;
+        }
+        if (!local) {
+          setInfo(null);
+          return;
+        }
         const period = await db.periods.get(local.periodId);
         const members = await db.members.where('periodId').equals(local.periodId).toArray();
         setInfo({ period: period || undefined, members });
         setLocalOnly(true);
+      };
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        await fromDexie();
         return;
       }
       try {
@@ -34,8 +46,9 @@ export function InvitePage() {
           members: { displayName: string }[];
         }>(`/invites/${token}`);
         setInfo(res);
+        setLocalOnly(false);
       } catch {
-        setInfo(null);
+        await fromDexie();
       }
     })();
   }, [token]);

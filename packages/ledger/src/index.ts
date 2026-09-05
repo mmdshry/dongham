@@ -3,6 +3,16 @@ import { computeShares, validateShares, splitEqual, splitByWeight, splitExact, s
 import { applyTax, expenseTotal, roundMoney, roundToStep, toBaseCurrency } from './money.js';
 
 export type * from './types.js';
+export type { CloudPayoutMethod, CloudProfile } from './cloud-profile.js';
+export { isPeriodOwner, syncedMemberRole } from './ownership.js';
+export { INVITE_TTL_MS, inviteExpiresAt, isInviteExpired } from './invite.js';
+export {
+  DONGHAM_EXPORT_FORMAT,
+  DONGHAM_EXPORT_VERSION,
+  wrapDonghamExport,
+  parseDonghamExport,
+} from './export-format.js';
+export type { DonghamExport, DonghamExportKind } from './export-format.js';
 export { isPremium, expirePremium } from './premium.js';
 export type { PremiumLike } from './premium.js';
 export { sanitizeFxWatchlist } from './fx-watchlist.js';

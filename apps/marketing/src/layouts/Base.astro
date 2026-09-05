@@ -29,7 +29,8 @@ const jsonLd = {
     <meta property="og:type" content="website" />
     <meta property="og:locale" content="fa_IR" />
     <meta property="og:url" content={canonical} />
-    <meta name="theme-color" content="#0F766E" />
+    <meta name="theme-color" content="#4A6B5C" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0B0F14" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -84,28 +85,43 @@ const jsonLd = {
 <style is:global>
   :root {
     color-scheme: light;
-    --brand: #0f766e;
-    --brand-soft: #14b8a6;
-    --ink: #0f172a;
-    --muted: #475569;
-    --line: rgba(15, 118, 110, 0.12);
-    --surface: #ffffff;
+    --brand: #4a6b5c;
+    --brand-fill: #4a6b5c;
+    --brand-soft: #6b8f7c;
+    --ink: #1c1917;
+    --muted: #5c564e;
+    --line: rgba(74, 107, 92, 0.14);
+    --surface: #fffaf5;
     --radius: 1rem;
     --space: 1.25rem;
+    --bg: #f4f1ea;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --brand: #8fae9a;
+      --brand-fill: #4a6b5c;
+      --brand-soft: #6b8f7c;
+      --ink: #e8eef2;
+      --muted: #9aa3ad;
+      --line: rgba(143, 174, 154, 0.16);
+      --surface: #141a22;
+      --bg: #0b0f14;
+    }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     font-family: Vazirmatn, Tahoma, sans-serif;
     color: var(--ink);
-    background: #f8fafc;
+    background: var(--bg);
     line-height: 1.7;
   }
   a { color: var(--brand); }
   .skip {
     position: absolute;
     inset-inline-start: -999px;
-    background: #fff;
+    background: var(--surface);
     padding: .5rem 1rem;
   }
   .skip:focus { inset-inline-start: 1rem; top: 1rem; z-index: 10; }
@@ -118,7 +134,7 @@ const jsonLd = {
     padding: 0.75rem var(--space);
     padding-top: max(0.75rem, env(safe-area-inset-top));
     border-bottom: 1px solid var(--line);
-    background: rgba(255,255,255,.85);
+    background: color-mix(in srgb, var(--surface) 85%, transparent);
     backdrop-filter: blur(8px);
     position: sticky;
     top: 0;
@@ -146,7 +162,7 @@ const jsonLd = {
   }
   nav { display: flex; gap: 1rem; flex-wrap: wrap; }
   nav a {
-    color: #334155;
+    color: var(--muted);
     text-decoration: none;
     font-size: .95rem;
     min-height: 44px;
@@ -170,7 +186,7 @@ const jsonLd = {
   .wrap { width: min(960px, calc(100% - 2rem)); margin-inline: auto; }
   .foot {
     padding: 2rem var(--space) max(3rem, env(safe-area-inset-bottom));
-    color: #64748b;
+    color: var(--muted);
     font-size: .9rem;
     text-align: center;
   }
@@ -187,6 +203,6 @@ const jsonLd = {
     text-decoration: none;
     font-weight: 700;
   }
-  .primary { background: var(--brand); color: #fff; }
-  .ghost { background: rgba(255,255,255,.8); color: var(--ink); border: 1px solid var(--line); }
+  .primary { background: var(--brand-fill); color: #fff; }
+  .ghost { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink); border: 1px solid var(--line); }
 </style>

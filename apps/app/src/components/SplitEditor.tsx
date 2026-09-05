@@ -67,7 +67,7 @@ export function SplitEditor({
             key={m.id}
             type="button"
             className={`chip ${
-              mode === m.id ? 'bg-brand-700 text-white' : 'bg-white/80 text-ink-700 ring-1 ring-brand-700/10'
+              mode === m.id ? 'bg-brand-700 text-white' : 'bg-surface/80 text-ink-700 ring-1 ring-brand-700/10'
             }`}
             onClick={() => setMode(m.id)}
           >
@@ -93,7 +93,7 @@ export function SplitEditor({
                     : ''
                   : toPersianDigits(share.value, persian);
           return (
-            <li key={m.id} className="flex items-center gap-2 rounded-2xl bg-white/70 p-3 ring-1 ring-brand-700/10">
+            <li key={m.id} className="flex items-center gap-2 rounded-2xl bg-surface/70 p-3 ring-1 ring-brand-700/10">
               <label className="flex min-h-11 min-w-0 flex-1 items-center gap-2 text-sm font-medium">
                 <input
                   type="checkbox"

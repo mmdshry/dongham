@@ -4,13 +4,55 @@
 
 :root {
   --keyboard-inset: 0px;
-  --bg: #f0fdfa;
-  --bg-accent: #ccfbf1;
-  --ink: #0f172a;
-  --brand: #0f766e;
-  --brand-soft: #14b8a6;
-  --surface: rgba(255, 255, 255, 0.82);
-  --line: rgba(15, 118, 110, 0.12);
+  --bg: 244 241 234;
+  --bg-accent: 238 243 239;
+  --ink: 28 25 23;
+  --ink-700: 63 58 52;
+  --ink-800: 28 25 23;
+  --ink-900: 20 18 16;
+  --brand: 74 107 92;
+  --brand-soft: 107 143 124;
+  --brand-50: 238 243 239;
+  --brand-100: 221 230 223;
+  --brand-200: 184 203 190;
+  --brand-500: 107 143 124;
+  --brand-600: 88 120 102;
+  --brand-700: 74 107 92;
+  --brand-800: 58 85 72;
+  --brand-900: 42 62 52;
+  --surface: 255 250 245;
+  --line: 74 107 92;
+  --clay: 212 165 116;
+  --clay-50: 244 232 214;
+  --clay-800: 122 78 40;
+  --scrim: 20 18 16;
+  color-scheme: light;
+}
+
+html[data-theme='dark'] {
+  --bg: 11 15 20;
+  --bg-accent: 26 36 32;
+  --ink: 232 238 242;
+  --ink-700: 168 174 178;
+  --ink-800: 232 238 242;
+  --ink-900: 248 250 252;
+  --brand: 74 107 92;
+  --brand-soft: 143 174 154;
+  --brand-50: 26 36 32;
+  --brand-100: 36 51 44;
+  --brand-200: 58 85 72;
+  --brand-500: 107 143 124;
+  --brand-600: 122 157 136;
+  --brand-700: 74 107 92;
+  --brand-800: 168 197 181;
+  --brand-900: 197 209 200;
+  --surface: 20 26 34;
+  --line: 143 174 154;
+  --clay: 212 165 116;
+  --clay-50: 58 46 32;
+  --clay-800: 232 212 184;
+  --scrim: 11 15 20;
+  color-scheme: dark;
 }
 
 * {
@@ -25,11 +67,18 @@ body {
   margin: 0;
   min-height: 100dvh;
   font-family: Vazirmatn, Tahoma, sans-serif;
-  color: var(--ink);
+  color: rgb(var(--ink));
   background:
-    radial-gradient(1200px 600px at 100% -10%, rgba(20, 184, 166, 0.22), transparent 55%),
-    radial-gradient(900px 500px at -10% 20%, rgba(15, 118, 110, 0.12), transparent 50%),
-    linear-gradient(180deg, #f0fdfa 0%, #f8fafc 45%, #eef2ff 100%);
+    radial-gradient(1200px 600px at 100% -10%, rgb(var(--brand-500) / 0.16), transparent 55%),
+    radial-gradient(900px 500px at -10% 20%, rgb(var(--brand-700) / 0.1), transparent 50%),
+    linear-gradient(180deg, rgb(var(--bg)) 0%, rgb(var(--bg-accent)) 55%, rgb(var(--bg)) 100%);
+}
+
+html[data-theme='dark'] body {
+  background:
+    radial-gradient(1200px 600px at 100% -10%, rgb(var(--brand-500) / 0.12), transparent 55%),
+    radial-gradient(900px 500px at -10% 20%, rgb(var(--brand-700) / 0.16), transparent 50%),
+    linear-gradient(180deg, rgb(var(--bg)) 0%, #0f1614 50%, rgb(var(--bg)) 100%);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -59,22 +108,25 @@ html.telegram-mini body {
     @apply inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl px-4 py-3 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:opacity-50;
   }
   .btn-primary {
-    @apply btn bg-brand-700 text-white shadow-soft hover:bg-brand-800;
+    @apply btn bg-brand-700 text-white shadow-soft hover:bg-brand-600;
   }
   .btn-ghost {
-    @apply btn bg-white/70 text-ink-800 ring-1 ring-brand-700/10 hover:bg-white;
+    @apply btn bg-surface/70 text-ink-800 ring-1 ring-brand-700/10 hover:bg-surface;
   }
   .input {
-    @apply w-full rounded-2xl border border-brand-700/10 bg-white/80 px-4 py-3 text-base outline-none ring-brand-600 focus:ring-2;
+    @apply w-full rounded-2xl border border-brand-700/10 bg-surface/80 px-4 py-3 text-base outline-none ring-brand-600 focus:ring-2;
   }
   .chip {
     @apply inline-flex min-h-11 items-center justify-center whitespace-nowrap rounded-full px-4 text-sm font-semibold;
   }
   .chip-check {
-    @apply inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-full bg-white/80 px-3 text-sm font-semibold ring-1 ring-brand-700/10;
+    @apply inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-full bg-surface/80 px-3 text-sm font-semibold ring-1 ring-brand-700/10;
   }
   .chip-check-on {
     @apply bg-brand-100 text-brand-800 ring-brand-700/25;
+  }
+  .chip-clay {
+    @apply rounded-full bg-clay/20 px-2.5 py-1 text-[11px] font-semibold text-clay-800;
   }
   .no-scrollbar {
     -ms-overflow-style: none;
@@ -90,12 +142,21 @@ html.telegram-mini body {
     display: none;
   }
   .card-surface {
-    @apply rounded-3xl bg-white/80 p-4 shadow-soft ring-1 ring-brand-700/10 backdrop-blur sm:p-5;
+    @apply rounded-3xl bg-surface/80 p-4 shadow-soft ring-1 ring-brand-700/10 backdrop-blur sm:p-5;
   }
   .label {
     @apply mb-1.5 block text-xs font-medium text-ink-700/70;
   }
   .section-title {
     @apply text-base font-bold text-ink-900;
+  }
+  .toast-bar {
+    @apply rounded-2xl px-4 py-3 text-sm shadow-soft;
+    background: rgb(var(--scrim));
+    color: #fff;
+  }
+  html[data-theme='dark'] .toast-bar {
+    background: rgb(var(--surface));
+    color: rgb(var(--ink-900));
   }
 }

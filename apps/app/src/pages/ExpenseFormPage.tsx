@@ -18,6 +18,7 @@ import { compressImage, parseReceiptHeuristic } from '../lib/ocr';
 import { formatGrouped, formatMoney, parseMoneyInput, toLatinDigits, toPersianDigits, tomanToRial } from '../lib/format';
 import { currencyLabel } from '../lib/currencies';
 import { templateById } from '../lib/templates';
+import { api, ensureProfile } from '../lib/api';
 import { upsertExpense } from '../lib/sync';
 import { useUiStore } from '../store/ui';
 
@@ -117,19 +118,22 @@ export function ExpenseFormPage() {
     const defaultPayer =
       period?.kind === 'banker' && period.bankerMemberId ? period.bankerMemberId : people[0].id;
     if (!payerId) setPayerId(defaultPayer);
-    if (!shares.length) {
-      setShares(
-        people.map((m) => ({
+    setShares((prev) => {
+      const byId = new Map(prev.map((s) => [s.memberId, s]));
+      return people.map((m) => {
+        const existingShare = byId.get(m.id);
+        if (existingShare) return existingShare;
+        return {
           memberId: m.id,
           value: m.weightDefault || 1,
           excluded: !!m.excludeFromNew,
-        })),
-      );
-    }
+        };
+      });
+    });
     if (period?.currency) setCurrency(period.currency);
     // people is derived; members.length is the stable trigger
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [members.length, isNew, payerId, shares.length, period]);
+  }, [members.length, isNew, period]);
 
   const persian = profile?.usePersianDigits ?? true;
   const modeHint = useMemo(() => {
@@ -247,6 +251,26 @@ export function ExpenseFormPage() {
       return;
     }
     const now = new Date().toISOString();
+    let attachmentId = existing?.attachmentId;
+    let attachmentDataUrl = attachment || undefined;
+    if (attachment) {
+      const profile = await ensureProfile();
+      if (profile.token && (typeof navigator === 'undefined' || navigator.onLine)) {
+        const comma = attachment.indexOf(',');
+        const header = comma >= 0 ? attachment.slice(0, comma) : '';
+        const dataBase64 = comma >= 0 ? attachment.slice(comma + 1) : attachment;
+        const mime = /data:([^;]+)/.exec(header)?.[1] || 'image/jpeg';
+        try {
+          const uploaded = await api<{ id: string }>('/attachments', {
+            method: 'POST',
+            body: JSON.stringify({ periodId, mime, dataBase64 }),
+          });
+          attachmentId = uploaded.id;
+        } catch {
+          /* keep local data URL */
+        }
+      }
+    }
     const payers = useMultiPayer
       ? people
           .map((m) => ({ memberId: m.id, amount: payerAmounts[m.id] || 0 }))
@@ -267,7 +291,8 @@ export function ExpenseFormPage() {
       tip: { type: tipType, value: tipValue },
       tags: uniqueTags(tags),
       note: note || undefined,
-      attachmentDataUrl: attachment,
+      attachmentId,
+      attachmentDataUrl,
       fxRate,
       createdAt: existing?.createdAt || now,
       occurredAt,
@@ -545,7 +570,7 @@ export function ExpenseFormPage() {
           </div>
         ) : null}
 
-        <div className="sticky z-20 -mx-4 mt-1 flex gap-2 border-t border-brand-700/10 bg-[color-mix(in_srgb,white_92%,transparent)] px-4 py-3 backdrop-blur bottom-[max(4.75rem,calc(var(--keyboard-inset,0px)+0.5rem))] md:bottom-0">
+        <div className="sticky z-20 -mx-4 mt-1 flex gap-2 border-t border-brand-700/10 bg-surface/90 px-4 py-3 backdrop-blur bottom-[max(4.75rem,calc(var(--keyboard-inset,0px)+0.5rem))] md:bottom-0">
           {!isNew && !isViewer ? (
             <button type="button" className="btn-ghost text-rose-700" onClick={() => setConfirmDelete(true)}>
               حذف

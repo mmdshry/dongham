@@ -2,7 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { nanoid } from 'nanoid';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import type { IndexAsset } from '@dongham/ledger';
+import { isPeriodOwner, type IndexAsset } from '@dongham/ledger';
 import { MessengerShare } from '../components/MessengerShare';
 import { MoneyInput } from '../components/MoneyInput';
 import { Shell } from '../components/ui';
@@ -67,13 +67,23 @@ export function PaymentFormPage() {
     })();
   }, [toMemberId, members, profile]);
 
-  const me = members.find(
+  const meMember = members.find(
     (m) => m.guestKey === profile?.guestKey || (profile?.userId && m.userId === profile.userId),
   );
-  const lockFrom = kind === 'settlement' && me?.role !== 'owner';
+  const isOwner = isPeriodOwner({
+    ownerId: period?.ownerId,
+    ownerGuestKey: period?.ownerGuestKey,
+    userId: profile?.userId,
+    guestKey: profile?.guestKey,
+    memberRole: meMember?.role,
+  });
+  const me = meMember
+    ? { id: meMember.id, role: meMember.role, userId: profile?.userId, ownerId: period?.ownerId }
+    : undefined;
+  const lockFrom = kind === 'settlement' && !isOwner;
 
   useEffect(() => {
-    if (kind === 'settlement' && me?.id && me.role !== 'owner') {
+    if (kind === 'settlement' && me?.id && !isOwner) {
       setFrom(me.id);
     } else if (members.length >= 2 && !fromMemberId) {
       setFrom(members[0].id);
@@ -81,7 +91,7 @@ export function PaymentFormPage() {
     if (members.length >= 2 && !toMemberId) {
       setTo(members[1].id);
     }
-  }, [members, fromMemberId, toMemberId, kind, me?.id, me?.role]);
+  }, [members, fromMemberId, toMemberId, kind, me?.id, isOwner]);
 
   const from = members.find((m) => m.id === fromMemberId);
   const to = members.find((m) => m.id === toMemberId);

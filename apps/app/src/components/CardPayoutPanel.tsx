@@ -218,14 +218,14 @@ export function CardPayoutPanel() {
         {payouts.map((p) => {
           const bank = detectBankFromCard(p.card) || listIranBanks().find((b) => b.name === p.bank);
           return (
-            <li key={p.id} className="rounded-2xl bg-white p-3 shadow-soft ring-1 ring-brand-700/10">
+            <li key={p.id} className="rounded-2xl bg-surface p-3 shadow-soft ring-1 ring-brand-700/10">
               <div className="flex gap-3">
                 <BankIcon bank={bank} size={40} />
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="font-semibold">{bankTitle(p.bank || bank?.name)}</p>
                     {p.isDefault ? (
-                      <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[11px] font-medium text-brand-800">پیش‌فرض</span>
+                      <span className="chip-clay">پیش‌فرض</span>
                     ) : null}
                   </div>
                   {p.holder ? <p className="mt-1 text-xs text-ink-700/70">{p.holder}</p> : null}

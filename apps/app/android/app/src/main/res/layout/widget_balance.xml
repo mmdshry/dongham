@@ -4,12 +4,12 @@
     android:layout_height="wrap_content"
     android:orientation="vertical"
     android:padding="12dp"
-    android:background="#0F766E">
+    android:background="#4A6B5C">
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="دونگ‌هام"
-        android:textColor="#ECFDF5"
+        android:textColor="#FFFAF5"
         android:textStyle="bold" />
     <TextView
         android:id="@+id/widget_owed"

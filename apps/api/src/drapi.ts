@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { bankFromDrapi } from '@dongham/ledger';
-import { getDb, mutate } from './db.js';
+import { getShebaDay, upsertShebaLookup } from './repo.js';
 import type { ShebaLookupCache, ShebaLookupDay } from './types.js';
 
 export const SHEBA_LOOKUP_LIMIT = 5;
@@ -53,33 +53,25 @@ export function lookupIdentity(userId?: string | null, deviceId?: string | null)
   return null;
 }
 
-function dayRow(identity: string, day: string): ShebaLookupDay {
-  const db = getDb();
-  const rows = db.shebaLookups || [];
-  return rows.find((r) => r.identity === identity && r.day === day) || { identity, day, count: 0, cache: {} };
+async function dayRow(identity: string, day: string): Promise<ShebaLookupDay> {
+  return getShebaDay(identity, day);
 }
 
-export function quotaFor(identity: string, day = tehranDay()): { remaining: number; limit: number; count: number } {
-  const row = dayRow(identity, day);
+export async function quotaFor(
+  identity: string,
+  day = tehranDay(),
+): Promise<{ remaining: number; limit: number; count: number }> {
+  const row = await dayRow(identity, day);
   return { remaining: Math.max(0, SHEBA_LOOKUP_LIMIT - row.count), limit: SHEBA_LOOKUP_LIMIT, count: row.count };
 }
 
-export function cachedLookup(identity: string, cardHash: string): ShebaLookupCache | undefined {
-  const rows = getDb().shebaLookups || [];
-  for (const row of rows) {
-    if (row.identity === identity && row.cache[cardHash]) return row.cache[cardHash];
-  }
-  return undefined;
+export async function cachedLookup(identity: string, cardHash: string): Promise<ShebaLookupCache | undefined> {
+  const row = await getShebaDay(identity, tehranDay());
+  return row.cache[cardHash];
 }
 
-function upsertDay(next: ShebaLookupDay): void {
-  mutate((db) => {
-    const rows = db.shebaLookups || [];
-    const idx = rows.findIndex((r) => r.identity === next.identity && r.day === next.day);
-    if (idx >= 0) rows[idx] = next;
-    else rows.push(next);
-    db.shebaLookups = rows;
-  });
+async function upsertDay(next: ShebaLookupDay): Promise<void> {
+  await upsertShebaLookup(next);
 }
 
 async function drapiToken(force = false): Promise<string> {
@@ -147,15 +139,15 @@ export async function lookupCardSheba(
 ): Promise<{ result: ShebaLookupCache; remaining: number; cached: boolean }> {
   const day = tehranDay();
   const cardHash = hashCard(cardNumber);
-  const row = dayRow(identity, day);
+  const row = await dayRow(identity, day);
   if (row.count >= SHEBA_LOOKUP_LIMIT) {
     const err = new Error('سقف استعلام روزانه تمام شده است') as Error & { status: number };
     err.status = 429;
     throw err;
   }
-  const existing = cachedLookup(identity, cardHash);
+  const existing = await cachedLookup(identity, cardHash);
   const result = existing || (await convertCardToSheba(cardNumber));
-  upsertDay({
+  await upsertDay({
     ...row,
     count: row.count + 1,
     cache: { ...row.cache, [cardHash]: result },
