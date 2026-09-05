@@ -59,7 +59,7 @@ pnpm --filter @dongham/api import-store -- /home/dongham/public_html/apps/api/da
 
 ## اجرا
 
-مدیر بستهٔ مرجع **pnpm** است (`packageManager` + `workspace:*` برای `@dongham/ledger`).
+مدیر بستهٔ مرجع **pnpm** است (`packageManager` + `workspace:*` برای `@dongham/ledger`). `@dongham/ledger` پکیج خصوصی محلی است و باید با `workspace:*` لینک شود، نه از npm.
 
 ```bash
 pnpm install
