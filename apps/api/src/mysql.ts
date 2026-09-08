@@ -53,6 +53,7 @@ const CLEAR_TABLES = [
   'impersonation_tickets',
   'sheba_lookup_days',
   'members',
+  'period_archives',
   'periods',
   'users',
   'fx_cache',
@@ -518,6 +519,10 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
       p.visibility === 'public' ? 'public' : 'private',
       nullStr(p.coverPreset, 32),
       nullStr(p.coverDataUrl),
+      toDate(p.deletedAt),
+      nullStr(p.deletedByUserId, 32),
+      toDate(p.completedAt),
+      nullStr(p.completedByUserId, 32),
     ]);
   }
   await insertRows(
@@ -541,6 +546,10 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
       'visibility',
       'cover_preset',
       'cover_data_url',
+      'deleted_at',
+      'deleted_by',
+      'completed_at',
+      'completed_by',
     ],
     periodRows,
   );
@@ -1182,6 +1191,14 @@ export function mapPeriod(row: Row): PeriodRecord {
   const coverDataUrl = strOpt(row.cover_data_url);
   if (coverPreset) period.coverPreset = coverPreset;
   if (coverDataUrl) period.coverDataUrl = coverDataUrl;
+  const deletedAt = toIsoOpt(row.deleted_at);
+  const completedAt = toIsoOpt(row.completed_at);
+  const deletedBy = strOpt(row.deleted_by);
+  const completedBy = strOpt(row.completed_by);
+  if (deletedAt) period.deletedAt = deletedAt;
+  if (completedAt) period.completedAt = completedAt;
+  if (deletedBy) period.deletedByUserId = deletedBy;
+  if (completedBy) period.completedByUserId = completedBy;
   return period;
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { ChevronRight } from 'lucide-react';
 import { ConfirmDialog, Modal, PageLoading } from '../components/ui';
 import { Icon } from '../components/Icon';
@@ -79,7 +79,6 @@ type DeleteTarget =
 
 export function PeriodDetailPage() {
   const { id } = useParams();
-  const navigate = useNavigate();
   const { setToast } = useSession();
   const [data, setData] = useState<Detail | null>(null);
   const [title, setTitle] = useState('');
@@ -153,8 +152,8 @@ export function PeriodDetailPage() {
     await api(deletePath(deleteTarget), { method: 'DELETE' });
     setDeleteTarget(null);
     if (wasPeriod) {
-      setToast('دوره حذف شد', 'success');
-      navigate('/periods');
+      setToast('دوره به‌صورت نرم حذف شد', 'success');
+      await load();
       return;
     }
     await load();
@@ -170,6 +169,8 @@ export function PeriodDetailPage() {
       <h1 className="text-2xl font-extrabold">{p.title}</h1>
       <p className="text-xs text-ink-700/60">
         نسخه {faNum(p.version)} — {p.id}
+        {p.deletedAt ? <span className="mr-2 text-danger">حذف‌شده</span> : null}
+        {p.completedAt && !p.deletedAt ? <span className="mr-2 text-ink-700/80">اتمام</span> : null}
       </p>
 
       <div className="card grid gap-3 sm:grid-cols-3">
@@ -220,9 +221,38 @@ export function PeriodDetailPage() {
           <button type="button" className="btn-primary" onClick={() => void savePeriod().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))}>
             ذخیره مشخصات
           </button>
-          <button type="button" className="btn-danger" onClick={() => setDeleteTarget({ type: 'period', id: p.id })}>
-            حذف کل دوره
-          </button>
+          {p.deletedAt ? (
+            <button
+              type="button"
+              className="btn-primary"
+              onClick={() =>
+                void api(`/admin/periods/${p.id}/restore`, { method: 'POST' })
+                  .then(() => load())
+                  .then(() => setToast('دوره بازیابی شد', 'success'))
+                  .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))
+              }
+            >
+              بازیابی دوره
+            </button>
+          ) : (
+            <button type="button" className="btn-danger" onClick={() => setDeleteTarget({ type: 'period', id: p.id })}>
+              حذف نرم دوره
+            </button>
+          )}
+          {p.completedAt && !p.deletedAt ? (
+            <button
+              type="button"
+              className="btn-ghost"
+              onClick={() =>
+                void api(`/admin/periods/${p.id}/reopen`, { method: 'POST' })
+                  .then(() => load())
+                  .then(() => setToast('اتمام برداشته شد', 'success'))
+                  .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))
+              }
+            >
+              برداشتن اتمام
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -611,10 +641,10 @@ export function PeriodDetailPage() {
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}
-        title={deleteTarget?.type === 'period' ? 'حذف کل دوره' : 'حذف'}
+        title={deleteTarget?.type === 'period' ? 'حذف نرم دوره' : 'حذف'}
         message={
           deleteTarget?.type === 'period'
-            ? 'دوره و همهٔ اعضا، هزینه، چت، دعوت و پیوست‌های وابسته حذف می‌شوند.'
+            ? 'دوره برای اعضا حذف‌شده دیده می‌شود اما از پایگاه داده پاک نمی‌شود و قابل بازیابی است.'
             : 'این مورد از دفتر حذف می‌شود و نسخهٔ دوره بالا می‌رود تا دستگاه‌ها همگام شوند.'
         }
         confirmLabel="حذف"

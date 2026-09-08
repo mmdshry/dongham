@@ -1,9 +1,19 @@
+import { PERIOD_STATUS_LABEL_FA, periodLifecycleStatus } from '@dongham/ledger';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { EmptyRow, PageLoading, SearchBox } from '../components/ui';
 import { api, faDate, faNum, type Page } from '../lib/api';
 import { useSession } from '../lib/session';
 import type { PeriodListItem } from '../lib/types';
+
+function statusOf(p: PeriodListItem) {
+  return periodLifecycleStatus({
+    deletedAt: p.deletedAt,
+    completedAt: p.completedAt,
+    createdAt: p.createdAt,
+    expenses: p.lastActivityAt ? [{ createdAt: p.lastActivityAt }] : [],
+  });
+}
 
 export function PeriodsPage() {
   const { setToast } = useSession();
@@ -54,6 +64,7 @@ export function PeriodsPage() {
           <thead>
             <tr>
               <th>عنوان</th>
+              <th>وضعیت</th>
               <th>شناسه</th>
               <th>صاحب</th>
               <th>اعضا</th>
@@ -70,6 +81,7 @@ export function PeriodsPage() {
                     {p.title}
                   </Link>
                 </td>
+                <td>{PERIOD_STATUS_LABEL_FA[statusOf(p)]}</td>
                 <td dir="ltr">{p.id}</td>
                 <td>{p.ownerName || p.ownerId}</td>
                 <td>{faNum(p.memberCount)}</td>
@@ -78,7 +90,7 @@ export function PeriodsPage() {
               </tr>
               ))
             ) : (
-              <EmptyRow colSpan={6} />
+              <EmptyRow colSpan={7} />
             )}
           </tbody>
         </table>

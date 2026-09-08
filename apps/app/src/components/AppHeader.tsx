@@ -23,7 +23,7 @@ export function AppHeader() {
     <header className="relative mb-6 flex items-center justify-between pt-1 md:hidden">
       <button
         type="button"
-        className="relative inline-flex min-h-11 min-w-11 items-center justify-center rounded-2xl text-ink-800 duration-150 active:bg-brand-100"
+        className="relative inline-flex min-h-11 min-w-11 items-center justify-center rounded-2xl text-ink-800 duration-150 hover:bg-brand-100 active:bg-brand-100"
         onClick={() => openSheet('notifs')}
         aria-label={unreadLabel}
       >
@@ -38,7 +38,7 @@ export function AppHeader() {
       </div>
       <button
         type="button"
-        className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-2xl text-ink-800 duration-150 active:bg-brand-100 disabled:opacity-50"
+        className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-2xl text-ink-800 duration-150 hover:bg-brand-100 active:bg-brand-100 disabled:opacity-50"
         onClick={() => openSheet('join')}
         disabled={!online}
         title={!online ? JOIN_OFFLINE_ERROR : undefined}

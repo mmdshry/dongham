@@ -6,11 +6,10 @@ import { Users } from 'lucide-react';
 import { ConfirmDialog } from '../components/Dialog';
 import { EmptyState, Shell } from '../components/ui';
 import { UserAvatar } from '../components/UserAvatar';
-import { api, ensureProfile } from '../lib/api';
 import { useAvatarMap } from '../lib/avatarCache';
 import { db } from '../lib/db';
 import { pickIranContacts } from '../lib/contacts';
-import { friendContactTaken } from '../lib/friends';
+import { friendContactTaken, persistFriendCloud } from '../lib/friends';
 import { isValidIranMobile, normalizeEmail, normalizeIranMobile, toPersianDigits } from '../lib/format';
 import { usePersianDigits } from '../lib/usePersianDigits';
 import { useUiStore } from '../store/ui';
@@ -34,22 +33,7 @@ export function FriendsPage() {
     setEditingId(null);
   };
 
-  const persistCloud = async (
-    method: 'POST' | 'PUT' | 'DELETE',
-    friend: { id: string; displayName: string; phone?: string; email?: string },
-  ) => {
-    const profile = await ensureProfile();
-    if (!profile.token) return;
-    const path = method === 'POST' ? '/friends' : `/friends/${friend.id}`;
-    try {
-      await api(path, {
-        method,
-        body: method === 'DELETE' ? undefined : JSON.stringify(friend),
-      });
-    } catch {
-      /* offline ok */
-    }
-  };
+  const persistCloud = persistFriendCloud;
 
   const save = async () => {
     if (!name.trim()) return;
@@ -66,14 +50,16 @@ export function FriendsPage() {
       setToast('این ایمیل قبلاً برای دوست دیگری ثبت شده', 'error');
       return;
     }
+    const prev = editingId ? friends.find((row) => row.id === editingId) : undefined;
     const friend = {
       id: editingId || nanoid(),
       displayName: name.trim(),
       phone: normalizeIranMobile(phone) || undefined,
       email: normalizeEmail(email) || email.trim() || undefined,
+      friendUserId: prev?.friendUserId,
     };
     await db.friends.put(friend);
-    await persistCloud(editingId ? 'PUT' : 'POST', friend);
+    await persistFriendCloud(editingId ? 'PUT' : 'POST', friend);
     setToast(editingId ? 'دوست ویرایش شد' : 'به لیست دوستان اضافه شد', 'success');
     resetForm();
   };
@@ -91,7 +77,7 @@ export function FriendsPage() {
     if (!deleteId) return;
     const id = deleteId;
     await db.friends.delete(id);
-    await persistCloud('DELETE', { id, displayName: '' });
+    await persistFriendCloud('DELETE', { id, displayName: '' });
     if (editingId === id) resetForm();
     setDeleteId(null);
     setToast('دوست حذف شد', 'success');

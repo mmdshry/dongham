@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  loginLocalAction,
   shouldApplyServerPayouts,
   shouldPushLocalPayouts,
   shouldPushPrefs,
   shouldResetLocalAccount,
+  shouldWipeLocalAccount,
 } from './accountSync';
 
 describe('account isolation', () => {
@@ -11,6 +13,53 @@ describe('account isolation', () => {
     expect(shouldResetLocalAccount(undefined, 'u2')).toBe(false);
     expect(shouldResetLocalAccount('u1', 'u1')).toBe(false);
     expect(shouldResetLocalAccount('u1', 'u2')).toBe(true);
+  });
+
+  it('wipes when switching users or when discardLocal is set', () => {
+    expect(shouldWipeLocalAccount(undefined, 'u2')).toBe(false);
+    expect(shouldWipeLocalAccount(undefined, 'u2', true)).toBe(true);
+    expect(shouldWipeLocalAccount('u1', 'u1', true)).toBe(true);
+    expect(shouldWipeLocalAccount('u1', 'u2')).toBe(true);
+    expect(shouldWipeLocalAccount('u1', 'u1')).toBe(false);
+  });
+});
+
+describe('login local confirmation', () => {
+  it('asks to merge on first login when this device has periods', () => {
+    expect(
+      loginLocalAction({ nextUserId: 'u2', localPeriodCount: 2 }),
+    ).toBe('confirm-merge');
+  });
+
+  it('asks to wipe when switching to a different cloud user', () => {
+    expect(
+      loginLocalAction({ previousUserId: 'u1', nextUserId: 'u2', localPeriodCount: 0 }),
+    ).toBe('confirm-wipe');
+    expect(
+      loginLocalAction({ previousUserId: 'u1', nextUserId: 'u2', localPeriodCount: 3 }),
+    ).toBe('confirm-wipe');
+  });
+
+  it('proceeds without a dialog for same user, empty guest, or skipped confirm', () => {
+    expect(
+      loginLocalAction({ previousUserId: 'u1', nextUserId: 'u1', localPeriodCount: 4 }),
+    ).toBe('proceed');
+    expect(loginLocalAction({ nextUserId: 'u2', localPeriodCount: 0 })).toBe('proceed');
+    expect(
+      loginLocalAction({
+        nextUserId: 'u2',
+        localPeriodCount: 2,
+        skipConfirm: true,
+      }),
+    ).toBe('proceed');
+    expect(
+      loginLocalAction({
+        previousUserId: 'u1',
+        nextUserId: 'u2',
+        localPeriodCount: 2,
+        skipConfirm: true,
+      }),
+    ).toBe('proceed');
   });
 });
 

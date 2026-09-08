@@ -8,23 +8,8 @@ export function createPeriodSubmit(page: Page) {
   return page.getByRole('button', { name: 'ساخت', exact: true });
 }
 
-export async function setGuestDisplayName(page: Page, name = 'محمد') {
-  const dialog = page.getByRole('dialog', { name: 'نام شما' });
-  await expect(dialog).toBeVisible({ timeout: 15_000 });
-  await dialog.getByLabel('نام نمایشی').fill(name);
-  await dialog.getByRole('button', { name: 'ادامه' }).click();
-  await expect(dialog).toHaveCount(0);
-}
-
-export async function loginOtp(page: Page, phone: string, displayName: string) {
+export async function loginOtp(page: Page, phone: string) {
   await page.goto('/auth');
-  await page
-    .locator('label:has-text("نام نمایشی") + input, label:text-is("نام نمایشی")')
-    .first()
-    .fill(displayName)
-    .catch(async () => {
-      await page.locator('input').nth(0).fill(displayName);
-    });
   const otpWait = page.waitForResponse((res) => res.url().includes('/auth/otp/request') && res.ok());
   await page.getByPlaceholder('۰۹۱۲xxxxxxx').fill(phone);
   await page.getByRole('button', { name: 'دریافت کد' }).click();
@@ -38,6 +23,14 @@ export async function loginOtp(page: Page, phone: string, displayName: string) {
   expect(body.devCode).toMatch(/^\d{6}$/);
   await page.locator('input[inputmode="numeric"]').fill(body.devCode);
   await page.getByRole('button', { name: 'تأیید و ورود' }).click();
+  const mergeDialog = page.getByRole('dialog', { name: 'داده این دستگاه' });
+  await Promise.race([
+    page.waitForURL((url) => !/\/auth(?:\/|$)/.test(url.pathname), { timeout: 20_000 }),
+    mergeDialog.waitFor({ state: 'visible', timeout: 20_000 }),
+  ]);
+  if (await mergeDialog.isVisible()) {
+    await mergeDialog.getByRole('button', { name: 'ادامه' }).click();
+  }
   await expect(page).not.toHaveURL(/\/auth/, { timeout: 20_000 });
 }
 

@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
 import { LAST_USER_META } from './calendarPref';
 import { db, type LocalProfile } from './db';
+import { needsDisplayName, randomGuestDisplayName } from './memberLabel';
 
 const DEVICE_KEY = 'deviceId';
 
@@ -14,11 +15,16 @@ export async function getDeviceId(): Promise<string> {
 
 export async function ensureProfile(): Promise<LocalProfile> {
   const existing = await db.profile.get('self');
-  if (existing) return existing;
+  if (existing) {
+    if (!needsDisplayName(existing.displayName)) return existing;
+    const next = { ...existing, displayName: randomGuestDisplayName() };
+    await db.profile.put(next);
+    return next;
+  }
   const profile: LocalProfile = {
     id: 'self',
     guestKey: nanoid(),
-    displayName: '',
+    displayName: randomGuestDisplayName(),
     usePersianDigits: true,
     plan: 'free',
   };

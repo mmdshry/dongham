@@ -76,6 +76,15 @@ export interface LocalPeriod {
   ownerId?: string;
   coverPreset?: string;
   coverDataUrl?: string;
+  deletedAt?: string;
+  deletedByUserId?: string;
+  completedAt?: string;
+  completedByUserId?: string;
+}
+
+export interface LocalPeriodPref {
+  periodId: string;
+  archivedAt?: string;
 }
 
 export interface LocalMember {
@@ -155,8 +164,8 @@ export interface LocalChat {
 export interface OutboxItem {
   id?: number;
   periodId: string;
-  entity: 'expense' | 'payment' | 'member' | 'chat' | 'period' | 'activity' | 'recurring';
-  action: 'upsert' | 'delete';
+  entity: 'expense' | 'payment' | 'member' | 'chat' | 'period' | 'activity' | 'recurring' | 'periodLifecycle';
+  action: 'upsert' | 'delete' | 'complete' | 'restore' | 'archive' | 'unarchive';
   payload: unknown;
   createdAt: string;
   tries: number;
@@ -230,6 +239,7 @@ class DonghamDB extends Dexie {
   notifications!: Table<LocalNotification, string>;
   activity!: Table<LocalActivity, string>;
   avatars!: Table<LocalAvatar, string>;
+  periodPrefs!: Table<LocalPeriodPref, string>;
   meta!: Table<{ key: string; value: string }, string>;
 
   constructor() {
@@ -340,6 +350,9 @@ class DonghamDB extends Dexie {
         .modify((p: LocalProfile) => {
           if (p.autoSync === undefined && p.token) p.autoSync = true;
         });
+    });
+    this.version(8).stores({
+      periodPrefs: 'periodId',
     });
   }
 }

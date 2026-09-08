@@ -15,8 +15,9 @@ import { defaultPayout } from '../lib/payout';
 import { shareCardImage } from '../lib/share';
 import { isSelfMember } from '../lib/memberLabel';
 import { canMarkPaid, canRecordWithoutConfirm, settlementActorFrom, settlementLocksFromField } from '../lib/settlementGuard';
-import { upsertPayment } from '../lib/sync';
+import { actorRoleOf, periodWriteMessage } from '../lib/periodLifecycle';
 import { compressImage } from '../lib/ocr';
+import { upsertPayment } from '../lib/sync';
 import { useUiStore } from '../store/ui';
 
 export function PaymentFormPage() {
@@ -89,10 +90,16 @@ export function PaymentFormPage() {
   const from = members.find((m) => m.id === fromMemberId);
   const to = members.find((m) => m.id === toMemberId);
   const isViewer = me?.role === 'viewer';
+  const writeDenied = periodWriteMessage(period, actorRoleOf(period, members, profile), 'other');
 
   const save = async (status: 'settled' | 'pending_confirm' = 'settled') => {
     if (isViewer) {
       setToast('نقش بیننده اجازهٔ ذخیره ندارد', 'error');
+      return;
+    }
+    const denied = periodWriteMessage(period, actorRoleOf(period, members, profile), 'other');
+    if (denied) {
+      setToast(denied, 'error');
       return;
     }
     if (!fromMemberId || !toMemberId || amount <= 0) {
@@ -166,6 +173,7 @@ export function PaymentFormPage() {
   return (
     <Shell title={kind === 'loan' ? 'قرض جدید' : 'پرداخت / تسویه'} back={() => navigate(`/periods/${periodId}`)}>
       <div className="mx-auto grid max-w-lg gap-4 animate-rise pb-4">
+        {writeDenied ? <p className="text-sm leading-6 text-danger">{writeDenied}</p> : null}
         <div className="card-surface space-y-3">
         <div className="flex gap-2">
           <button
@@ -277,7 +285,7 @@ export function PaymentFormPage() {
           type="button"
           className="btn-primary w-full"
           onClick={() => void save('settled')}
-          disabled={isViewer || (kind === 'settlement' && !canRecordWithoutConfirm(me, fromMemberId))}
+          disabled={isViewer || Boolean(writeDenied) || (kind === 'settlement' && !canRecordWithoutConfirm(me, fromMemberId))}
         >
           ذخیره
         </button>
@@ -286,7 +294,7 @@ export function PaymentFormPage() {
             type="button"
             className="btn-ghost w-full"
             onClick={() => void save('pending_confirm')}
-            disabled={isViewer || !canMarkPaid(me, fromMemberId)}
+            disabled={isViewer || Boolean(writeDenied) || !canMarkPaid(me, fromMemberId)}
           >
             پرداختم — منتظر تأیید
           </button>

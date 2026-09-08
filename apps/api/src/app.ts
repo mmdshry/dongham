@@ -4,12 +4,15 @@ import { cors } from 'hono/cors';
 import { nanoid } from 'nanoid';
 import {
   canAssignMemberRole,
+  classifyMemberSearchQuery,
   canManagePeriod,
   canWritePeriod,
   describeSplitError,
   expenseTotal,
+  expirePremium,
   inferCadence,
   isPeriodId,
+  isPremium,
   migratePeriodIds,
   newPeriodId,
   nextRecurringAt,
@@ -17,6 +20,8 @@ import {
   normalizeIranMobile,
   normalizeOtpCode,
   parseUsername,
+  PERIOD_DELETED_MESSAGE,
+  periodLifecycleWriteDenial,
   SETTLEMENT_DENIAL_MESSAGE,
   settlementWriteDenial,
   syncedMemberRole,
@@ -27,7 +32,7 @@ import { actorMemberIds, canAccessPeriod, periodRole } from './access.js';
 import { adminApp, consumeImpersonation } from './admin.js';
 import { parseAvatarIds, parseAvatarWrite } from './avatar.js';
 import { applyPeriodMedia, parseCoverWrite } from './periodMedia.js';
-import { applyUserProfilePatch, authSession, cloudProfile, parseRequiredDisplayName, persistPremiumExpiry, publicUser, wipePublicProfile } from './profile.js';
+import { applyUserProfilePatch, authSession, cloudProfile, parseRequiredDisplayName, persistPremiumExpiry, publicUser, signupDisplayName, wipePublicProfile } from './profile.js';
 import {
   claimListedMemberships,
   createUser,
@@ -56,7 +61,9 @@ import { appPublicUrl, inviteExpiresAt, isInviteExpired } from './publicUrl.js';
 import { deleteSubscription, getVapidPublicKey, upsertSubscription } from './push.js';
 import {
   bumpPeriodVersion,
+  completePeriod,
   deleteFriend,
+  deletePeriodCascade,
   deleteSessionsForUser,
   getAttachment,
   getExpense,
@@ -66,6 +73,8 @@ import {
   getPeriod,
   getUserById,
   findUserByUsername,
+  hasFriendByUserId,
+  searchUsers,
   hasPendingPayment,
   insertActivity,
   insertAttachment,
@@ -78,13 +87,18 @@ import {
   listFriends,
   listMembers,
   listNotifications,
+  listPeriodArchives,
   listPeriodIds,
   listPeriodsForUser,
+  listPublicPeriodsForProfile,
   listVisibleAvatars,
   loadPeriodSnapshot,
   markNotificationRead,
   notifyPeriodMembers,
   publicProfileStats,
+  reopenPeriod,
+  restorePeriod,
+  setPeriodArchived,
   updatePeriod,
   updateUser,
   upsertExpense,
@@ -161,7 +175,11 @@ function periodAccessDenied(c: Context<{ Variables: Variables }>, userId: string
   return c.json({ error: 'اجازه ندارید' }, 403);
 }
 
-async function requireWrite(c: Context<{ Variables: Variables }>, periodId: string) {
+async function requireWrite(
+  c: Context<{ Variables: Variables }>,
+  periodId: string,
+  opts?: { allowDeleted?: boolean },
+) {
   const userId = requireUser(c);
   if (!userId) return { error: c.json({ error: 'وارد نشده‌اید' }, 401) };
   if (!(await canAccessPeriod(userId, periodId, 'write'))) {
@@ -169,16 +187,41 @@ async function requireWrite(c: Context<{ Variables: Variables }>, periodId: stri
   }
   const role = await periodRole(userId, periodId);
   if (!role || !canWritePeriod(role)) return { error: c.json({ error: 'نقش بیننده اجازهٔ تغییر ندارد' }, 403) };
-  return { userId, role };
+  const period = await getPeriod(periodId);
+  if (!period) return { error: c.json({ error: 'پیدا نشد' }, 404) };
+  if (period.deletedAt && !opts?.allowDeleted) {
+    return { error: c.json({ error: PERIOD_DELETED_MESSAGE }, 403) };
+  }
+  return { userId, role, period };
 }
 
-async function requireManage(c: Context<{ Variables: Variables }>, periodId: string) {
-  const gate = await requireWrite(c, periodId);
+async function requireManage(
+  c: Context<{ Variables: Variables }>,
+  periodId: string,
+  opts?: { allowDeleted?: boolean },
+) {
+  const gate = await requireWrite(c, periodId, opts);
   if ('error' in gate) return gate;
   if (!canManagePeriod(gate.role)) {
     return { error: c.json({ error: 'فقط مالک یا مدیر اجازهٔ این کار را دارد' }, 403) };
   }
   return gate;
+}
+
+function lifecycleWriteError(
+  c: Context<{ Variables: Variables }>,
+  period: PeriodRecord | undefined,
+  role: MemberRole | null | undefined,
+  kind: 'expense' | 'other',
+) {
+  const msg = periodLifecycleWriteDenial({
+    deletedAt: period?.deletedAt,
+    completedAt: period?.completedAt,
+    role,
+    kind,
+  });
+  if (!msg) return null;
+  return c.json({ error: msg }, 403);
 }
 
 function assignedMemberRole(input: {
@@ -267,7 +310,7 @@ app.post('/auth/otp/verify', async (c) => {
   const otp = normalizeOtpCode(code);
   if (!local || !otp) return c.json({ error: 'کد نامعتبر است' }, 400);
   let user = await findUserByPhone(local);
-  const newName = user ? undefined : parseRequiredDisplayName(displayName);
+  const newName = user ? undefined : signupDisplayName({ displayName, phone: local });
   if (!user && !newName) return c.json({ error: 'نام نمایشی لازم است' }, 400);
   if (!(await verifyOtp(local, otp))) return c.json({ error: 'کد نامعتبر است' }, 400);
   if (!user) {
@@ -283,7 +326,7 @@ app.post('/auth/register', async (c) => {
   const { email, password, displayName, deviceId } = await c.req.json<{
     email: string;
     password: string;
-    displayName: string;
+    displayName?: string;
     deviceId: string;
   }>();
   const normalizedEmail = normalizeEmail(email);
@@ -291,7 +334,7 @@ app.post('/auth/register', async (c) => {
     return c.json({ error: 'ایمیل یا رمز نامعتبر است' }, 400);
   }
   if (await findUserByEmail(normalizedEmail)) return c.json({ error: 'این ایمیل قبلاً ثبت شده' }, 409);
-  const name = parseRequiredDisplayName(displayName);
+  const name = signupDisplayName({ displayName, email: normalizedEmail });
   if (!name) return c.json({ error: 'نام نمایشی لازم است' }, 400);
   const user = await createUser({
     email: normalizedEmail,
@@ -368,7 +411,7 @@ app.post('/auth/email-otp/verify', async (c) => {
   const otp = normalizeOtpCode(code);
   if (!normalized || !otp) return c.json({ error: 'کد نامعتبر است' }, 400);
   let user = await findUserByEmail(normalized);
-  const newName = user ? undefined : parseRequiredDisplayName(displayName);
+  const newName = user ? undefined : signupDisplayName({ displayName, email: normalized });
   if (!user && !newName) return c.json({ error: 'نام نمایشی لازم است' }, 400);
   if (!(await verifyEmailOtp(normalized, otp, 'login'))) return c.json({ error: 'کد نامعتبر است' }, 400);
   if (!user) {
@@ -648,8 +691,25 @@ app.get('/u/:username', async (c) => {
   if (!parsed.ok) return c.json({ error: 'پیدا نشد' }, 404);
   const user = await findUserByUsername(parsed.username);
   if (!user || user.deletedAt || isUserBanned(user)) return c.json({ error: 'پیدا نشد' }, 404);
-  const stats = await publicProfileStats(user.id);
-  return c.json({
+  expirePremium(user);
+  const [stats, publicPeriods] = await Promise.all([
+    publicProfileStats(user.id),
+    listPublicPeriodsForProfile(user.id),
+  ]);
+  const body: {
+    username: string;
+    displayName: string;
+    avatarPreset: string | null;
+    avatarDataUrl: string | null;
+    coverPreset: string | null;
+    coverDataUrl: string | null;
+    periodCount: number;
+    comemberCount: number;
+    createdAt: string;
+    isPremium: boolean;
+    publicPeriods: typeof publicPeriods;
+    viewer?: { isSelf: boolean; isFriend: boolean };
+  } = {
     username: parsed.username,
     displayName: user.displayName,
     avatarPreset: user.avatarPreset || null,
@@ -658,7 +718,18 @@ app.get('/u/:username', async (c) => {
     coverDataUrl: user.profileCoverDataUrl || null,
     periodCount: stats.periodCount,
     comemberCount: stats.comemberCount,
-  });
+    createdAt: user.createdAt,
+    isPremium: isPremium(user),
+    publicPeriods,
+  };
+  const viewerId = requireUser(c);
+  if (viewerId) {
+    body.viewer = {
+      isSelf: viewerId === user.id,
+      isFriend: await hasFriendByUserId(viewerId, user.id),
+    };
+  }
+  return c.json(body);
 });
 
 app.get('/users/lookup', async (c) => {
@@ -675,6 +746,17 @@ app.get('/users/lookup', async (c) => {
     hasAvatar: Boolean(user.hasAvatar || user.avatarDataUrl || user.avatarPreset),
     avatarPreset: user.avatarPreset || undefined,
   });
+});
+
+app.get('/users/search', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const classified = classifyMemberSearchQuery(c.req.query('q') ?? '');
+  if (classified.kind === 'too_short') {
+    return c.json({ error: 'حداقل ۳ کاراکتر وارد کنید' }, 400);
+  }
+  const users = await searchUsers(c.req.query('q') ?? '', userId);
+  return c.json({ users });
 });
 
 app.get('/avatars', async (c) => {
@@ -711,6 +793,7 @@ app.get('/periods', async (c) => {
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const user = await getUserById(userId);
   const periods = await listPeriodsForUser(userId, user?.phone, user?.email);
+  const archived = await listPeriodArchives(userId);
   return c.json({
     periods: periods.map((p) => ({
       id: p.id,
@@ -719,6 +802,9 @@ app.get('/periods', async (c) => {
       version: p.version,
       updatedAt: p.updatedAt,
       visibility: p.visibility || 'private',
+      deletedAt: p.deletedAt || null,
+      completedAt: p.completedAt || null,
+      archivedAt: archived.get(p.id) || null,
     })),
   });
 });
@@ -770,6 +856,8 @@ app.post('/periods', async (c) => {
   if (existing) {
     const actorRole = await periodRole(userId, id);
     if (!actorRole || !canManagePeriod(actorRole)) return c.json({ error: 'اجازه ندارید' }, 403);
+    const blocked = lifecycleWriteError(c, existing, actorRole, 'other');
+    if (blocked) return blocked;
     if (body.title) existing.title = body.title;
     if (body.currency) existing.currency = body.currency;
     if (body.kind) existing.kind = body.kind;
@@ -892,6 +980,80 @@ app.get('/periods/:id/snapshot', async (c) => {
   return c.json(snapshotJson(snap, await canSeeInvites(userId, periodId)));
 });
 
+app.post('/periods/:id/complete', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireManage(c, periodId);
+  if ('error' in gate) return gate.error;
+  if (gate.period.completedAt) {
+    return c.json({ period: gate.period, version: gate.period.version });
+  }
+  const period = await completePeriod(periodId, gate.userId);
+  const actor = await getUserById(gate.userId);
+  await insertActivity({
+    id: nanoid(),
+    periodId,
+    actorName: actor?.displayName || 'کاربر',
+    action: 'period.complete',
+    summary: `دوره «${period?.title || ''}» به اتمام رسید`,
+    createdAt: new Date().toISOString(),
+  });
+  await notifyPeriodMembers(periodId, gate.userId, 'اتمام دوره', `دوره «${period?.title || ''}» به اتمام رسید`);
+  return c.json({ period, version: period?.version ?? 0 });
+});
+
+app.post('/periods/:id/archive', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
+  const archivedAt = await setPeriodArchived(gate.userId, periodId, true);
+  return c.json({ ok: true, archivedAt });
+});
+
+app.post('/periods/:id/unarchive', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
+  await setPeriodArchived(gate.userId, periodId, false);
+  return c.json({ ok: true, archivedAt: null });
+});
+
+app.delete('/periods/:id', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireManage(c, periodId);
+  if ('error' in gate) return gate.error;
+  await deletePeriodCascade(periodId, gate.userId);
+  const period = await getPeriod(periodId);
+  const actor = await getUserById(gate.userId);
+  await insertActivity({
+    id: nanoid(),
+    periodId,
+    actorName: actor?.displayName || 'کاربر',
+    action: 'period.delete',
+    summary: `دوره «${gate.period.title}» حذف شد`,
+    createdAt: new Date().toISOString(),
+  });
+  await notifyPeriodMembers(periodId, gate.userId, 'حذف دوره', `دوره «${gate.period.title}» حذف شد`);
+  return c.json({ period, version: period?.version ?? 0 });
+});
+
+app.post('/periods/:id/restore', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireManage(c, periodId, { allowDeleted: true });
+  if ('error' in gate) return gate.error;
+  const period = await restorePeriod(periodId);
+  const actor = await getUserById(gate.userId);
+  await insertActivity({
+    id: nanoid(),
+    periodId,
+    actorName: actor?.displayName || 'کاربر',
+    action: 'period.restore',
+    summary: `دوره «${period?.title || gate.period.title}» بازیابی شد`,
+    createdAt: new Date().toISOString(),
+  });
+  await notifyPeriodMembers(periodId, gate.userId, 'بازیابی دوره', `دوره «${period?.title || ''}» بازیابی شد`);
+  return c.json({ period, version: period?.version ?? 0 });
+});
+
 app.post('/periods/:id/sync', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
@@ -955,11 +1117,16 @@ app.post('/periods/:id/expenses', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'expense');
+  if (blocked) return blocked;
   const body = await c.req.json<Partial<ExpenseRecord>>();
   const isNew = !(body.id && (await getExpense(body.id)));
   const written = await writeExpenseFromBody(periodId, body);
   if ('error' in written) return c.json({ error: written.error }, 400);
   const { expense } = written;
+  if (isNew && !expense.deletedAt && gate.period.completedAt) {
+    await reopenPeriod(periodId);
+  }
   await insertActivity({
     id: nanoid(),
     periodId,
@@ -980,6 +1147,8 @@ app.patch('/periods/:id/expenses/:expenseId', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'other');
+  if (blocked) return blocked;
   const prev = await getExpense(c.req.param('expenseId'));
   if (!prev || prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
   const body = await c.req.json<Partial<ExpenseRecord>>();
@@ -993,6 +1162,8 @@ app.delete('/periods/:id/expenses/:expenseId', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'other');
+  if (blocked) return blocked;
   const prev = await getExpense(c.req.param('expenseId'));
   if (!prev || prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
   const now = new Date().toISOString();
@@ -1063,6 +1234,8 @@ app.post('/periods/:id/payments', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'other');
+  if (blocked) return blocked;
   const body = await c.req.json<Partial<PaymentRecord>>();
   const prev = body.id ? await getPayment(body.id) : undefined;
   const isNew = !prev;
@@ -1092,6 +1265,8 @@ app.patch('/periods/:id/payments/:paymentId', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'other');
+  if (blocked) return blocked;
   const prev = await getPayment(c.req.param('paymentId'));
   if (!prev || prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
   const body = await c.req.json<Partial<PaymentRecord>>();
@@ -1107,6 +1282,8 @@ app.delete('/periods/:id/payments/:paymentId', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'other');
+  if (blocked) return blocked;
   const prev = await getPayment(c.req.param('paymentId'));
   if (!prev || prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
   const denied = await settlementDenied(c, gate, periodId, {}, prev);
@@ -1124,6 +1301,8 @@ app.post('/periods/:id/members', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireManage(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'other');
+  if (blocked) return blocked;
   const period = await getPeriod(periodId);
   if (!period) return c.json({ error: 'پیدا نشد' }, 404);
   const body = await c.req.json<Partial<MemberRecord> & { username?: string }>();
@@ -1176,6 +1355,8 @@ app.patch('/periods/:id/members/:memberId', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'other');
+  if (blocked) return blocked;
   const period = await getPeriod(periodId);
   const existing = await getMember(c.req.param('memberId'));
   if (!period || !existing || existing.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
@@ -1228,6 +1409,8 @@ app.post('/periods/:id/invites', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireManage(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'other');
+  if (blocked) return blocked;
   const userId = gate.userId;
   const token = nanoid(12);
   const expiresAt = inviteExpiresAt();
@@ -1246,6 +1429,7 @@ app.get('/invites/:token', async (c) => {
   const invite = await getInvite(token);
   if (!invite || isInviteExpired(invite)) return c.json({ error: 'پیدا نشد' }, 404);
   const period = await getPeriod(invite.periodId);
+  if (!period || period.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
   const members = await listMembers(invite.periodId);
   return c.json({ invite, period, members });
 });
@@ -1260,6 +1444,8 @@ app.post('/invites/:token/join', async (c) => {
   }>();
   const invite = await getInvite(token);
   if (!invite || isInviteExpired(invite)) return c.json({ error: 'پیدا نشد' }, 404);
+  const joinPeriod = await getPeriod(invite.periodId);
+  if (!joinPeriod || joinPeriod.deletedAt) return c.json({ error: PERIOD_DELETED_MESSAGE }, 404);
   const user = await getUserById(userId);
   if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
   const phone = normalizeIranMobile(user.phone);
@@ -1346,6 +1532,12 @@ app.post('/friends', async (c) => {
     email: normalizeEmail(email) || email,
     friendUserId,
   };
+  if (friendUserId && friendUserId === userId) {
+    return c.json({ error: 'نمی‌توانید خودتان را اضافه کنید' }, 400);
+  }
+  if (friendUserId && (await hasFriendByUserId(userId, friendUserId))) {
+    return c.json({ error: 'این فرد از قبل در دوستام است' }, 409);
+  }
   const taken = await friendContactTaken(userId, friend, friend.id);
   if (taken) return c.json({ error: friendTakenError(taken) }, 409);
   await upsertFriend(friend);
@@ -1366,12 +1558,19 @@ app.put('/friends/:id', async (c) => {
   if (!existing) return c.json({ error: 'پیدا نشد' }, 404);
   const taken = await friendContactTaken(userId, { phone, email }, id);
   if (taken) return c.json({ error: friendTakenError(taken) }, 409);
+  const nextFriendUserId = friendUserId !== undefined ? friendUserId : existing.friendUserId;
+  if (nextFriendUserId && nextFriendUserId === userId) {
+    return c.json({ error: 'نمی‌توانید خودتان را اضافه کنید' }, 400);
+  }
+  if (nextFriendUserId && nextFriendUserId !== existing.friendUserId && (await hasFriendByUserId(userId, nextFriendUserId))) {
+    return c.json({ error: 'این فرد از قبل در دوستام است' }, 409);
+  }
   const friend = {
     ...existing,
     displayName,
     phone: normalizeIranMobile(phone) || phone,
     email: normalizeEmail(email) || email,
-    friendUserId: friendUserId !== undefined ? friendUserId : existing.friendUserId,
+    friendUserId: nextFriendUserId,
   };
   await upsertFriend(friend);
   return c.json({ friend });
@@ -1397,6 +1596,8 @@ app.post('/attachments', async (c) => {
   // Same gate as expenses/payments/chat: members write, viewers do not.
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
+  const attachBlocked = lifecycleWriteError(c, gate.period, gate.role, 'expense');
+  if (attachBlocked) return attachBlocked;
   if (!dataBase64 || dataBase64.length > 2_500_000) {
     return c.json({ error: 'فایل نامعتبر یا خیلی بزرگ است' }, 400);
   }
@@ -1489,6 +1690,8 @@ app.post('/periods/:id/recurring', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'other');
+  if (blocked) return blocked;
   const body = await c.req.json<{
     id?: string;
     title: string;
@@ -1531,6 +1734,8 @@ app.post('/periods/:id/recurring/run', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'expense');
+  if (blocked) return blocked;
   const created: string[] = [];
   const due = await listDueRecurring(periodId);
   const period0 = due.length ? await getPeriod(periodId) : null;
@@ -1560,7 +1765,10 @@ app.post('/periods/:id/recurring/run', async (c) => {
     await upsertRecurring(rule, { bump: false });
     created.push(expenseId);
   }
-  if (created.length) await bumpPeriodVersion(periodId);
+  if (created.length) {
+    await bumpPeriodVersion(periodId);
+    if (gate.period.completedAt) await reopenPeriod(periodId);
+  }
   const period = await getPeriod(periodId);
   return c.json({ created, version: period?.version ?? 0 });
 });
@@ -1576,6 +1784,8 @@ app.post('/periods/:id/chat', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
+  const blocked = lifecycleWriteError(c, gate.period, gate.role, 'other');
+  if (blocked) return blocked;
   const { id, senderMemberId, body, expenseId } = await c.req.json<{
     id?: string;
     senderMemberId: string;

@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import { openField, sealIf } from './at-rest.js';
 import { sendPushToUser } from './push.js';
 import { APP_HOME_PATH } from './publicUrl.js';
+import { classifyMemberSearchQuery, MEMBER_SEARCH_LIMIT, memberSearchNeedsCloud } from '@dongham/ledger';
 import {
   all,
   getPool,
@@ -208,6 +209,70 @@ export async function findUserByUsername(username: string): Promise<UserRecord |
   return rows[0] ? getUserById(String(rows[0].id)) : undefined;
 }
 
+export type UserSearchHit = {
+  userId: string;
+  displayName: string;
+  username?: string;
+  hasAvatar: boolean;
+  avatarPreset?: string;
+  avatarDataUrl?: string;
+};
+
+const USER_SEARCH_COLUMNS = `id, display_name, username, avatar_preset, avatar_data_url,
+  ((avatar_data_url IS NOT NULL AND avatar_data_url <> '') OR (avatar_preset IS NOT NULL AND avatar_preset <> '')) AS has_avatar`;
+
+function mapSearchHit(row: Row): UserSearchHit {
+  const hit: UserSearchHit = {
+    userId: String(row.id),
+    displayName: String(row.display_name || ''),
+    hasAvatar: Boolean(row.has_avatar) || Number(row.has_avatar) === 1,
+  };
+  const username = String(row.username || '').trim();
+  if (username) hit.username = username;
+  const preset = String(row.avatar_preset || '').trim();
+  if (preset) hit.avatarPreset = preset;
+  const dataUrl = String(row.avatar_data_url || '').trim();
+  if (dataUrl) hit.avatarDataUrl = dataUrl;
+  if (hit.avatarPreset || hit.avatarDataUrl) hit.hasAvatar = true;
+  return hit;
+}
+
+const SEARCH_VISIBLE = `deleted_at IS NULL AND banned_at IS NULL AND id <> ?`;
+
+export async function searchUsers(q: string, viewerId: string): Promise<UserSearchHit[]> {
+  const classified = classifyMemberSearchQuery(q);
+  if (!memberSearchNeedsCloud(classified)) return [];
+
+  if (classified.kind === 'phone') {
+    const rows = await all(
+      getPool(),
+      `SELECT ${USER_SEARCH_COLUMNS} FROM users WHERE phone = ? AND ${SEARCH_VISIBLE} LIMIT 1`,
+      [classified.phone, viewerId],
+    );
+    return rows.map(mapSearchHit);
+  }
+
+  if (classified.kind === 'email') {
+    const rows = await all(
+      getPool(),
+      `SELECT ${USER_SEARCH_COLUMNS} FROM users WHERE email = ? AND ${SEARCH_VISIBLE} LIMIT 1`,
+      [classified.email, viewerId],
+    );
+    return rows.map(mapSearchHit);
+  }
+
+  const prefix = classified.prefix;
+  const rows = await all(
+    getPool(),
+    `SELECT ${USER_SEARCH_COLUMNS} FROM users
+     WHERE ${SEARCH_VISIBLE} AND username LIKE ?
+     ORDER BY CASE WHEN username = ? THEN 0 ELSE 1 END, username ASC
+     LIMIT ${MEMBER_SEARCH_LIMIT}`,
+    [viewerId, `${prefix}%`, prefix],
+  );
+  return rows.map(mapSearchHit);
+}
+
 export async function publicProfileStats(userId: string): Promise<{ periodCount: number; comemberCount: number }> {
   const [periodRows, comemberRows] = await Promise.all([
     all(
@@ -246,6 +311,57 @@ export async function publicProfileStats(userId: string): Promise<{ periodCount:
     periodCount: Number(periodRows[0]?.n || 0),
     comemberCount: Number(comemberRows[0]?.n || 0),
   };
+}
+
+export type PublicPeriodCard = {
+  id: string;
+  title: string;
+  coverPreset: string | null;
+  coverDataUrl: string | null;
+  memberCount: number;
+};
+
+const PUBLIC_PERIOD_LIST_LIMIT = 20;
+
+export async function listPublicPeriodsForProfile(userId: string): Promise<PublicPeriodCard[]> {
+  const rows = await all(
+    getPool(),
+    `SELECT p.id, p.title, p.cover_preset, p.cover_data_url,
+            (
+              SELECT COUNT(*) FROM members m
+              WHERE m.period_id = p.id AND (m.is_pot IS NULL OR m.is_pot = 0)
+            ) AS member_count
+     FROM periods p
+     WHERE p.visibility = 'public'
+       AND (
+         p.owner_id = ?
+         OR EXISTS (
+           SELECT 1 FROM members m2
+           WHERE m2.period_id = p.id
+             AND m2.user_id = ?
+             AND (m2.is_pot IS NULL OR m2.is_pot = 0)
+         )
+       )
+     ORDER BY p.updated_at DESC
+     LIMIT ${PUBLIC_PERIOD_LIST_LIMIT}`,
+    [userId, userId],
+  );
+  return rows.map((row) => ({
+    id: String(row.id).trim(),
+    title: String(row.title || ''),
+    coverPreset: row.cover_preset ? String(row.cover_preset) : null,
+    coverDataUrl: row.cover_data_url ? String(row.cover_data_url) : null,
+    memberCount: Number(row.member_count || 0),
+  }));
+}
+
+export async function hasFriendByUserId(ownerId: string, friendUserId: string): Promise<boolean> {
+  const rows = await all(
+    getPool(),
+    'SELECT 1 AS n FROM friends WHERE user_id=? AND friend_user_id=? LIMIT 1',
+    [ownerId, friendUserId],
+  );
+  return Boolean(rows[0]);
 }
 
 export async function insertUser(user: UserRecord): Promise<void> {
@@ -461,8 +577,8 @@ export async function listPeriodsForUser(userId: string, phone?: string, email?:
 export async function insertPeriod(period: PeriodRecord): Promise<void> {
   const media = periodMediaSql(period);
   await getPool().query(
-    `INSERT INTO periods (id, title, currency, owner_id, created_at, updated_at, version, kind, banker_member_id, template, round_to, building_charge, lunch_turn_member_id, encrypted, visibility, cover_preset, cover_data_url)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO periods (id, title, currency, owner_id, created_at, updated_at, version, kind, banker_member_id, template, round_to, building_charge, lunch_turn_member_id, encrypted, visibility, cover_preset, cover_data_url, deleted_at, deleted_by, completed_at, completed_by)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       period.id,
       period.title,
@@ -481,6 +597,10 @@ export async function insertPeriod(period: PeriodRecord): Promise<void> {
       period.visibility || 'private',
       media.coverPreset,
       media.coverDataUrl,
+      period.deletedAt ? new Date(period.deletedAt) : null,
+      period.deletedByUserId || null,
+      period.completedAt ? new Date(period.completedAt) : null,
+      period.completedByUserId || null,
     ],
   );
 }
@@ -489,7 +609,7 @@ export async function updatePeriod(period: PeriodRecord): Promise<void> {
   const prev = await getPeriod(period.id);
   const media = periodMediaSql(period);
   await getPool().query(
-    `UPDATE periods SET title=?, currency=?, owner_id=?, updated_at=?, version=?, kind=?, banker_member_id=?, template=?, round_to=?, building_charge=?, lunch_turn_member_id=?, encrypted=?, visibility=?, cover_preset=?, cover_data_url=? WHERE id=?`,
+    `UPDATE periods SET title=?, currency=?, owner_id=?, updated_at=?, version=?, kind=?, banker_member_id=?, template=?, round_to=?, building_charge=?, lunch_turn_member_id=?, encrypted=?, visibility=?, cover_preset=?, cover_data_url=?, deleted_at=?, deleted_by=?, completed_at=?, completed_by=? WHERE id=?`,
     [
       period.title,
       period.currency,
@@ -506,6 +626,10 @@ export async function updatePeriod(period: PeriodRecord): Promise<void> {
       period.visibility || 'private',
       media.coverPreset,
       media.coverDataUrl,
+      period.deletedAt ? new Date(period.deletedAt) : null,
+      period.deletedByUserId || null,
+      period.completedAt ? new Date(period.completedAt) : null,
+      period.completedByUserId || null,
       period.id,
     ],
   );
@@ -1095,6 +1219,13 @@ export async function adminCounts() {
   };
 }
 
+function rowIso(value: unknown): string | undefined {
+  if (value == null || value === '') return undefined;
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toISOString();
+}
+
 export async function listAdminPeriods(q?: string) {
   const needle = (q || '').trim().toLowerCase();
   const rows = needle
@@ -1102,7 +1233,9 @@ export async function listAdminPeriods(q?: string) {
         getPool(),
         `SELECT p.*, u.display_name AS owner_name,
           (SELECT COUNT(*) FROM members m WHERE m.period_id = p.id) AS member_count,
-          (SELECT COUNT(*) FROM expenses e WHERE e.period_id = p.id AND e.deleted_at IS NULL) AS expense_count
+          (SELECT COUNT(*) FROM expenses e WHERE e.period_id = p.id AND e.deleted_at IS NULL) AS expense_count,
+          (SELECT MAX(COALESCE(e.occurred_at, e.created_at)) FROM expenses e WHERE e.period_id = p.id AND e.deleted_at IS NULL) AS last_expense_at,
+          (SELECT MAX(pay.created_at) FROM payments pay WHERE pay.period_id = p.id AND pay.deleted_at IS NULL) AS last_payment_at
          FROM periods p
          LEFT JOIN users u ON u.id = p.owner_id
          WHERE LOWER(CONCAT(p.id, ' ', p.title, ' ', p.currency, ' ', COALESCE(u.display_name,''), ' ', COALESCE(u.phone,''))) LIKE ?
@@ -1113,17 +1246,28 @@ export async function listAdminPeriods(q?: string) {
         getPool(),
         `SELECT p.*, u.display_name AS owner_name,
           (SELECT COUNT(*) FROM members m WHERE m.period_id = p.id) AS member_count,
-          (SELECT COUNT(*) FROM expenses e WHERE e.period_id = p.id AND e.deleted_at IS NULL) AS expense_count
+          (SELECT COUNT(*) FROM expenses e WHERE e.period_id = p.id AND e.deleted_at IS NULL) AS expense_count,
+          (SELECT MAX(COALESCE(e.occurred_at, e.created_at)) FROM expenses e WHERE e.period_id = p.id AND e.deleted_at IS NULL) AS last_expense_at,
+          (SELECT MAX(pay.created_at) FROM payments pay WHERE pay.period_id = p.id AND pay.deleted_at IS NULL) AS last_payment_at
          FROM periods p
          LEFT JOIN users u ON u.id = p.owner_id
          ORDER BY p.updated_at DESC`,
       );
-  return rows.map((row) => ({
-    ...mapPeriod(row),
-    ownerName: row.owner_name ? String(row.owner_name) : undefined,
-    memberCount: Number(row.member_count || 0),
-    expenseCount: Number(row.expense_count || 0),
-  }));
+  return rows.map((row) => {
+    const period = mapPeriod(row);
+    const lastExpense = rowIso(row.last_expense_at);
+    const lastPayment = rowIso(row.last_payment_at);
+    let lastActivityAt = period.createdAt;
+    if (lastExpense && lastExpense > lastActivityAt) lastActivityAt = lastExpense;
+    if (lastPayment && lastPayment > lastActivityAt) lastActivityAt = lastPayment;
+    return {
+      ...period,
+      ownerName: row.owner_name ? String(row.owner_name) : undefined,
+      memberCount: Number(row.member_count || 0),
+      expenseCount: Number(row.expense_count || 0),
+      lastActivityAt,
+    };
+  });
 }
 
 export async function getMember(id: string): Promise<MemberRecord | undefined> {
@@ -1226,8 +1370,82 @@ export async function deleteAttachment(id: string): Promise<void> {
   await getPool().query('DELETE FROM attachments WHERE id=?', [id]);
 }
 
-export async function deletePeriodCascade(periodId: string): Promise<void> {
-  await getPool().query('DELETE FROM periods WHERE id=?', [periodId]);
+export async function deletePeriodCascade(periodId: string, deletedByUserId?: string): Promise<void> {
+  const period = await getPeriod(periodId);
+  if (!period) return;
+  const now = new Date().toISOString();
+  period.deletedAt = now;
+  period.deletedByUserId = deletedByUserId;
+  period.updatedAt = now;
+  await updatePeriod(period);
+  await bumpPeriodVersion(periodId);
+}
+
+export async function restorePeriod(periodId: string): Promise<PeriodRecord | undefined> {
+  const period = await getPeriod(periodId);
+  if (!period) return undefined;
+  period.deletedAt = undefined;
+  period.deletedByUserId = undefined;
+  period.updatedAt = new Date().toISOString();
+  await updatePeriod(period);
+  await bumpPeriodVersion(periodId);
+  return getPeriod(periodId);
+}
+
+export async function completePeriod(periodId: string, completedByUserId?: string): Promise<PeriodRecord | undefined> {
+  const period = await getPeriod(periodId);
+  if (!period) return undefined;
+  const now = new Date().toISOString();
+  period.completedAt = now;
+  period.completedByUserId = completedByUserId;
+  period.updatedAt = now;
+  await updatePeriod(period);
+  await bumpPeriodVersion(periodId);
+  return getPeriod(periodId);
+}
+
+export async function reopenPeriod(periodId: string): Promise<PeriodRecord | undefined> {
+  const period = await getPeriod(periodId);
+  if (!period?.completedAt) return period;
+  period.completedAt = undefined;
+  period.completedByUserId = undefined;
+  period.updatedAt = new Date().toISOString();
+  await updatePeriod(period);
+  await bumpPeriodVersion(periodId);
+  return getPeriod(periodId);
+}
+
+export async function listPeriodArchives(userId: string): Promise<Map<string, string>> {
+  const rows = await all(getPool(), 'SELECT period_id, archived_at FROM period_archives WHERE user_id=?', [userId]);
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    const at = row.archived_at ? new Date(row.archived_at as Date).toISOString() : undefined;
+    if (at) map.set(String(row.period_id), at);
+  }
+  return map;
+}
+
+export async function getPeriodArchivedAt(userId: string, periodId: string): Promise<string | undefined> {
+  const rows = await all(getPool(), 'SELECT archived_at FROM period_archives WHERE user_id=? AND period_id=?', [
+    userId,
+    periodId,
+  ]);
+  const at = rows[0]?.archived_at;
+  return at ? new Date(at as Date).toISOString() : undefined;
+}
+
+export async function setPeriodArchived(userId: string, periodId: string, archived: boolean): Promise<string | undefined> {
+  if (!archived) {
+    await getPool().query('DELETE FROM period_archives WHERE user_id=? AND period_id=?', [userId, periodId]);
+    return undefined;
+  }
+  const now = new Date();
+  await getPool().query(
+    `INSERT INTO period_archives (user_id, period_id, archived_at) VALUES (?,?,?)
+     ON DUPLICATE KEY UPDATE archived_at=archived_at`,
+    [userId, periodId, now],
+  );
+  return (await getPeriodArchivedAt(userId, periodId)) || now.toISOString();
 }
 
 export async function transferPeriodOwner(periodId: string, newOwnerUserId: string): Promise<void> {

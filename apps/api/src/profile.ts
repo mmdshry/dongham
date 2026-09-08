@@ -18,6 +18,19 @@ export function parseRequiredDisplayName(raw?: string, max = 80): string | undef
   return name;
 }
 
+/** New OTP/email users: honor a real name, otherwise the login identifier. */
+export function signupDisplayName(input: {
+  displayName?: string;
+  phone?: string;
+  email?: string;
+}): string | undefined {
+  return (
+    parseRequiredDisplayName(input.displayName) ||
+    parseRequiredDisplayName(input.phone) ||
+    parseRequiredDisplayName(input.email)
+  );
+}
+
 export function publicUser(u: UserRecord) {
   expirePremium(u);
   return {

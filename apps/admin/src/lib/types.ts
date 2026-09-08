@@ -40,6 +40,9 @@ export type PeriodListItem = {
   encrypted?: boolean;
   memberCount: number;
   expenseCount: number;
+  deletedAt?: string;
+  completedAt?: string;
+  lastActivityAt?: string;
 };
 
 export type Member = {

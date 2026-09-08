@@ -182,7 +182,7 @@ describe('admin panel api', () => {
     expect(res.status).toBe(403);
   });
 
-  it('deletes a period and related ledger rows', async () => {
+  it('soft-deletes a period and keeps related ledger rows', async () => {
     const { token: userToken, user } = await userLogin('09124444444');
     const periodRes = await app.request('/periods', {
       method: 'POST',
@@ -234,12 +234,17 @@ describe('admin panel api', () => {
     });
     expect(del.status).toBe(200);
     const afterDel = await getDb();
-    expect(afterDel.periods.find((p) => p.id === period.id)).toBeUndefined();
-    expect(afterDel.members.some((m) => m.periodId === period.id)).toBe(false);
-    expect(afterDel.chat.some((c) => c.periodId === period.id)).toBe(false);
-    expect(afterDel.invites.some((i) => i.periodId === period.id)).toBe(false);
-    expect(afterDel.attachments.some((a) => a.periodId === period.id)).toBe(false);
-    expect(afterDel.recurring.some((r) => r.periodId === period.id)).toBe(false);
+    const gone = afterDel.periods.find((p) => p.id === period.id);
+    expect(gone?.deletedAt).toBeTruthy();
+    expect(afterDel.members.some((m) => m.periodId === period.id)).toBe(true);
+    expect(afterDel.chat.some((c) => c.periodId === period.id)).toBe(true);
+    const restored = await app.request(`/admin/periods/${period.id}/restore`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    expect(restored.status).toBe(200);
+    const afterRestore = await getDb();
+    expect(afterRestore.periods.find((p) => p.id === period.id)?.deletedAt).toBeUndefined();
   });
 
   it('bans a user and rejects their JWT', async () => {

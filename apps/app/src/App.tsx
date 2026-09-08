@@ -2,7 +2,6 @@ import { useEffect } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { BottomNav, DesktopNav } from './components/BottomNav';
 import { CreatePeriodModal } from './components/CreatePeriodModal';
-import { DisplayNameGate } from './components/DisplayNameGate';
 import { JoinPeriodModal } from './components/JoinPeriodModal';
 import { NotificationsSheet } from './components/NotificationsSheet';
 import { ToastHost } from './components/ui';
@@ -93,7 +92,6 @@ function AppShell() {
       <CreatePeriodModal />
       <JoinPeriodModal />
       <NotificationsSheet />
-      <DisplayNameGate />
       <ToastHost />
     </>
   );

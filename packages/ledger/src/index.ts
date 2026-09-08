@@ -21,6 +21,18 @@ export {
   canManagePeriod,
   canAssignMemberRole,
 } from './ownership.js';
+export {
+  PERIOD_STALE_MS,
+  PERIOD_STATUS_LABEL_FA,
+  PERIOD_DELETED_MESSAGE,
+  PERIOD_COMPLETED_WRITE_MESSAGE,
+  PERIOD_COMPLETED_REOPEN_HINT,
+  lastPeriodActivityAt,
+  periodLifecycleStatus,
+  periodLifecycleWriteDenial,
+} from './period-status.js';
+export type { PeriodLifecycleStatus, PeriodActivityRow } from './period-status.js';
+
 export { memberBelongsToActor, actorMemberIdsOf } from './member-match.js';
 export type { MemberMatchFields } from './member-match.js';
 export {
@@ -126,3 +138,10 @@ export {
   isPublicProfilePath,
 } from './username.js';
 export type { UsernameFailReason, ParseUsernameResult } from './username.js';
+export {
+  MEMBER_SEARCH_MIN,
+  MEMBER_SEARCH_LIMIT,
+  classifyMemberSearchQuery,
+  memberSearchNeedsCloud,
+} from './member-search.js';
+export type { MemberSearchQuery } from './member-search.js';

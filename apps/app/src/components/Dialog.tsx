@@ -70,7 +70,7 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim/55 p-4 md:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim/55 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] md:items-center md:pb-4"
       role="presentation"
       onMouseDown={(e) => {
         if (dismissible && e.target === e.currentTarget) onClose();

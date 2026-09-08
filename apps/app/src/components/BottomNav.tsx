@@ -15,10 +15,10 @@ import { APP_HOME } from '../lib/paths';
 import { useUiStore } from '../store/ui';
 
 export const NAV_ITEMS = [
-  { to: APP_HOME, label: 'دوره‌ها', icon: Home },
-  { to: '/transactions', label: 'تراکنش‌ها', icon: Wallet },
-  { to: '/reports', label: 'گزارش‌ها', icon: PieChart },
-  { to: '/profile', label: 'پروفایل', icon: User },
+  { to: APP_HOME, label: 'دوره‌ها', shortLabel: 'دوره‌ها', icon: Home },
+  { to: '/transactions', label: 'تراکنش‌ها', shortLabel: 'تراکنش', icon: Wallet },
+  { to: '/reports', label: 'گزارش‌ها', shortLabel: 'گزارش', icon: PieChart },
+  { to: '/profile', label: 'پروفایل', shortLabel: 'پروفایل', icon: User },
 ];
 
 function NavIcon({ icon, active, size = 20 }: { icon: LucideIcon; active?: boolean; size?: number }) {
@@ -104,7 +104,7 @@ function MobileNavItem({
         to={item.to}
         end={item.to === APP_HOME}
         className={({ isActive }) =>
-          `flex min-h-12 flex-col items-center justify-center gap-1 px-1 text-xs font-semibold duration-150 active:opacity-80 ${
+          `flex min-h-12 flex-col items-center justify-center gap-0.5 px-0.5 text-[10px] font-semibold leading-none duration-150 active:opacity-80 ${
             navActive(item.to, pathname, isActive) ? 'text-white' : 'text-white/75'
           }`
         }
@@ -112,7 +112,7 @@ function MobileNavItem({
         {({ isActive }) => (
           <>
             <NavIcon icon={item.icon} size={24} active={navActive(item.to, pathname, isActive)} />
-            <span>{item.label}</span>
+            <span className="max-w-full truncate">{item.shortLabel}</span>
           </>
         )}
       </NavLink>
@@ -142,11 +142,11 @@ export function BottomNav() {
             <li>
               <button
                 type="button"
-                className="flex h-full min-h-12 w-full flex-col items-center justify-center gap-1 px-0.5 text-[10px] font-semibold leading-tight text-white"
+                className="flex h-full min-h-12 w-full flex-col items-center justify-center px-0.5 text-white"
                 onClick={() => openSheet('create')}
               >
                 <span className="h-6 w-6" aria-hidden />
-                دوره جدید
+                <span className="sr-only">دوره جدید</span>
               </button>
             </li>
             {left.map((item) => (

@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { createPeriodSubmit, newPeriodButton, setGuestDisplayName } from './helpers';
+import { createPeriodSubmit, newPeriodButton } from './helpers';
 
 async function addMemberByName(page: import('@playwright/test').Page, name: string) {
   await page.locator('#period-member-new').fill(name);
@@ -9,7 +9,6 @@ async function addMemberByName(page: import('@playwright/test').Page, name: stri
 test('offline user can create period and expense', async ({ page, context }) => {
   await context.setOffline(false);
   await page.goto('/app');
-  await setGuestDisplayName(page);
   await expect(page.getByRole('heading', { name: 'دوره‌های فعال' })).toBeVisible();
 
   await newPeriodButton(page).click();
@@ -37,7 +36,7 @@ test('offline user can create period and expense', async ({ page, context }) => 
 
   await expect(page.getByText('ناهار')).toBeVisible({ timeout: 15_000 });
   await page.getByRole('tab', { name: 'حساب' }).click();
-  await expect(page.getByText('محمد (من)').first()).toBeVisible();
+  await expect(page.getByText(/کاربر مهمان \d{5} \(من\)/).first()).toBeVisible();
   await expect(page.getByText('تسویه حساب')).toBeVisible();
   await expect(page.getByText('باید به').first()).toBeVisible();
   await page.getByText('اشتراک‌گذاری').first().click();
@@ -47,7 +46,7 @@ test('offline user can create period and expense', async ({ page, context }) => 
 
 test('whatsapp share enables after member phone is saved', async ({ page }) => {
   await page.goto('/app');
-  await setGuestDisplayName(page);
+  await expect(page.getByRole('heading', { name: 'دوره‌های فعال' })).toBeVisible();
   await newPeriodButton(page).click();
   await page.locator('#period-title').fill('گروه موبایل');
   await addMemberByName(page, 'سارا');

@@ -12,7 +12,8 @@ import {
   nextRecurringAt,
   type MemberRole,
 } from '@dongham/ledger';
-import { Modal, PromptDialog } from '../components/Dialog';
+import { Modal, PromptDialog, ConfirmDialog } from '../components/Dialog';
+import { PeriodStatusBadge } from '../components/PeriodStatusBadge';
 import { MessengerShare } from '../components/MessengerShare';
 import { PeriodMediaPicker } from '../components/PeriodMediaPicker';
 import { PeriodSettingsCard } from '../components/PeriodSettingsCard';
@@ -49,6 +50,16 @@ import { periodCoverSrc, stripPeriodCustomMedia } from '../lib/periodCover';
 import { displayNameWithMe, isSelfMember } from '../lib/memberLabel';
 import { chatOfflineHint, isCloudMode } from '../lib/connectionMode';
 import { APP_HOME } from '../lib/paths';
+import {
+  PERIOD_COMPLETED_REOPEN_HINT,
+  PERIOD_COMPLETED_WRITE_MESSAGE,
+  PERIOD_DELETED_MESSAGE,
+  completePeriodLocal,
+  periodStatusOf,
+  restorePeriodLocal,
+  setPeriodArchivedLocal,
+  softDeletePeriodLocal,
+} from '../lib/periodLifecycle';
 import { PeriodTabPanel, PeriodTabs } from '../components/PeriodTabs';
 import { parsePeriodTab, periodTabSearch, type PeriodTab } from '../lib/periodTabs';
 import { useUiStore } from '../store/ui';
@@ -100,6 +111,7 @@ export function PeriodPage() {
   const [snapPrompt, setSnapPrompt] = useState(false);
   const [mediaOpen, setMediaOpen] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [lifecycleConfirm, setLifecycleConfirm] = useState<'complete' | 'delete' | null>(null);
 
   const period = useLiveQuery(() => db.periods.get(id), [id]);
   const members = useLiveQuery(() => db.members.where('periodId').equals(id).toArray(), [id]) || [];
@@ -113,6 +125,7 @@ export function PeriodPage() {
   const recurring = useLiveQuery(() => db.recurring.where('periodId').equals(id).toArray(), [id]) || [];
   const activity = useLiveQuery(() => db.activity.where('periodId').equals(id).sortBy('createdAt'), [id]) || [];
   const profile = useLiveQuery(() => db.profile.get('self'));
+  const periodPref = useLiveQuery(() => db.periodPrefs.get(id), [id]);
   const persian = profile?.usePersianDigits ?? true;
   const calendarMode = useCalendarMode();
   const avatarByUserId = useAvatarMap(members.map((m) => m.userId));
@@ -154,6 +167,12 @@ export function PeriodPage() {
   const actorRole: MemberRole | undefined = isOwner ? 'owner' : me?.role;
   const canManage = canManagePeriod(actorRole);
   const isViewer = me?.role === 'viewer' || (!me && period?.visibility === 'public');
+  const lifecycleStatus = period
+    ? periodStatusOf(period, { archivedAt: periodPref?.archivedAt, expenses, payments })
+    : 'active';
+  const periodLocked = Boolean(period?.deletedAt);
+  const periodCompleted = Boolean(period?.completedAt) && !periodLocked;
+  const canAddExpense = !isViewer && !periodLocked && (!periodCompleted || canManage);
   const canEditSeat = (m: LocalMember) => !isViewer && (canManage || isSelfMember(m, profile));
   const chatHint = chatOfflineHint(profile, online);
 
@@ -400,6 +419,10 @@ export function PeriodPage() {
 
   const sendChat = async () => {
     if (isViewer || !chatBody.trim()) return;
+    if (periodLocked || periodCompleted) {
+      setToast(periodLocked ? PERIOD_DELETED_MESSAGE : PERIOD_COMPLETED_WRITE_MESSAGE, 'error');
+      return;
+    }
     const p = await ensureProfile();
     // Same predicate as the composer's disabled state (store `online`, not a second navigator read).
     if (!isCloudMode(p, online)) return;
@@ -449,6 +472,10 @@ export function PeriodPage() {
 
   const runRecurring = async () => {
     if (isViewer || !period) return;
+    if (periodLocked || (periodCompleted && !canManage)) {
+      setToast(periodLocked ? PERIOD_DELETED_MESSAGE : PERIOD_COMPLETED_WRITE_MESSAGE, 'error');
+      return;
+    }
     const now = Date.now();
     const due = recurring.filter((r) => r.active && new Date(r.nextAt).getTime() <= now);
     // Rules normally share the period currency; otherwise convert with the stored rate like any expense.
@@ -531,6 +558,10 @@ export function PeriodPage() {
 
   const setVisibility = async (visibility: 'private' | 'public') => {
     if (!canManage || !period) return;
+    if (periodLocked || periodCompleted) {
+      setToast(periodLocked ? PERIOD_DELETED_MESSAGE : PERIOD_COMPLETED_WRITE_MESSAGE, 'error');
+      return;
+    }
     await db.periods.update(id, { visibility });
     await queueOp(id, 'period', 'upsert', { visibility });
     setToast(visibility === 'public' ? 'دوره عمومی شد' : 'دوره خصوصی شد', 'success');
@@ -554,14 +585,60 @@ export function PeriodPage() {
       title={period.title}
       back={() => navigate(APP_HOME)}
       action={
-        isViewer ? null : (
-          <Link to={`/periods/${id}/expenses/new`} className="btn-primary !py-2 !text-sm">
+        canAddExpense ? (
+          <Link to={`/periods/${id}/expenses/new`} className="btn-primary btn-sm">
             هزینه جدید
           </Link>
-        )
+        ) : null
       }
     >
       <SyncBanner periodId={id} />
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <PeriodStatusBadge status={lifecycleStatus} />
+        {periodCompleted ? (
+          <p className="text-xs leading-6 text-ink-700/70">
+            {PERIOD_COMPLETED_WRITE_MESSAGE}
+            {canManage ? ` ${PERIOD_COMPLETED_REOPEN_HINT}` : ''}
+          </p>
+        ) : null}
+        {periodLocked ? (
+          <p className="text-xs leading-6 text-danger">{PERIOD_DELETED_MESSAGE}</p>
+        ) : null}
+      </div>
+      {periodLocked && canManage ? (
+        <button
+          type="button"
+          className="btn-primary mb-4"
+          onClick={() => void restorePeriodLocal(period, profile).then(() => setToast('دوره بازیابی شد', 'success'))}
+        >
+          بازیابی دوره
+        </button>
+      ) : null}
+      {!periodLocked && !isViewer ? (
+        <div className="mb-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="btn-ghost btn-sm"
+            onClick={() =>
+              void setPeriodArchivedLocal(id, lifecycleStatus !== 'archived').then(() =>
+                setToast(lifecycleStatus === 'archived' ? 'از آرشیو خارج شد' : 'آرشیو شد', 'success'),
+              )
+            }
+          >
+            {lifecycleStatus === 'archived' ? 'خروج از آرشیو' : 'آرشیو'}
+          </button>
+          {canManage && !periodCompleted ? (
+            <button type="button" className="btn-ghost btn-sm" onClick={() => setLifecycleConfirm('complete')}>
+              اتمام دوره
+            </button>
+          ) : null}
+          {canManage ? (
+            <button type="button" className="btn-ghost btn-sm text-danger" onClick={() => setLifecycleConfirm('delete')}>
+              حذف دوره
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <div className="relative mb-4">
         {canManage ? (
           <button type="button" className="block w-full text-start" onClick={() => setMediaOpen(true)} aria-label="تغییر ظاهر دوره">
@@ -892,13 +969,13 @@ export function PeriodPage() {
                   value={chatBody}
                   onChange={(e) => setChatBody(e.target.value)}
                   placeholder="پیام درباره هزینه..."
-                  disabled={Boolean(chatHint)}
+                  disabled={Boolean(chatHint) || periodLocked || periodCompleted}
                   onKeyDown={(e) => e.key === 'Enter' && sendChat()}
                 />
                 <button
                   type="button"
                   className="btn-primary"
-                  disabled={Boolean(chatHint)}
+                  disabled={Boolean(chatHint) || periodLocked || periodCompleted}
                   onClick={sendChat}
                 >
                   ارسال
@@ -937,7 +1014,7 @@ export function PeriodPage() {
 
           {tab === 'settings' ? (
             <PeriodTabPanel id="settings" tab={tab} className="space-y-3 animate-rise">
-              {canManage ? <PeriodSettingsCard period={period} members={members} hasMoney={expenses.length + payments.length > 0} /> : null}
+              {canManage && !periodLocked && !periodCompleted ? <PeriodSettingsCard period={period} members={members} hasMoney={expenses.length + payments.length > 0} /> : null}
               <div className="card-surface space-y-3">
                 <h3 className="font-bold">شناسه و دسترسی</h3>
                 <p className="font-mono text-sm" dir="ltr">
@@ -1205,7 +1282,7 @@ export function PeriodPage() {
             <p className="text-sm">
               جمع: <Money amount={analytics.total} currency={period.currency} />
             </p>
-            {!isViewer ? (
+            {!isViewer && canAddExpense ? (
               <Link to={`/periods/${id}/expenses/new`} className="btn-primary w-full">
                 ثبت سریع هزینه
               </Link>
@@ -1236,6 +1313,29 @@ export function PeriodPage() {
         onSubmit={(value) => {
           setSnapPrompt(false);
           void exportOfflineSnap(value.trim() || undefined);
+        }}
+      />
+      <ConfirmDialog
+        open={lifecycleConfirm === 'complete'}
+        title="اتمام دوره"
+        message="همهٔ اعضا از اتمام دوره مطلع می‌شوند. فقط مالک یا مدیر با ثبت هزینهٔ جدید می‌تواند دوره را دوباره فعال کند."
+        confirmLabel="اتمام"
+        onClose={() => setLifecycleConfirm(null)}
+        onConfirm={() => {
+          setLifecycleConfirm(null);
+          void completePeriodLocal(period, profile).then(() => setToast('دوره به اتمام رسید', 'success'));
+        }}
+      />
+      <ConfirmDialog
+        open={lifecycleConfirm === 'delete'}
+        title="حذف دوره"
+        message="دوره برای همهٔ اعضا حذف می‌شود. این حذف نرم است و مالک یا مدیر می‌تواند آن را بازیابی کند."
+        confirmLabel="حذف"
+        danger
+        onClose={() => setLifecycleConfirm(null)}
+        onConfirm={() => {
+          setLifecycleConfirm(null);
+          void softDeletePeriodLocal(period, profile).then(() => setToast('دوره حذف شد', 'success'));
         }}
       />
     </Shell>

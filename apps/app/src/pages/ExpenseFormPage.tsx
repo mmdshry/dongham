@@ -20,6 +20,7 @@ import { formatGrouped, formatMoney, parseMoneyInput, toLatinDigits, toPersianDi
 import { currencyLabel } from '../lib/currencies';
 import { templateById } from '../lib/templates';
 import { api, ensureProfile } from '../lib/api';
+import { actorRoleOf, PERIOD_COMPLETED_REOPEN_HINT, periodWriteMessage } from '../lib/periodLifecycle';
 import { upsertExpense } from '../lib/sync';
 import { useUiStore } from '../store/ui';
 
@@ -49,7 +50,10 @@ export function ExpenseFormPage() {
   );
 
   const people = members.filter((m) => !m.isPot);
+  const actorRole = actorRoleOf(period, members, profile);
   const isViewer = members.some((m) => m.role === 'viewer' && isSelfMember(m, profile));
+  const writeDenied = periodWriteMessage(period, actorRole, isNew ? 'expense' : 'other');
+  const reopenHint = Boolean(isNew && period?.completedAt && !period.deletedAt && !writeDenied);
 
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState<number>(0);
@@ -247,6 +251,11 @@ export function ExpenseFormPage() {
       setToast('نقش بیننده اجازهٔ ذخیره ندارد', 'error');
       return;
     }
+    const denied = periodWriteMessage(period, actorRole, isNew ? 'expense' : 'other');
+    if (denied) {
+      setToast(denied, 'error');
+      return;
+    }
     if (!title.trim() || amount <= 0 || !payerId) {
       setToast('عنوان، مبلغ و پرداخت‌کننده لازم است', 'error');
       return;
@@ -327,6 +336,11 @@ export function ExpenseFormPage() {
 
   const remove = async () => {
     if (isNew || isViewer) return;
+    const denied = periodWriteMessage(period, actorRole, 'other');
+    if (denied) {
+      setToast(denied, 'error');
+      return;
+    }
     const now = new Date().toISOString();
     const row = await db.expenses.get(expenseId!);
     if (!row) return;
@@ -387,6 +401,8 @@ export function ExpenseFormPage() {
   return (
     <Shell title={isNew ? 'هزینه جدید' : 'ویرایش هزینه'} back={() => navigate(`/periods/${periodId}`)}>
       <div className="mx-auto grid max-w-3xl gap-4 animate-rise pb-4">
+        {writeDenied ? <p className="text-sm leading-6 text-danger">{writeDenied}</p> : null}
+        {reopenHint ? <p className="text-sm leading-6 text-ink-700/70">{PERIOD_COMPLETED_REOPEN_HINT}</p> : null}
         <div className="card-surface space-y-3">
           <h2 className="section-title">مشخصات</h2>
           <div>
@@ -590,13 +606,13 @@ export function ExpenseFormPage() {
           </div>
         ) : null}
 
-        <div className="sticky z-20 -mx-4 mt-1 flex gap-2 border-t border-brand-800/20 bg-surface/90 px-4 py-3 backdrop-blur bottom-[max(4.75rem,calc(var(--keyboard-inset,0px)+0.5rem))] md:bottom-0">
-          {!isNew && !isViewer ? (
+        <div className="sticky z-20 -mx-4 mt-1 flex gap-2 border-t border-brand-800/20 bg-surface/90 px-4 py-3 backdrop-blur bottom-[max(7.25rem,calc(var(--keyboard-inset,0px)+0.5rem))] md:bottom-0">
+          {!isNew && !isViewer && !writeDenied ? (
             <button type="button" className="btn-ghost text-danger" onClick={() => setConfirmDelete(true)}>
               حذف
             </button>
           ) : null}
-          <button type="button" className="btn-primary flex-1" onClick={save} disabled={isViewer}>
+          <button type="button" className="btn-primary flex-1" onClick={save} disabled={isViewer || Boolean(writeDenied)}>
             ذخیره
           </button>
         </div>

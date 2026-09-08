@@ -3,11 +3,10 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Shell } from '../components/ui';
 import { api, ensureProfile } from '../lib/api';
-import { updateAccountPrefs } from '../lib/cloudProfile';
 import { currencyLabel } from '../lib/currencies';
 import { db } from '../lib/db';
 import { isInviteExpired } from '@dongham/ledger';
-import { DISPLAY_NAME_MAX, needsDisplayName, normalizeDisplayName } from '../lib/memberLabel';
+import { needsDisplayName, normalizeDisplayName } from '../lib/memberLabel';
 import { applyPeriodSnapshot, type PeriodSnapshot } from '../lib/sync';
 import { useUiStore } from '../store/ui';
 
@@ -19,7 +18,6 @@ export function InvitePage() {
     period?: { id: string; title: string; currency: string };
     members?: { displayName: string }[];
   } | null>(null);
-  const [name, setName] = useState('');
   const [localOnly, setLocalOnly] = useState(false);
 
   useEffect(() => {
@@ -58,13 +56,10 @@ export function InvitePage() {
 
   const join = async () => {
     const profile = await ensureProfile();
-    const displayName = normalizeDisplayName(name) || normalizeDisplayName(profile.displayName);
+    const displayName = normalizeDisplayName(profile.displayName);
     if (needsDisplayName(displayName)) {
       setToast('نام لازم است', 'error');
       return;
-    }
-    if (needsDisplayName(profile.displayName)) {
-      await updateAccountPrefs({ displayName });
     }
     if (localOnly && info?.period) {
       const already = (await db.members.where('periodId').equals(info.period.id).toArray()).find(
@@ -119,16 +114,6 @@ export function InvitePage() {
               <h2 className="text-2xl font-extrabold">{info.period.title}</h2>
               <p className="mt-1 text-sm text-ink-700/70">ارز: {currencyLabel(info.period.currency)}</p>
               <p className="mt-2 text-sm">اعضا: {(info.members || []).map((m) => m.displayName).join('، ')}</p>
-            </div>
-            <div>
-              <label className="label">نام شما</label>
-              <input
-                className="input"
-                value={name}
-                maxLength={DISPLAY_NAME_MAX}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="مثلاً محمد"
-              />
             </div>
             <button type="button" className="btn-primary w-full" onClick={() => void join()}>
               پیوستن و شروع ثبت هزینه

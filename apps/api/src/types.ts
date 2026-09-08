@@ -87,6 +87,10 @@ export interface PeriodRecord {
   visibility?: 'private' | 'public';
   coverPreset?: string;
   coverDataUrl?: string;
+  deletedAt?: string;
+  deletedByUserId?: string;
+  completedAt?: string;
+  completedByUserId?: string;
 }
 
 export interface MemberRecord {

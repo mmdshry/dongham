@@ -2,6 +2,28 @@ export function shouldResetLocalAccount(previousUserId: string | undefined, next
   return Boolean(previousUserId && previousUserId !== nextUserId);
 }
 
+export type LoginLocalAction = 'proceed' | 'confirm-merge' | 'confirm-wipe';
+
+export function loginLocalAction(opts: {
+  previousUserId?: string;
+  nextUserId: string;
+  localPeriodCount: number;
+  skipConfirm?: boolean;
+}): LoginLocalAction {
+  if (opts.skipConfirm) return 'proceed';
+  if (shouldResetLocalAccount(opts.previousUserId, opts.nextUserId)) return 'confirm-wipe';
+  if (!opts.previousUserId && opts.localPeriodCount > 0) return 'confirm-merge';
+  return 'proceed';
+}
+
+export function shouldWipeLocalAccount(
+  previousUserId: string | undefined,
+  nextUserId: string,
+  discardLocal?: boolean,
+): boolean {
+  return Boolean(discardLocal) || shouldResetLocalAccount(previousUserId, nextUserId);
+}
+
 export function shouldPushLocalPayouts(
   localHasCards: boolean,
   localDirty: boolean,

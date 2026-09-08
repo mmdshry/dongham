@@ -135,6 +135,11 @@ html[data-theme='dark'] {
   -webkit-tap-highlight-color: transparent;
 }
 
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]) {
+  cursor: pointer;
+}
+
 html {
   scroll-behavior: smooth;
 }

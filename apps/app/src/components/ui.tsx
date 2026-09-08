@@ -134,7 +134,12 @@ export function Shell({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <ConnectionModeBadge />
+            <span className="md:hidden">
+              <ConnectionModeBadge compact />
+            </span>
+            <span className="hidden md:inline-flex">
+              <ConnectionModeBadge />
+            </span>
             {action}
           </div>
         </header>

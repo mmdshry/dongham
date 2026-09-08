@@ -71,6 +71,8 @@ import {
   loadPeriodSnapshot,
   notifyPeriodMembers,
   purgeImpersonationTickets,
+  reopenPeriod,
+  restorePeriod,
   setExtraAdminPhones,
   transferPeriodOwner,
   updateImpersonationTicket,
@@ -655,9 +657,31 @@ adminApp.delete('/periods/:id', async (c) => {
   const id = c.req.param('id');
   const period = await getPeriod(id);
   if (!period) return c.json({ error: 'پیدا نشد' }, 404);
-  await deletePeriodCascade(id);
-  await writeAudit(actor, 'period_delete', 'period', id, `حذف دوره «${period.title}» و داده‌های وابسته`);
-  return c.json({ ok: true });
+  await deletePeriodCascade(id, actor.userId);
+  await notifyPeriodMembers(id, actor.userId, 'حذف دوره', `دوره «${period.title}» حذف شد`);
+  await writeAudit(actor, 'period_delete', 'period', id, `حذف نرم دوره «${period.title}»`);
+  return c.json({ ok: true, period: await getPeriod(id) });
+});
+
+adminApp.post('/periods/:id/restore', async (c) => {
+  const actor = (await actorFrom(c))!;
+  const id = c.req.param('id');
+  const period = await getPeriod(id);
+  if (!period) return c.json({ error: 'پیدا نشد' }, 404);
+  const next = await restorePeriod(id);
+  await notifyPeriodMembers(id, actor.userId, 'بازیابی دوره', `دوره «${period.title}» بازیابی شد`);
+  await writeAudit(actor, 'period_restore', 'period', id, `بازیابی دوره «${period.title}»`);
+  return c.json({ ok: true, period: next });
+});
+
+adminApp.post('/periods/:id/reopen', async (c) => {
+  const actor = (await actorFrom(c))!;
+  const id = c.req.param('id');
+  const period = await getPeriod(id);
+  if (!period) return c.json({ error: 'پیدا نشد' }, 404);
+  const next = await reopenPeriod(id);
+  await writeAudit(actor, 'period_reopen', 'period', id, `برداشتن اتمام دوره «${period.title}»`);
+  return c.json({ ok: true, period: next });
 });
 
 adminApp.patch('/periods/:id/members/:memberId', async (c) => {

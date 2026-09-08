@@ -7,7 +7,7 @@ test('member cannot edit others or pick another debtor; owner can', async ({ bro
   const owner = await ownerCtx.newPage();
   const member = await memberCtx.newPage();
 
-  await loginOtp(owner, '09128883001', 'مالک هویت');
+  await loginOtp(owner, '09128883001');
   await owner.goto('/app');
   await newPeriodButton(owner).click();
   await owner.locator('#period-title').fill('دوره هویت');
@@ -21,7 +21,7 @@ test('member cannot edit others or pick another debtor; owner can', async ({ bro
   await owner.getByRole('button', { name: 'ساخت دعوت' }).click();
   const inviteBody = (await (await inviteWait).json()) as { token: string };
 
-  await loginOtp(member, '09128883002', 'عضو هویت');
+  await loginOtp(member, '09128883002');
   await member.goto(`/i/${inviteBody.token}`);
   await member.getByRole('button', { name: 'پیوستن و شروع ثبت هزینه' }).click();
   await member.waitForURL(/\/periods\//, { timeout: 20_000 });

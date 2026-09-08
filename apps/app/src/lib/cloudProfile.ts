@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
 import { api, ensureProfile, updateProfile } from './api';
+import { randomGuestDisplayName } from './memberLabel';
 import { FX_WATCH_META, LAST_USER_META, readCalendarMode, writeCalendarMode } from './calendarPref';
 import type { CloudPayoutMethod, CloudProfile } from '@dongham/ledger';
 import { encryptText } from './crypto';
@@ -12,7 +13,7 @@ import {
   shouldApplyServerPayouts,
   shouldPushLocalPayouts,
   shouldPushPrefs,
-  shouldResetLocalAccount,
+  shouldWipeLocalAccount,
 } from './accountSync';
 
 export type { CloudPayoutMethod, CloudProfile };
@@ -27,7 +28,15 @@ export type AuthUser = {
   username?: string;
 };
 
-export { shouldApplyServerPayouts, shouldPushLocalPayouts, shouldPushPrefs, shouldResetLocalAccount } from './accountSync';
+export {
+  loginLocalAction,
+  shouldApplyServerPayouts,
+  shouldPushLocalPayouts,
+  shouldPushPrefs,
+  shouldResetLocalAccount,
+  shouldWipeLocalAccount,
+} from './accountSync';
+export type { LoginLocalAction } from './accountSync';
 
 async function encryptCloudMethods(methods: CloudPayoutMethod[]): Promise<PayoutMethod[]> {
   const out: PayoutMethod[] = [];
@@ -105,10 +114,12 @@ export async function resetLocalAccountData(): Promise<void> {
       db.notifications,
       db.activity,
       db.avatars,
+      db.periodPrefs,
       db.meta,
     ],
     async () => {
       await db.periods.clear();
+      await db.periodPrefs.clear();
       await db.members.clear();
       await db.expenses.clear();
       await db.payments.clear();
@@ -127,7 +138,7 @@ export async function resetLocalAccountData(): Promise<void> {
       await db.profile.put({
         id: 'self',
         guestKey: nanoid(),
-        displayName: '',
+        displayName: randomGuestDisplayName(),
         usePersianDigits: true,
         plan: 'free',
         payoutMethods: [],
@@ -232,17 +243,20 @@ export async function updateAccountPrefs(patch: Partial<LocalProfile>): Promise<
   return next;
 }
 
-export async function applyAuthSession(res: {
-  token: string;
-  user: AuthUser;
-  profile?: CloudProfile;
-}): Promise<void> {
+export async function applyAuthSession(
+  res: {
+    token: string;
+    user: AuthUser;
+    profile?: CloudProfile;
+  },
+  opts?: { discardLocal?: boolean },
+): Promise<void> {
   const current = await ensureProfile();
   const last = await previousUserId(current);
-  const switching = shouldResetLocalAccount(last, res.user.id);
-  const pendingPreset = switching ? undefined : current.avatarPreset;
-  const pendingAvatar = switching ? undefined : current.avatarDataUrl;
-  if (switching) {
+  const wiping = shouldWipeLocalAccount(last, res.user.id, opts?.discardLocal);
+  const pendingPreset = wiping ? undefined : current.avatarPreset;
+  const pendingAvatar = wiping ? undefined : current.avatarDataUrl;
+  if (wiping) {
     await resetLocalAccountData();
   }
   await rememberUserId(res.user.id);

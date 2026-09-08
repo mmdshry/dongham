@@ -25,10 +25,11 @@ export async function canAccessPeriod(
 ): Promise<boolean> {
   const period = await getPeriod(periodId);
   if (!period) return false;
+  const isMember = Boolean(userId && (period.ownerId === userId || (await memberMatchesUser(periodId, userId))));
+  if (period.deletedAt) return isMember;
   if (mode === 'read' && (period.visibility || 'private') === 'public') return true;
   if (!userId) return false;
-  if (period.ownerId === userId) return true;
-  return memberMatchesUser(periodId, userId);
+  return isMember;
 }
 
 export async function periodRole(userId: string, periodId: string): Promise<MemberRole | null> {

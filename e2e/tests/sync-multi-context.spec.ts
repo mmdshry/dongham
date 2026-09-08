@@ -15,7 +15,7 @@ test('four browsers plus admin converge on one period', async ({ browser }) => {
   const offline = await offCtx.newPage();
   const admin = await adminCtx.newPage();
 
-  await loginOtp(owner, '09121110001', 'مالک همگام');
+  await loginOtp(owner, '09121110001');
   await owner.goto('/app');
   const periodTitle = `همگام ${Date.now()}`;
   await newPeriodButton(owner).click();
@@ -31,17 +31,17 @@ test('four browsers plus admin converge on one period', async ({ browser }) => {
   await owner.getByRole('button', { name: 'ساخت دعوت' }).click();
   const inviteBody = (await (await inviteWait).json()) as { token: string };
 
-  await loginOtp(memberA, '09121110002', 'عضو الف');
+  await loginOtp(memberA, '09121110002');
   await memberA.goto(`/i/${inviteBody.token}`);
   await memberA.getByRole('button', { name: 'پیوستن و شروع ثبت هزینه' }).click();
   await memberA.waitForURL(/\/periods\//, { timeout: 20_000 });
 
-  await loginOtp(memberB, '09121110003', 'عضو ب');
+  await loginOtp(memberB, '09121110003');
   await memberB.goto(`/i/${inviteBody.token}`);
   await memberB.getByRole('button', { name: 'پیوستن و شروع ثبت هزینه' }).click();
   await memberB.waitForURL(/\/periods\//, { timeout: 20_000 });
 
-  await loginOtp(offline, '09121110004', 'آفلاین');
+  await loginOtp(offline, '09121110004');
   await offline.goto(`/i/${inviteBody.token}`);
   await offline.getByRole('button', { name: 'پیوستن و شروع ثبت هزینه' }).click();
   await offline.waitForURL(/\/periods\//, { timeout: 20_000 });

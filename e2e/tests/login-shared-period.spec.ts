@@ -7,7 +7,7 @@ test('two logged-in users share one period and both see an expense', async ({ br
   const owner = await ownerCtx.newPage();
   const member = await memberCtx.newPage();
 
-  await loginOtp(owner, '09121111111', 'مالک تست');
+  await loginOtp(owner, '09121111111');
   await owner.goto('/app');
   await newPeriodButton(owner).click();
   await owner.locator('#period-title').fill('دوره مشترک');
@@ -23,7 +23,7 @@ test('two logged-in users share one period and both see an expense', async ({ br
   const inviteBody = (await (await inviteWait).json()) as { token: string };
   expect(inviteBody.token).toBeTruthy();
 
-  await loginOtp(member, '09122222222', 'عضو تست');
+  await loginOtp(member, '09122222222');
   await member.goto(`/i/${inviteBody.token}`);
   await member.getByRole('button', { name: 'پیوستن و شروع ثبت هزینه' }).click();
   await member.waitForURL(/\/periods\//, { timeout: 20_000 });

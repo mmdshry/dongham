@@ -23,11 +23,11 @@ import { needsDisplayName } from './memberLabel';
 import type { MemberPick } from './memberPick';
 import { periodMediaFields, periodMediaSyncPayload, presetFromTemplate } from './periodCover';
 
-type OutboxEntity = 'expense' | 'payment' | 'member' | 'chat' | 'period' | 'activity' | 'recurring';
+type OutboxEntity = 'expense' | 'payment' | 'member' | 'chat' | 'period' | 'activity' | 'recurring' | 'periodLifecycle';
 
 type SyncOp = {
   entity: OutboxEntity;
-  action: 'upsert' | 'delete';
+  action: 'upsert' | 'delete' | 'complete' | 'restore' | 'archive' | 'unarchive';
   payload: unknown;
 };
 
@@ -198,6 +198,25 @@ async function flushOneOp(periodId: string, op: SyncOp): Promise<number | undefi
       }),
     );
   }
+  if (op.entity === 'periodLifecycle') {
+    if (op.action === 'complete') {
+      return versionOf(await api<WriteResult>(`/periods/${periodId}/complete`, { method: 'POST' }));
+    }
+    if (op.action === 'restore') {
+      return versionOf(await api<WriteResult>(`/periods/${periodId}/restore`, { method: 'POST' }));
+    }
+    if (op.action === 'delete') {
+      return versionOf(await api<WriteResult>(`/periods/${periodId}`, { method: 'DELETE' }));
+    }
+    if (op.action === 'archive') {
+      await api(`/periods/${periodId}/archive`, { method: 'POST' });
+      return undefined;
+    }
+    if (op.action === 'unarchive') {
+      await api(`/periods/${periodId}/unarchive`, { method: 'POST' });
+      return undefined;
+    }
+  }
   return undefined;
 }
 
@@ -205,7 +224,7 @@ async function flushOneOp(periodId: string, op: SyncOp): Promise<number | undefi
 async function enqueueOp(
   periodId: string,
   entity: OutboxEntity,
-  action: 'upsert' | 'delete',
+  action: SyncOp['action'],
   payload: unknown,
 ) {
   await db.outbox.add({
@@ -221,7 +240,7 @@ async function enqueueOp(
 export async function queueOp(
   periodId: string,
   entity: OutboxEntity,
-  action: 'upsert' | 'delete',
+  action: SyncOp['action'],
   payload: unknown,
 ) {
   const profile = await ensureProfile();
@@ -329,6 +348,10 @@ export async function applyPeriodSnapshot(snap: PeriodSnapshot): Promise<void> {
     ownerId: snap.period.ownerId,
     visibility: snap.period.visibility || 'private',
     ...periodMediaFields(snap.period),
+    ...(snap.period.deletedAt ? { deletedAt: snap.period.deletedAt } : {}),
+    ...(snap.period.deletedByUserId ? { deletedByUserId: snap.period.deletedByUserId } : {}),
+    ...(snap.period.completedAt ? { completedAt: snap.period.completedAt } : {}),
+    ...(snap.period.completedByUserId ? { completedByUserId: snap.period.completedByUserId } : {}),
   });
   const pid = snap.period.id;
   for (const m of snap.members || []) {
@@ -644,6 +667,13 @@ export async function upsertExpense(expense: LocalExpense) {
     occurredAt: expense.occurredAt || expense.createdAt,
   };
   await db.expenses.put(normalized);
+  if (!normalized.deletedAt) {
+    const period = await db.periods.get(expense.periodId);
+    if (period?.completedAt) {
+      const { completedAt: _c, completedByUserId: _by, ...rest } = period;
+      await db.periods.put({ ...rest, updatedAt: expense.updatedAt });
+    }
+  }
   await db.periods.update(expense.periodId, { updatedAt: expense.updatedAt });
   await queueOp(expense.periodId, 'expense', 'upsert', normalized);
   const profile = await ensureProfile();
@@ -693,13 +723,34 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
     } catch {
       /* optional */
     }
-    const { periods } = await api<{ periods: { id: string; version?: number; updatedAt?: string }[] }>('/periods');
+    const { periods } = await api<{
+      periods: {
+        id: string;
+        version?: number;
+        updatedAt?: string;
+        deletedAt?: string | null;
+        completedAt?: string | null;
+        archivedAt?: string | null;
+      }[];
+    }>('/periods');
     let serverAhead = false;
     for (const p of periods) {
       const local = await db.periods.get(p.id);
+      const pendingRows = await db.outbox.where('periodId').equals(p.id).toArray();
+      const pendingLifecycle = pendingRows.some((row) => row.entity === 'periodLifecycle');
+      if (local && !pendingLifecycle) {
+        const next = { ...local };
+        if (p.deletedAt) next.deletedAt = p.deletedAt;
+        else delete next.deletedAt;
+        if (p.completedAt) next.completedAt = p.completedAt;
+        else delete next.completedAt;
+        await db.periods.put(next);
+        if (p.archivedAt) await db.periodPrefs.put({ periodId: p.id, archivedAt: p.archivedAt });
+        else await db.periodPrefs.delete(p.id);
+      }
       const upToDate = Boolean(local && typeof p.version === 'number' && local.version >= p.version);
       // Periods with queued local writes are pulled only after those flush (last write wins).
-      const pending = await db.outbox.where('periodId').equals(p.id).count();
+      const pending = pendingRows.length;
       if (pending > 0) {
         if (local && !upToDate) serverAhead = true;
         continue;

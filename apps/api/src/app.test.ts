@@ -20,7 +20,7 @@ describe('api auth & sync', () => {
     expect(res.status).toBe(200);
   });
 
-  it('requires a real display name for new otp and email users', async () => {
+  it('uses phone or email as display name when signup omits a name', async () => {
     const otpReq = await app.request('/auth/otp/request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -32,18 +32,28 @@ describe('api auth & sync', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone: '09120000001', code: devCode, deviceId: 'need-name' }),
     });
-    expect(missing.status).toBe(400);
+    expect(missing.status).toBe(200);
+    expect(((await json(missing)) as { user: { displayName: string } }).user.displayName).toBe('09120000001');
+
+    const placeholderReq = await app.request('/auth/otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone: '09120000011' }),
+    });
+    const { devCode: placeholderCode } = (await json(placeholderReq)) as { devCode: string };
     const placeholder = await app.request('/auth/otp/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        phone: '09120000001',
-        code: devCode,
+        phone: '09120000011',
+        code: placeholderCode,
         displayName: 'من',
-        deviceId: 'need-name',
+        deviceId: 'need-name-2',
       }),
     });
-    expect(placeholder.status).toBe(400);
+    expect(placeholder.status).toBe(200);
+    expect(((await json(placeholder)) as { user: { displayName: string } }).user.displayName).toBe('09120000011');
+
     const email = await app.request('/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -54,7 +64,28 @@ describe('api auth & sync', () => {
         deviceId: 'mail-need-name',
       }),
     });
-    expect(email.status).toBe(400);
+    expect(email.status).toBe(200);
+    expect(((await json(email)) as { user: { displayName: string } }).user.displayName).toBe('noname@example.com');
+
+    const emailOtpReq = await app.request('/auth/email-otp/request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'otp-noname@example.com' }),
+    });
+    const { devCode: emailOtp } = (await json(emailOtpReq)) as { devCode: string };
+    const emailOtpCreated = await app.request('/auth/email-otp/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'otp-noname@example.com',
+        code: emailOtp,
+        deviceId: 'mail-otp-noname',
+      }),
+    });
+    expect(emailOtpCreated.status).toBe(200);
+    expect(((await json(emailOtpCreated)) as { user: { displayName: string } }).user.displayName).toBe(
+      'otp-noname@example.com',
+    );
   });
 
   it('lets an existing otp user log in without sending a display name', async () => {
@@ -100,12 +131,6 @@ describe('api auth & sync', () => {
     expect(req.status).toBe(200);
     const { devCode } = (await json(req)) as { devCode: string };
     expect(devCode).toMatch(/^\d{6}$/);
-    const missing = await app.request('/auth/email-otp/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: 'otp-new@example.com', code: devCode, deviceId: 'mail-otp-1' }),
-    });
-    expect(missing.status).toBe(400);
     const created = await app.request('/auth/email-otp/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1916,6 +1941,12 @@ describe('username and public profile', () => {
     expect(pubBody.phone).toBeUndefined();
     expect(pubBody.email).toBeUndefined();
     expect(pubBody.coverPreset).toBe('travel');
+    expect(typeof (pubBody as { createdAt?: string }).createdAt).toBe('string');
+    expect((pubBody as { isPremium?: boolean }).isPremium).toBe(false);
+    expect((pubBody as { publicPeriods?: unknown[] }).publicPeriods).toEqual([]);
+    expect((pubBody as { id?: string }).id).toBeUndefined();
+    expect((pubBody as { premiumUntil?: string }).premiumUntil).toBeUndefined();
+    expect((pubBody as { viewer?: unknown }).viewer).toBeUndefined();
 
     const gone = await app.request('/auth/delete-account', {
       method: 'POST',
@@ -1980,6 +2011,300 @@ describe('username and public profile', () => {
     expect((await app.request('/u/sara88')).status).toBe(404);
     expect((await app.request('/u/nope')).status).toBe(404);
     expect((await app.request('/users/lookup?username=sara88')).status).toBe(401);
+  });
+
+  it('lists public periods, premium flag, and viewer relationship on the public profile', async () => {
+    const ali = await signup('09128883201', 'علی', 'pp-ali');
+    const sara = await signup('09128883202', 'سارا', 'pp-sara');
+    await app.request('/auth/me/username', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ali.token}` },
+      body: JSON.stringify({ username: 'alireza' }),
+    });
+    await app.request('/auth/me/username', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sara.token}` },
+      body: JSON.stringify({ username: 'sarajoon' }),
+    });
+
+    const publicOwned = await app.request('/periods', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ali.token}` },
+      body: JSON.stringify({ title: 'سفر عمومی', currency: 'IRT', visibility: 'public', coverPreset: 'travel' }),
+    });
+    expect(publicOwned.status).toBe(200);
+    const { period: owned } = (await json(publicOwned)) as { period: { id: string } };
+
+    const privateOwned = await app.request('/periods', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ali.token}` },
+      body: JSON.stringify({ title: 'خانه خصوصی', currency: 'IRT', visibility: 'private' }),
+    });
+    expect(privateOwned.status).toBe(200);
+    const { period: hidden } = (await json(privateOwned)) as { period: { id: string } };
+
+    const saraPublic = await app.request('/periods', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sara.token}` },
+      body: JSON.stringify({ title: 'خوابگاه', currency: 'IRT', visibility: 'public' }),
+    });
+    const { period: shared } = (await json(saraPublic)) as { period: { id: string } };
+    const added = await app.request(`/periods/${shared.id}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sara.token}` },
+      body: JSON.stringify({ username: 'alireza' }),
+    });
+    expect(added.status).toBe(200);
+
+    await mutate((d) => {
+      const u = d.users.find((row) => row.id === ali.user.id);
+      if (u) {
+        u.plan = 'premium';
+        u.premiumUntil = new Date(Date.now() + 86_400_000).toISOString();
+      }
+    });
+
+    type Pub = {
+      isPremium: boolean;
+      publicPeriods: { id: string; title: string; memberCount: number }[];
+      viewer?: { isSelf: boolean; isFriend: boolean };
+      id?: string;
+      premiumUntil?: string;
+      phone?: string;
+    };
+
+    const anon = (await json(await app.request('/u/alireza'))) as Pub;
+    expect(anon.isPremium).toBe(true);
+    expect(anon.publicPeriods.map((p) => p.id).sort()).toEqual([owned.id, shared.id].sort());
+    expect(anon.publicPeriods.some((p) => p.id === hidden.id)).toBe(false);
+    expect(anon.publicPeriods.find((p) => p.id === owned.id)?.title).toBe('سفر عمومی');
+    expect(anon.publicPeriods.find((p) => p.id === owned.id)?.memberCount).toBeGreaterThanOrEqual(1);
+    expect(anon.viewer).toBeUndefined();
+    expect(anon.id).toBeUndefined();
+    expect(anon.premiumUntil).toBeUndefined();
+    expect(anon.phone).toBeUndefined();
+
+    const selfView = (await json(
+      await app.request('/u/alireza', { headers: { Authorization: `Bearer ${ali.token}` } }),
+    )) as Pub;
+    expect(selfView.viewer).toEqual({ isSelf: true, isFriend: false });
+
+    const friendAdd = await app.request('/friends', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sara.token}` },
+      body: JSON.stringify({ id: 'f-ali', displayName: 'علی', friendUserId: ali.user.id }),
+    });
+    expect(friendAdd.status).toBe(200);
+    const again = await app.request('/friends', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sara.token}` },
+      body: JSON.stringify({ id: 'f-ali-2', displayName: 'علی دوباره', friendUserId: ali.user.id }),
+    });
+    expect(again.status).toBe(409);
+
+    const palView = (await json(
+      await app.request('/u/alireza', { headers: { Authorization: `Bearer ${sara.token}` } }),
+    )) as Pub;
+    expect(palView.viewer).toEqual({ isSelf: false, isFriend: true });
+  });
+
+  it('searches users by username prefix and exact phone or email without leaking contacts', async () => {
+    const owner = await signup('09128883101', 'مالک', 'sr-own');
+    const sara = await signup('09128883102', 'سارا', 'sr-sara');
+    const sara2 = await signup('09128883103', 'سارا۲', 'sr-sara2');
+    const selfNamed = await signup('09128883104', 'خودم', 'sr-self');
+    const mailUser = await app.request('/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'findme@example.com',
+        password: 'secret1',
+        displayName: 'ایمیلی',
+        deviceId: 'sr-mail',
+      }),
+    });
+    const mailBody = (await json(mailUser)) as { token: string; user: { id: string } };
+
+    await app.request('/auth/me/username', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sara.token}` },
+      body: JSON.stringify({ username: 'sara88' }),
+    });
+    await app.request('/auth/me/username', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sara2.token}` },
+      body: JSON.stringify({ username: 'sara89' }),
+    });
+    await app.request('/auth/me/username', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${selfNamed.token}` },
+      body: JSON.stringify({ username: 'myownname' }),
+    });
+    await app.request('/auth/me/avatar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${sara.token}` },
+      body: JSON.stringify({ avatarPreset: 'female-02' }),
+    });
+
+    type SearchHit = {
+      userId: string;
+      displayName: string;
+      username?: string;
+      hasAvatar?: boolean;
+      avatarPreset?: string;
+      phone?: string;
+      email?: string;
+    };
+
+    const unauth = await app.request('/users/search?q=sar');
+    expect(unauth.status).toBe(401);
+
+    const shortQ = await app.request('/users/search?q=ab', {
+      headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    expect(shortQ.status).toBe(400);
+
+    const prefix = await app.request('/users/search?q=sar', {
+      headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    expect(prefix.status).toBe(200);
+    const prefixBody = (await json(prefix)) as { users: SearchHit[] };
+    expect(prefixBody.users.map((u) => u.username)).toEqual(['sara88', 'sara89']);
+    expect(prefixBody.users[0]?.displayName).toBe('سارا');
+    expect(prefixBody.users[0]?.avatarPreset).toBe('female-02');
+    expect(prefixBody.users[0]?.phone).toBeUndefined();
+    expect(prefixBody.users[0]?.email).toBeUndefined();
+
+    const exactFirst = await app.request('/users/search?q=sara88', {
+      headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    expect(((await json(exactFirst)) as { users: SearchHit[] }).users.map((u) => u.username)).toEqual(['sara88']);
+
+    const byPhone = await app.request('/users/search?q=09128883102', {
+      headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    const phoneBody = (await json(byPhone)) as { users: SearchHit[] };
+    expect(phoneBody.users).toHaveLength(1);
+    expect(phoneBody.users[0]?.userId).toBe(sara.user.id);
+    expect(phoneBody.users[0]?.phone).toBeUndefined();
+
+    const phonePrefix = await app.request('/users/search?q=0912', {
+      headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    expect(phonePrefix.status).toBe(200);
+    expect(((await json(phonePrefix)) as { users: SearchHit[] }).users).toEqual([]);
+
+    const byEmail = await app.request('/users/search?q=findme@example.com', {
+      headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    const emailBody = (await json(byEmail)) as { users: SearchHit[] };
+    expect(emailBody.users).toHaveLength(1);
+    expect(emailBody.users[0]?.userId).toBe(mailBody.user.id);
+    expect(emailBody.users[0]?.email).toBeUndefined();
+
+    const selfHit = await app.request('/users/search?q=myownname', {
+      headers: { Authorization: `Bearer ${selfNamed.token}` },
+    });
+    expect(((await json(selfHit)) as { users: SearchHit[] }).users).toEqual([]);
+
+    const gone = await app.request('/auth/delete-account', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${sara2.token}` },
+    });
+    expect(gone.status).toBe(200);
+    const afterDelete = await app.request('/users/search?q=sar', {
+      headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    expect(((await json(afterDelete)) as { users: SearchHit[] }).users.map((u) => u.username)).toEqual(['sara88']);
+  });
+
+  it('archives a period only for that member and completes/deletes for everyone', async () => {
+    const owner = await signup('09127771001', 'مالک', 'life-own');
+    const member = await signup('09127771002', 'عضو', 'life-mem');
+    const created = await app.request('/periods', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${owner.token}` },
+      body: JSON.stringify({
+        title: 'سفر دو نفره',
+        currency: 'IRT',
+        members: [
+          { id: 'own', displayName: 'مالک', userId: owner.user.id, role: 'owner' },
+          { id: 'mem', displayName: 'عضو', userId: member.user.id, role: 'member' },
+        ],
+      }),
+    });
+    expect(created.status).toBe(200);
+    const { period } = (await json(created)) as { period: { id: string } };
+
+    const memberArchive = await app.request(`/periods/${period.id}/archive`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${member.token}` },
+    });
+    expect(memberArchive.status).toBe(200);
+    const ownerList = (await json(
+      await app.request('/periods', { headers: { Authorization: `Bearer ${owner.token}` } }),
+    )) as { periods: { id: string; archivedAt?: string | null }[] };
+    const memberList = (await json(
+      await app.request('/periods', { headers: { Authorization: `Bearer ${member.token}` } }),
+    )) as { periods: { id: string; archivedAt?: string | null }[] };
+    expect(ownerList.periods.find((p) => p.id === period.id)?.archivedAt).toBeFalsy();
+    expect(memberList.periods.find((p) => p.id === period.id)?.archivedAt).toBeTruthy();
+
+    const memberComplete = await app.request(`/periods/${period.id}/complete`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${member.token}` },
+    });
+    expect(memberComplete.status).toBe(403);
+
+    const complete = await app.request(`/periods/${period.id}/complete`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    expect(complete.status).toBe(200);
+
+    const memberExpense = await app.request(`/periods/${period.id}/expenses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${member.token}` },
+      body: JSON.stringify(expensePayload('exp-member', 'شام', { payerId: 'mem', shares: [{ memberId: 'mem', value: 1 }] })),
+    });
+    expect(memberExpense.status).toBe(403);
+
+    const ownerExpense = await app.request(`/periods/${period.id}/expenses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${owner.token}` },
+      body: JSON.stringify(expensePayload('exp-owner', 'ناهار', { payerId: 'own', shares: [{ memberId: 'own', value: 1 }] })),
+    });
+    expect(ownerExpense.status).toBe(200);
+    const afterReopen = (await json(
+      await app.request('/periods', { headers: { Authorization: `Bearer ${member.token}` } }),
+    )) as { periods: { id: string; completedAt?: string | null }[] };
+    expect(afterReopen.periods.find((p) => p.id === period.id)?.completedAt).toBeFalsy();
+
+    const del = await app.request(`/periods/${period.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    expect(del.status).toBe(200);
+    const memberAfterDel = (await json(
+      await app.request('/periods', { headers: { Authorization: `Bearer ${member.token}` } }),
+    )) as { periods: { id: string; deletedAt?: string | null }[] };
+    expect(memberAfterDel.periods.find((p) => p.id === period.id)?.deletedAt).toBeTruthy();
+    const memberWrite = await app.request(`/periods/${period.id}/expenses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${member.token}` },
+      body: JSON.stringify(expensePayload('exp-gone', 'بعد حذف', { payerId: 'mem', shares: [{ memberId: 'mem', value: 1 }] })),
+    });
+    expect(memberWrite.status).toBe(403);
+
+    const restore = await app.request(`/periods/${period.id}/restore`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${owner.token}` },
+    });
+    expect(restore.status).toBe(200);
+    const restored = (await json(
+      await app.request('/periods', { headers: { Authorization: `Bearer ${member.token}` } }),
+    )) as { periods: { id: string; deletedAt?: string | null }[] };
+    expect(restored.periods.find((p) => p.id === period.id)?.deletedAt).toBeFalsy();
   });
 });
 

@@ -3,14 +3,21 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Shell } from '../components/ui';
 import { ConnectionModeBadge } from '../components/ConnectionModeBadge';
-import { ConfirmDialog } from '../components/Dialog';
+import { ConfirmDialog, Modal } from '../components/Dialog';
+import { loginLocalAction } from '../lib/accountSync';
 import { api, ensureProfile, getDeviceId, updateProfile } from '../lib/api';
-import { applyAuthSession, rememberUserId, type AuthUser, type CloudProfile } from '../lib/cloudProfile';
+import {
+  applyAuthSession,
+  previousUserId,
+  rememberUserId,
+  type AuthUser,
+  type CloudProfile,
+} from '../lib/cloudProfile';
 import { db } from '../lib/db';
 import { normalizeEmail, normalizeIranMobile, normalizeOtpCode, toPersianDigits } from '../lib/format';
 import { googleClientId, loadGis } from '../lib/googleAuth';
-import { APP_HOME } from '../lib/paths';
-import { DISPLAY_NAME_MAX, needsDisplayName, normalizeDisplayName } from '../lib/memberLabel';
+import { safeAuthNextPath } from '../lib/paths';
+import { needsDisplayName } from '../lib/memberLabel';
 import { isAutoSyncOn } from '../lib/connectionMode';
 import { flushOutbox, pullCloud } from '../lib/sync';
 import { disableWebPush, syncPushSubscription } from '../lib/webPush';
@@ -33,7 +40,6 @@ export function AuthPage() {
   const [emailDevCode, setEmailDevCode] = useState('');
   const [emailOtpSent, setEmailOtpSent] = useState(false);
   const [password, setPassword] = useState('');
-  const [displayName, setDisplayName] = useState('');
   const [otpSent, setOtpSent] = useState(false);
   const [linkEmail, setLinkEmail] = useState('');
   const [linkEmailCode, setLinkEmailCode] = useState('');
@@ -44,20 +50,53 @@ export function AuthPage() {
   const [linkPhoneDev, setLinkPhoneDev] = useState('');
   const [linkPhoneSent, setLinkPhoneSent] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [pendingLogin, setPendingLogin] = useState<{
+    res: { token: string; user: AuthUser; profile?: CloudProfile };
+    toast: string;
+    action: 'confirm-merge' | 'confirm-wipe';
+    localPeriodCount: number;
+  } | null>(null);
   const googleBtnRef = useRef<HTMLDivElement>(null);
   const clientId = googleClientId();
 
-  const applySession = async (
+  const finishLogin = async (
     res: { token: string; user: AuthUser; profile?: CloudProfile },
     toast: string,
+    opts?: { discardLocal?: boolean },
   ) => {
-    await applyAuthSession(res);
+    await applyAuthSession(res, { discardLocal: opts?.discardLocal });
     await flushOutbox();
     await pullCloud();
     await syncPushSubscription();
     setToast(toast, 'success');
-    const next = searchParams.get('next') || APP_HOME;
+    const next = safeAuthNextPath(searchParams.get('next'));
     navigate(next, { replace: true });
+  };
+
+  const applySession = async (
+    res: { token: string; user: AuthUser; profile?: CloudProfile },
+    toast: string,
+    opts?: { skipConfirm?: boolean },
+  ) => {
+    const current = await ensureProfile();
+    const last = await previousUserId(current);
+    const localPeriodCount = await db.periods.count();
+    const action = loginLocalAction({
+      previousUserId: last,
+      nextUserId: res.user.id,
+      localPeriodCount,
+      skipConfirm: opts?.skipConfirm,
+    });
+    if (action === 'confirm-merge' || action === 'confirm-wipe') {
+      setPendingLogin({ res, toast, action, localPeriodCount });
+      return;
+    }
+    await finishLogin(res, toast);
+  };
+
+  const cancelPendingLogin = () => {
+    setPendingLogin(null);
+    setToast('ورود لغو شد — داده محلی ماند', 'info');
   };
 
   const applyLinked = async (res: { user: AuthUser; profile?: CloudProfile }, toast: string) => {
@@ -90,7 +129,7 @@ export function AuthPage() {
           body: JSON.stringify({ code: imp, deviceId: await getDeviceId() }),
         });
         if (cancelled) return;
-        await applySession(res, 'ورود پشتیبانی');
+        await applySession(res, 'ورود پشتیبانی', { skipConfirm: true });
       } catch (e) {
         if (!cancelled) setToast(e instanceof Error ? e.message : 'ورود پشتیبانی ناموفق بود', 'error');
       }
@@ -144,12 +183,6 @@ export function AuthPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, profile?.token]);
 
-  const resolvedDisplayName = () => {
-    const fromForm = normalizeDisplayName(displayName);
-    if (!needsDisplayName(fromForm)) return fromForm;
-    return normalizeDisplayName(profile?.displayName);
-  };
-
   const requestOtp = async () => {
     const local = normalizeIranMobile(phone);
     if (!local) {
@@ -176,18 +209,12 @@ export function AuthPage() {
       setToast('شماره یا کد نامعتبر است', 'error');
       return;
     }
-    const name = resolvedDisplayName();
-    if (needsDisplayName(name)) {
-      setToast('نام نمایشی لازم است', 'error');
-      return;
-    }
     try {
       const res = await api<{ token: string; user: AuthUser }>('/auth/otp/verify', {
         method: 'POST',
         body: JSON.stringify({
           phone: local,
           code: otp,
-          displayName: name,
           deviceId: await getDeviceId(),
         }),
       });
@@ -223,18 +250,12 @@ export function AuthPage() {
       setToast('ایمیل یا کد نامعتبر است', 'error');
       return;
     }
-    const name = resolvedDisplayName();
-    if (needsDisplayName(name)) {
-      setToast('نام نمایشی لازم است', 'error');
-      return;
-    }
     try {
       const res = await api<{ token: string; user: AuthUser }>('/auth/email-otp/verify', {
         method: 'POST',
         body: JSON.stringify({
           email: normalized,
           code: otp,
-          displayName: name,
           deviceId: await getDeviceId(),
         }),
       });
@@ -245,18 +266,12 @@ export function AuthPage() {
   };
 
   const registerEmail = async () => {
-    const name = resolvedDisplayName();
-    if (needsDisplayName(name)) {
-      setToast('نام نمایشی لازم است', 'error');
-      return;
-    }
     try {
       const res = await api<{ token: string; user: AuthUser }>('/auth/register', {
         method: 'POST',
         body: JSON.stringify({
           email,
           password,
-          displayName: name,
           deviceId: await getDeviceId(),
         }),
       });
@@ -272,7 +287,7 @@ export function AuthPage() {
         method: 'POST',
         body: JSON.stringify({ email, password, deviceId: await getDeviceId() }),
       });
-      await applySession(res, 'ورود موفق');
+      await applySession(res, 'ورود موفق — داده‌های این دستگاه همگام می‌شوند');
     } catch (e) {
       setToast(e instanceof Error ? e.message : 'خطا', 'error');
     }
@@ -539,17 +554,6 @@ export function AuthPage() {
             </div>
 
             <div className="card-surface space-y-3">
-              <div>
-                <label className="label" htmlFor="auth-display-name">نام نمایشی</label>
-                <input
-                  id="auth-display-name"
-                  className="input"
-                  value={displayName}
-                  maxLength={DISPLAY_NAME_MAX}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder={needsDisplayName(profile?.displayName) ? 'مثلاً محمد' : profile?.displayName}
-                />
-              </div>
               {mode === 'otp' ? (
                 <>
                   <div>
@@ -646,6 +650,59 @@ export function AuthPage() {
           </>
         ) : null}
       </div>
+      <Modal
+        open={pendingLogin?.action === 'confirm-merge'}
+        onClose={cancelPendingLogin}
+        title="داده این دستگاه"
+      >
+        <p className="text-sm leading-6 text-ink-700/80">
+          روی این دستگاه {toPersianDigits(pendingLogin?.localPeriodCount ?? 0, persian)} دوره هست. با ادامه، به حساب ابری
+          اضافه می‌شوند و دوره‌های ابری هم می‌آیند. دو دوره با نام یکسان یکی نمی‌شوند.
+        </p>
+        <div className="mt-5 flex flex-col gap-2">
+          <button
+            type="button"
+            className="btn-primary w-full"
+            onClick={() => {
+              if (!pendingLogin) return;
+              const { res, toast } = pendingLogin;
+              setPendingLogin(null);
+              void finishLogin(res, toast);
+            }}
+          >
+            ادامه
+          </button>
+          <button
+            type="button"
+            className="btn-ghost w-full"
+            onClick={() => {
+              if (!pendingLogin) return;
+              const { res } = pendingLogin;
+              setPendingLogin(null);
+              void finishLogin(res, 'ورود موفق — فقط داده ابری آمد', { discardLocal: true });
+            }}
+          >
+            فقط حساب ابری
+          </button>
+          <button type="button" className="btn-ghost w-full" onClick={cancelPendingLogin}>
+            انصراف
+          </button>
+        </div>
+      </Modal>
+      <ConfirmDialog
+        open={pendingLogin?.action === 'confirm-wipe'}
+        title="حساب دیگری"
+        message="دوره و هزینه این دستگاه پاک می‌شود و داده حساب جدید می‌آید. این کار برگشت‌پذیر نیست."
+        confirmLabel="پاک کردن و ورود"
+        danger
+        onClose={cancelPendingLogin}
+        onConfirm={() => {
+          if (!pendingLogin) return;
+          const { res } = pendingLogin;
+          setPendingLogin(null);
+          void finishLogin(res, 'ورود موفق — داده این دستگاه پاک شد');
+        }}
+      />
       <ConfirmDialog
         open={confirmDelete}
         title="حذف حساب"

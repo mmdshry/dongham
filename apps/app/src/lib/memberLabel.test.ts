@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   displayNameWithMe,
+  isGuestDisplayName,
   isSelfMember,
   needsDisplayName,
   normalizeDisplayName,
+  randomGuestDisplayName,
 } from './memberLabel';
 
 describe('needsDisplayName', () => {
@@ -18,6 +20,31 @@ describe('needsDisplayName', () => {
   it('accepts a real name', () => {
     expect(needsDisplayName('محمد')).toBe(false);
     expect(needsDisplayName('منیره')).toBe(false);
+  });
+
+  it('treats guest labels as a real name', () => {
+    expect(needsDisplayName('کاربر مهمان 48217')).toBe(false);
+    expect(needsDisplayName(randomGuestDisplayName())).toBe(false);
+  });
+});
+
+describe('randomGuestDisplayName', () => {
+  it('is کاربر مهمان plus a 5-digit number from 10000 to 99999', () => {
+    for (let i = 0; i < 20; i += 1) {
+      const name = randomGuestDisplayName();
+      expect(name).toMatch(/^کاربر مهمان \d{5}$/);
+      const n = Number(name.slice('کاربر مهمان '.length));
+      expect(n).toBeGreaterThanOrEqual(10000);
+      expect(n).toBeLessThanOrEqual(99999);
+      expect(isGuestDisplayName(name)).toBe(true);
+    }
+  });
+
+  it('rejects other labels as guest names', () => {
+    expect(isGuestDisplayName('کاربر مهمان 1234')).toBe(false);
+    expect(isGuestDisplayName('کاربر مهمان 123456')).toBe(false);
+    expect(isGuestDisplayName('محمد')).toBe(false);
+    expect(isGuestDisplayName('')).toBe(false);
   });
 });
 
