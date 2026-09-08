@@ -1,44 +1,62 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { nanoid } from 'nanoid';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { inviteExpiresAt, isPeriodOwner, nextRecurringAt } from '@dongham/ledger';
-import { PromptDialog } from '../components/Dialog';
+import { History, Receipt, Search } from 'lucide-react';
+import {
+  canAssignMemberRole,
+  canManagePeriod,
+  inviteExpiresAt,
+  isPeriodOwner,
+  nextRecurringAt,
+  type MemberRole,
+} from '@dongham/ledger';
+import { Modal, PromptDialog } from '../components/Dialog';
 import { MessengerShare } from '../components/MessengerShare';
+import { PeriodMediaPicker } from '../components/PeriodMediaPicker';
+import { PeriodSettingsCard } from '../components/PeriodSettingsCard';
 import { MemberPicker } from '../components/MemberPicker';
 import { SyncBanner } from '../components/SyncBanner';
 import { TagPicker, uniqueTags } from '../components/TagPicker';
 import { EmptyState, Money, Shell } from '../components/ui';
+import { UserAvatar } from '../components/UserAvatar';
+import { Icon } from '../components/Icon';
+import type { MemberPick } from '../lib/memberPick';
 import { downloadJson } from '../lib/backup';
+import { useAvatarMap, memberAvatarSrc } from '../lib/avatarCache';
 import { api, ensureProfile } from '../lib/api';
 import { decryptMaybe } from '../lib/crypto';
 import { db, POT_DISPLAY_NAME, type LocalMember, type RecurringCadence } from '../lib/db';
 import { periodAnalytics } from '../lib/analytics';
 import { useCalendarMode } from '../lib/calendarPref';
 import { copyText, formatCalendarDate, formatCalendarDateTime, formatMoney, normalizeEmail, normalizeIranMobile, toPersianDigits } from '../lib/format';
-import { fetchFxRates } from '../lib/fx';
+import { fetchFxRates, fetchFxSnapshot, rateToPeriod } from '../lib/fx';
 import { loanEquivalentNow } from '../lib/goldIndex';
 import { defaultPayout } from '../lib/payout';
 import { shareCardImage, settlementPaySentence } from '../lib/share';
 import { buildPeriodSnapshot, serializeSnapshot, snapshotQrDataUrl } from '../lib/snapshot';
-import { applyPeriodSnapshot, flushOutbox, logActivity, queueOp, upsertPayment, upsertRecurring } from '../lib/sync';
+import { applyPeriodSnapshot, flushOutbox, logActivity, queueOp, savePeriodMedia, upsertPayment, upsertRecurring } from '../lib/sync';
 import {
   canConfirmPayment,
   canMarkPaid,
   canRecordWithoutConfirm,
   hasPendingForEdge,
+  settlementActorFrom,
 } from '../lib/settlementGuard';
 import { CADENCE_OPTIONS } from '../lib/templates';
+import { periodCoverSrc, stripPeriodCustomMedia } from '../lib/periodCover';
+import { displayNameWithMe, isSelfMember } from '../lib/memberLabel';
+import { chatOfflineHint, isCloudMode } from '../lib/connectionMode';
+import { APP_HOME } from '../lib/paths';
+import { PeriodTabPanel, PeriodTabs } from '../components/PeriodTabs';
+import { parsePeriodTab, periodTabSearch, type PeriodTab } from '../lib/periodTabs';
 import { useUiStore } from '../store/ui';
-
-type Tab = 'expenses' | 'balance' | 'chat' | 'activity' | 'more';
 
 async function payoutOf(member: LocalMember | undefined, profileCard?: string, profileSheba?: string, profileHolder?: string, profileBank?: string) {
   if (!member) return { card: '', sheba: '', holder: '', bank: '' };
   const profile = await ensureProfile();
-  const isSelf = member.guestKey === profile.guestKey || (profile.userId && member.userId === profile.userId);
-  if (isSelf) {
+  if (isSelfMember(member, profile)) {
     return {
       card: await decryptMaybe(profileCard || profile.cardNumber),
       sheba: await decryptMaybe(profileSheba || profile.sheba),
@@ -57,20 +75,30 @@ async function payoutOf(member: LocalMember | undefined, profileCard?: string, p
 export function PeriodPage() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
   const setToast = useUiStore((s) => s.setToast);
-  const [tab, setTab] = useState<Tab>('expenses');
+  const online = useUiStore((s) => s.online);
+  const tab = parsePeriodTab(params.get('tab'));
+  const setTab = (next: PeriodTab) => {
+    const nextParams = new URLSearchParams(params);
+    const q = periodTabSearch(next);
+    if (q) nextParams.set('tab', q);
+    else nextParams.delete('tab');
+    setParams(nextParams, { replace: true });
+  };
   const [sort, setSort] = useState<'new' | 'old' | 'amount'>('new');
   const [q, setQ] = useState('');
   const [tagFilter, setTagFilter] = useState<string[]>([]);
   const [qrUrl, setQrUrl] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [snapQr, setSnapQr] = useState<string | null>(null);
-  const [pickNames, setPickNames] = useState<string[]>([]);
+  const [pickNames, setPickNames] = useState<MemberPick[]>([]);
   const [chatBody, setChatBody] = useState('');
   const [payoutCache, setPayoutCache] = useState<Record<string, { card: string; sheba: string; holder: string; bank: string }>>({});
   const [fx, setFx] = useState<Record<string, number>>({});
   const [recurringCadence, setRecurringCadence] = useState<RecurringCadence>('jalaliMonthly');
   const [snapPrompt, setSnapPrompt] = useState(false);
+  const [mediaOpen, setMediaOpen] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
   const period = useLiveQuery(() => db.periods.get(id), [id]);
@@ -87,6 +115,7 @@ export function PeriodPage() {
   const profile = useLiveQuery(() => db.profile.get('self'));
   const persian = profile?.usePersianDigits ?? true;
   const calendarMode = useCalendarMode();
+  const avatarByUserId = useAvatarMap(members.map((m) => m.userId));
 
   useEffect(() => {
     void fetchFxRates().then(setFx);
@@ -110,19 +139,11 @@ export function PeriodPage() {
     };
   }, [id]);
 
-  const meMember = members.find(
-    (m) => m.guestKey === profile?.guestKey || (profile?.userId && m.userId === profile.userId),
-  );
-  const me = meMember
-    ? {
-        id: meMember.id,
-        role: meMember.role,
-        userId: profile?.userId,
-        guestKey: profile?.guestKey,
-        ownerId: period?.ownerId,
-        ownerGuestKey: period?.ownerGuestKey,
-      }
-    : undefined;
+  const me = settlementActorFrom(members, profile, period);
+  const accountNameOf = (mid: string) => {
+    const member = members.find((m) => m.id === mid);
+    return displayNameWithMe(member?.displayName || mid, isSelfMember(member, profile));
+  };
   const isOwner = isPeriodOwner({
     ownerId: period?.ownerId,
     ownerGuestKey: period?.ownerGuestKey,
@@ -130,7 +151,11 @@ export function PeriodPage() {
     guestKey: profile?.guestKey,
     memberRole: me?.role,
   });
+  const actorRole: MemberRole | undefined = isOwner ? 'owner' : me?.role;
+  const canManage = canManagePeriod(actorRole);
   const isViewer = me?.role === 'viewer' || (!me && period?.visibility === 'public');
+  const canEditSeat = (m: LocalMember) => !isViewer && (canManage || isSelfMember(m, profile));
+  const chatHint = chatOfflineHint(profile, online);
 
   const analytics = useMemo(
     () => periodAnalytics(expenses, payments, members, period?.roundTo || 0),
@@ -167,10 +192,7 @@ export function PeriodPage() {
     if (payoutCache[memberId]) return payoutCache[memberId];
     const member = members.find((m) => m.id === memberId);
     const p = await payoutOf(member, profile?.cardNumber, profile?.sheba, profile?.cardHolderName, profile?.bankName);
-    const isSelf =
-      !!member &&
-      (member.guestKey === profile?.guestKey || (!!profile?.userId && member.userId === profile.userId));
-    if (isSelf) {
+    if (isSelfMember(member, profile)) {
       const def = await defaultPayout(profile);
       if (def) {
         const merged = {
@@ -189,13 +211,14 @@ export function PeriodPage() {
 
   if (!period) {
     return (
-      <Shell title="دوره" back={() => navigate('/')}>
-        <EmptyState title="دوره پیدا نشد" />
+      <Shell title="دوره" back={() => navigate(APP_HOME)}>
+        <EmptyState icon={Search} title="دوره پیدا نشد" />
       </Shell>
     );
   }
 
   const createInvite = async () => {
+    if (!canManage) return;
     try {
       const p = await ensureProfile();
       let token: string;
@@ -207,7 +230,7 @@ export function PeriodPage() {
       } else {
         token = nanoid(12);
         expiresAt = inviteExpiresAt();
-        setToast('برای دعوت از گوشی دیگر وارد شوید. این لینک فقط روی همین دستگاه کار می‌کند.');
+        setToast('برای دعوت از گوشی دیگر وارد شوید. این لینک فقط روی همین دستگاه کار می‌کند.', 'warn');
       }
       await db.invites.put({ token, periodId: id, createdAt: new Date().toISOString(), expiresAt });
       const link = `${window.location.origin}/i/${token}`;
@@ -215,17 +238,34 @@ export function PeriodPage() {
       const dataUrl = await QRCode.toDataURL(link, { margin: 1, width: 280 });
       setQrUrl(dataUrl);
       await copyText(link);
-      if (p.token) setToast('لینک دعوت کپی شد');
+      if (p.token) setToast('لینک دعوت کپی شد', 'success');
     } catch (e) {
-      setToast(e instanceof Error ? e.message : 'خطا در ساخت دعوت');
+      setToast(e instanceof Error ? e.message : 'خطا در ساخت دعوت', 'error');
     }
   };
 
   const addPickedMembers = async () => {
-    if (!pickNames.length || isViewer) return;
+    if (!pickNames.length || !canManage) return;
     const friends = await db.friends.toArray();
     let added = 0;
-    for (const name of pickNames) {
+    for (const pick of pickNames) {
+      if (pick.kind === 'user') {
+        if (members.some((m) => m.userId && m.userId === pick.userId)) continue;
+        const member = {
+          id: nanoid(),
+          periodId: id,
+          displayName: pick.displayName,
+          userId: pick.userId,
+          weightDefault: 1,
+          role: 'member' as const,
+        };
+        await db.members.put(member);
+        await queueOp(id, 'member', 'upsert', { ...member, username: pick.username });
+        await logActivity(id, profile?.displayName || 'کاربر', 'member.add', `افزودن ${member.displayName}`);
+        added += 1;
+        continue;
+      }
+      const name = pick.displayName;
       if (members.some((m) => m.displayName === name)) continue;
       const friend = friends.find((f) => f.displayName === name);
       const member = {
@@ -239,17 +279,18 @@ export function PeriodPage() {
       };
       await db.members.put(member);
       await queueOp(id, 'member', 'upsert', member);
-      await logActivity(id, profile?.displayName || 'من', 'member.add', `افزودن ${member.displayName}`);
+      await logActivity(id, profile?.displayName || 'کاربر', 'member.add', `افزودن ${member.displayName}`);
       added += 1;
     }
     setPickNames([]);
-    setToast(added ? `${toPersianDigits(added, persian)} عضو اضافه شد` : 'عضوی انتخاب نشده');
+    setToast(added ? `${toPersianDigits(added, persian)} عضو اضافه شد` : 'عضوی انتخاب نشده', added ? 'success' : 'warn');
   };
 
   const saveMemberPhone = async (member: LocalMember, phone: string) => {
+    if (!canEditSeat(member)) return;
     const trimmed = phone.trim();
     if (trimmed && !normalizeIranMobile(trimmed)) {
-      setToast('شماره موبایل نامعتبر است');
+      setToast('شماره موبایل نامعتبر است', 'error');
       return;
     }
     const next = { ...member, phone: normalizeIranMobile(trimmed) || undefined };
@@ -258,28 +299,30 @@ export function PeriodPage() {
   };
 
   const saveMemberEmail = async (member: LocalMember, email: string) => {
+    if (!canEditSeat(member)) return;
     const next = { ...member, email: normalizeEmail(email) || email.trim() || undefined };
     await db.members.put(next);
     await queueOp(id, 'member', 'upsert', next);
   };
 
   const toggleAbsent = async (member: LocalMember) => {
+    if (!canEditSeat(member)) return;
     const next = { ...member, excludeFromNew: !member.excludeFromNew };
     await db.members.put(next);
     await queueOp(id, 'member', 'upsert', next);
   };
 
+  const targetIsOwner = (member: LocalMember) =>
+    isPeriodOwner({
+      ownerId: period.ownerId,
+      ownerGuestKey: period.ownerGuestKey,
+      userId: member.userId,
+      guestKey: member.guestKey,
+      memberRole: member.role,
+    });
+
   const setRole = async (member: LocalMember, role: LocalMember['role']) => {
-    if (
-      isViewer ||
-      isPeriodOwner({
-        ownerId: period.ownerId,
-        ownerGuestKey: period.ownerGuestKey,
-        userId: member.userId,
-        guestKey: member.guestKey,
-        memberRole: member.role,
-      })
-    ) {
+    if (!canAssignMemberRole(actorRole, { role: member.role, isOwner: targetIsOwner(member) }, role)) {
       return;
     }
     const next = { ...member, role };
@@ -296,15 +339,15 @@ export function PeriodPage() {
     if (busyKey) return;
     if (status === 'pending_confirm') {
       if (!canMarkPaid(me, fromMemberId)) {
-        setToast('فقط بدهکار می‌تواند این پرداخت را ثبت کند');
+        setToast('فقط بدهکار می‌تواند این پرداخت را ثبت کند', 'error');
         return;
       }
     } else if (!canRecordWithoutConfirm(me, fromMemberId)) {
-      setToast('فقط بدهکار می‌تواند این پرداخت را ثبت کند');
+      setToast('فقط بدهکار می‌تواند این پرداخت را ثبت کند', 'error');
       return;
     }
     if (hasPendingForEdge(payments, fromMemberId, toMemberId)) {
-      setToast('برای این تسویه درخواست در انتظار تأیید هست');
+      setToast('برای این تسویه درخواست در انتظار تأیید هست', 'warn');
       return;
     }
     const key = `${fromMemberId}:${toMemberId}:${status}`;
@@ -325,7 +368,7 @@ export function PeriodPage() {
         version: 1,
         status,
       });
-      setToast(status === 'pending_confirm' ? 'در انتظار تأیید طلبکار' : 'پرداخت ثبت شد');
+      setToast(status === 'pending_confirm' ? 'در انتظار تأیید طلبکار' : 'پرداخت ثبت شد', status === 'pending_confirm' ? 'info' : 'success');
     } finally {
       setBusyKey(null);
     }
@@ -336,14 +379,14 @@ export function PeriodPage() {
     const row = payments.find((p) => p.id === paymentId);
     if (!row) return;
     if (!canConfirmPayment(me, row.toMemberId)) {
-      setToast('فقط طلبکار می‌تواند تأیید کند');
+      setToast('فقط طلبکار می‌تواند تأیید کند', 'error');
       return;
     }
     const key = `confirm:${paymentId}`;
     setBusyKey(key);
     try {
       await upsertPayment({ ...row, status: 'settled', updatedAt: new Date().toISOString() });
-      setToast('تسویه تأیید شد');
+      setToast('تسویه تأیید شد', 'success');
     } finally {
       setBusyKey(null);
     }
@@ -356,10 +399,15 @@ export function PeriodPage() {
   };
 
   const sendChat = async () => {
-    if (!chatBody.trim()) return;
+    if (isViewer || !chatBody.trim()) return;
     const p = await ensureProfile();
-    const sender =
-      members.find((m) => m.guestKey === p.guestKey || m.userId === p.userId) || members[0];
+    // Same predicate as the composer's disabled state (store `online`, not a second navigator read).
+    if (!isCloudMode(p, online)) return;
+    const sender = members.find((m) => isSelfMember(m, p));
+    if (!sender) {
+      setToast('جایگاه شما در این دوره پیدا نشد', 'error');
+      return;
+    }
     const msg = {
       id: nanoid(),
       periodId: id,
@@ -375,7 +423,7 @@ export function PeriodPage() {
 
   const syncNow = async () => {
     const res = await flushOutbox(id);
-    setToast(res.ok ? 'همگام شد' : res.error || 'خطا');
+    setToast(res.ok ? 'همگام شد' : res.error || 'خطا', res.ok ? 'success' : 'error');
   };
 
   const addRecurring = async () => {
@@ -396,13 +444,18 @@ export function PeriodPage() {
       active: true,
     };
     await upsertRecurring(rule);
-    setToast('قانون تکراری اضافه شد');
+    setToast('قانون تکراری اضافه شد', 'success');
   };
 
   const runRecurring = async () => {
-    if (isViewer) return;
+    if (isViewer || !period) return;
     const now = Date.now();
-    for (const rule of recurring.filter((r) => r.active && new Date(r.nextAt).getTime() <= now)) {
+    const due = recurring.filter((r) => r.active && new Date(r.nextAt).getTime() <= now);
+    // Rules normally share the period currency; otherwise convert with the stored rate like any expense.
+    const needsFx = due.some((r) => r.currency !== period.currency && !rateToPeriod({}, r.currency, period.currency));
+    const fxRates = needsFx ? (await fetchFxSnapshot()).rates : {};
+    for (const rule of due) {
+      const fxRate = rateToPeriod(fxRates, rule.currency, period.currency) || 1;
       const exp = {
         id: nanoid(),
         periodId: id,
@@ -417,7 +470,7 @@ export function PeriodPage() {
         service: { type: 'none' as const, value: 0 },
         tip: { type: 'none' as const, value: 0 },
         tags: ['تکراری'],
-        fxRate: 1,
+        fxRate,
         createdAt: new Date().toISOString(),
         occurredAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -430,20 +483,22 @@ export function PeriodPage() {
       await db.recurring.put(nextRule);
       await queueOp(id, 'recurring', 'upsert', nextRule);
     }
-    setToast('هزینه‌های تکراری اجرا شد');
+    setToast('هزینه‌های تکراری اجرا شد', 'success');
   };
 
   const rotateLunch = async () => {
+    if (!canManage) return;
     const people = members.filter((m) => !m.isPot);
     if (!people.length) return;
     const idx = Math.max(0, people.findIndex((m) => m.id === period.lunchTurnMemberId));
     const next = people[(idx + 1) % people.length];
     await db.periods.update(id, { lunchTurnMemberId: next.id });
     await queueOp(id, 'period', 'upsert', { lunchTurnMemberId: next.id });
-    setToast(`نوبت ناهار: ${next.displayName}`);
+    setToast(`نوبت ناهار: ${next.displayName}`, 'info');
   };
 
   const saveUnit = async (member: LocalMember, unitLabel: string) => {
+    if (!canEditSeat(member)) return;
     const next = { ...member, unitLabel: unitLabel.trim() || undefined };
     await db.members.put(next);
     await queueOp(id, 'member', 'upsert', next);
@@ -451,32 +506,38 @@ export function PeriodPage() {
 
   const exportOfflineSnap = async (pass?: string) => {
     const snap = await buildPeriodSnapshot(id);
-    const raw = await serializeSnapshot(snap, pass || undefined);
-    const qr = await snapshotQrDataUrl(raw);
+    const fileRaw = await serializeSnapshot(snap, pass || undefined);
+    const qrRaw = await serializeSnapshot(
+      { ...snap, period: stripPeriodCustomMedia(snap.period) },
+      pass || undefined,
+    );
+    const qr = await snapshotQrDataUrl(qrRaw);
     setSnapQr(qr);
-    const blob = new Blob([raw], { type: 'application/json' });
+    const blob = new Blob([fileRaw], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `dongham-period-${id}.json`;
     a.click();
-    setToast(qr ? 'QR و فایل آماده است' : 'فایل ذخیره شد (برای QR بزرگ بود)');
+    setToast(qr ? 'QR و فایل آماده است' : 'فایل ذخیره شد (برای QR بزرگ بود)', 'success');
   };
 
   const toggleEncrypt = async () => {
+    if (!canManage) return;
     const next = !period.encrypted;
     await db.periods.update(id, { encrypted: next });
     await queueOp(id, 'period', 'upsert', { encrypted: next });
-    setToast(next ? 'رمز AES سرور برای این دوره روشن شد' : 'رمز AES سرور خاموش شد');
+    setToast(next ? 'رمز AES سرور برای این دوره روشن شد' : 'رمز AES سرور خاموش شد', 'success');
   };
 
   const setVisibility = async (visibility: 'private' | 'public') => {
-    if (!isOwner || !period) return;
+    if (!canManage || !period) return;
     await db.periods.update(id, { visibility });
     await queueOp(id, 'period', 'upsert', { visibility });
-    setToast(visibility === 'public' ? 'دوره عمومی شد' : 'دوره خصوصی شد');
+    setToast(visibility === 'public' ? 'دوره عمومی شد' : 'دوره خصوصی شد', 'success');
   };
 
   const saveBuildingCharge = async (value: number) => {
+    if (!canManage) return;
     await db.periods.update(id, { buildingCharge: value });
     await queueOp(id, 'period', 'upsert', { buildingCharge: value });
     for (const rule of recurring.filter((r) => r.title.includes('شارژ'))) {
@@ -486,18 +547,12 @@ export function PeriodPage() {
 
   const moneyLabel = (n: number, cur = period.currency) => formatMoney(n, cur, persian);
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: 'expenses', label: 'هزینه‌ها' },
-    { id: 'balance', label: 'حساب' },
-    { id: 'chat', label: 'چت' },
-    { id: 'activity', label: 'تاریخچه' },
-    { id: 'more', label: 'ابزار' },
-  ];
+  const coverSrc = periodCoverSrc(period);
 
   return (
     <Shell
       title={period.title}
-      back={() => navigate('/')}
+      back={() => navigate(APP_HOME)}
       action={
         isViewer ? null : (
           <Link to={`/periods/${id}/expenses/new`} className="btn-primary !py-2 !text-sm">
@@ -507,27 +562,29 @@ export function PeriodPage() {
       }
     >
       <SyncBanner periodId={id} />
-      <div className="-mx-4 mb-4 overflow-x-auto px-4 no-scrollbar animate-rise" role="tablist" aria-label="بخش‌های دوره">
-        <div className="flex w-max min-w-full gap-2">
-          {tabs.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.id}
-              className={`chip ${tab === t.id ? 'bg-brand-700 text-white' : 'bg-surface/80 text-ink-800 ring-1 ring-brand-700/10'}`}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+      <div className="relative mb-4">
+        {canManage ? (
+          <button type="button" className="block w-full text-start" onClick={() => setMediaOpen(true)} aria-label="تغییر ظاهر دوره">
+            <img
+              src={coverSrc}
+              alt=""
+              className="h-36 w-full rounded-2xl object-cover sm:h-44"
+            />
+          </button>
+        ) : (
+          <img
+            src={coverSrc}
+            alt=""
+            className="h-36 w-full rounded-2xl object-cover sm:h-44"
+          />
+        )}
       </div>
+      <PeriodTabs tab={tab} onChange={setTab} />
 
       <div className="grid gap-4 md:grid-cols-[1.1fr_0.9fr]">
         <div>
           {tab === 'expenses' ? (
-            <div className="space-y-3">
+            <PeriodTabPanel id="expenses" tab={tab} className="space-y-3">
               <div className="flex flex-col gap-2 sm:flex-row">
                 <input
                   className="input min-w-0 flex-1"
@@ -552,7 +609,7 @@ export function PeriodPage() {
                 />
               ) : null}
               {filteredExpenses.length === 0 ? (
-                <EmptyState title="هزینه‌ای نیست" hint="اولین هزینه را ثبت کنید." />
+                <EmptyState icon={Receipt} title="هزینه‌ای نیست" hint="اولین هزینه را ثبت کنید." />
               ) : (
                 <ul className="space-y-2">
                   {filteredExpenses.map((e) => (
@@ -590,11 +647,11 @@ export function PeriodPage() {
                   ))}
                 </ul>
               )}
-            </div>
+            </PeriodTabPanel>
           ) : null}
 
           {tab === 'balance' ? (
-            <div className="space-y-4 animate-rise">
+            <PeriodTabPanel id="balance" tab={tab} className="space-y-4 animate-rise">
               <div className="card-surface">
                 <p className="text-sm text-ink-700/70">جمع هزینه‌ها</p>
                 <p className="mt-1 text-2xl font-extrabold text-brand-800">
@@ -609,10 +666,10 @@ export function PeriodPage() {
                     return (
                       <li key={mid} className="flex items-center justify-between gap-2 text-sm">
                         <span className="min-w-0 truncate">
-                          {analytics.nameOf(mid)}
+                          {accountNameOf(mid)}
                           <span className="ms-2 text-xs text-ink-700/60"> · {status}</span>
                         </span>
-                        <span className={`shrink-0 ${bal >= 0 ? 'text-brand-800' : 'text-rose-700'}`}>
+                        <span className={`shrink-0 ${bal >= 0 ? 'text-brand-800' : 'text-danger'}`}>
                           <Money amount={bal} currency={period.currency} />
                         </span>
                       </li>
@@ -642,8 +699,8 @@ export function PeriodPage() {
                         <li key={i} className="space-y-3 rounded-2xl bg-brand-50 p-3 text-sm">
                           <p className="font-semibold leading-6">
                             {settlementPaySentence(
-                              analytics.nameOf(s.fromMemberId),
-                              analytics.nameOf(s.toMemberId),
+                              accountNameOf(s.fromMemberId),
+                              accountNameOf(s.toMemberId),
                               amountLabel,
                             )}
                           </p>
@@ -694,7 +751,7 @@ export function PeriodPage() {
                                     .filter(Boolean)
                                     .join('\n');
                                   await copyText(text);
-                                  setToast('کارت و مبلغ کپی شد');
+                                  setToast('کارت و مبلغ کپی شد', 'success');
                                 }}
                               >
                                 کپی کارت طلبکار
@@ -742,11 +799,11 @@ export function PeriodPage() {
                     {payments
                       .filter((p) => p.status === 'pending_confirm')
                       .map((p) => (
-                        <div key={p.id} className="flex flex-col gap-2 rounded-2xl bg-amber-50 px-3 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+                        <div key={p.id} className="card-surface flex flex-col gap-2 !py-3 sm:flex-row sm:items-center sm:justify-between">
                           <span className="leading-6">
                             {settlementPaySentence(
-                              analytics.nameOf(p.fromMemberId),
-                              analytics.nameOf(p.toMemberId),
+                              accountNameOf(p.fromMemberId),
+                              accountNameOf(p.toMemberId),
                               moneyLabel(p.amount, p.currency),
                             )}
                           </span>
@@ -808,11 +865,15 @@ export function PeriodPage() {
                   ))}
                 </ul>
               </div>
-            </div>
+            </PeriodTabPanel>
           ) : null}
 
           {tab === 'chat' ? (
-            <div className="card-surface flex h-[min(55dvh,calc(100dvh-13rem-var(--keyboard-inset,0px)))] flex-col animate-rise">
+            <PeriodTabPanel
+              id="chat"
+              tab={tab}
+              className="card-surface flex h-[min(55dvh,calc(100dvh-13rem-var(--keyboard-inset,0px)))] flex-col animate-rise"
+            >
               <ul className="flex-1 space-y-2 overflow-y-auto">
                 {chat.map((m) => (
                   <li key={m.id} className="rounded-2xl bg-brand-50 px-3 py-2 text-sm">
@@ -821,23 +882,35 @@ export function PeriodPage() {
                   </li>
                 ))}
               </ul>
+              {chatHint ? <p className="mt-3 text-xs leading-6 text-ink-700/70">{chatHint}</p> : null}
+              {isViewer ? (
+                <p className="mt-3 text-xs leading-6 text-ink-700/70">نقش بیننده اجازهٔ ارسال پیام ندارد.</p>
+              ) : (
               <div className="mt-3 flex gap-2">
                 <input
                   className="input"
                   value={chatBody}
                   onChange={(e) => setChatBody(e.target.value)}
                   placeholder="پیام درباره هزینه..."
+                  disabled={Boolean(chatHint)}
                   onKeyDown={(e) => e.key === 'Enter' && sendChat()}
                 />
-                <button type="button" className="btn-primary" onClick={sendChat}>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  disabled={Boolean(chatHint)}
+                  onClick={sendChat}
+                >
                   ارسال
                 </button>
               </div>
-            </div>
+              )}
+            </PeriodTabPanel>
           ) : null}
 
           {tab === 'activity' ? (
-            <ul className="space-y-2 animate-rise">
+            <PeriodTabPanel id="activity" tab={tab} className="space-y-2 animate-rise">
+              <ul className="space-y-2">
               {[...activity].reverse().map((a) => {
                 const related =
                   (a.entityId && expenses.find((e) => e.id === a.entityId)) ||
@@ -857,12 +930,14 @@ export function PeriodPage() {
                   </li>
                 );
               })}
-              {activity.length === 0 ? <EmptyState title="تاریخچه‌ای نیست" /> : null}
-            </ul>
+              {activity.length === 0 ? <EmptyState icon={History} title="تاریخچه‌ای نیست" /> : null}
+              </ul>
+            </PeriodTabPanel>
           ) : null}
 
-          {tab === 'more' ? (
-            <div className="space-y-3 animate-rise">
+          {tab === 'settings' ? (
+            <PeriodTabPanel id="settings" tab={tab} className="space-y-3 animate-rise">
+              {canManage ? <PeriodSettingsCard period={period} members={members} hasMoney={expenses.length + payments.length > 0} /> : null}
               <div className="card-surface space-y-3">
                 <h3 className="font-bold">شناسه و دسترسی</h3>
                 <p className="font-mono text-sm" dir="ltr">
@@ -871,11 +946,11 @@ export function PeriodPage() {
                 <button
                   type="button"
                   className="btn-ghost w-full"
-                  onClick={() => void copyText(id).then((ok) => setToast(ok ? 'کپی شد' : 'کپی نشد'))}
+                  onClick={() => void copyText(id).then((ok) => setToast(ok ? 'کپی شد' : 'کپی نشد', ok ? 'success' : 'error'))}
                 >
                   کپی شناسه
                 </button>
-                {isOwner ? (
+                {canManage ? (
                   <label className="flex items-center justify-between gap-2 text-sm">
                     <span>عمومی (هر کس شناسه را بداند می‌بیند)</span>
                     <input
@@ -897,18 +972,28 @@ export function PeriodPage() {
                   {members.map((m) => (
                     <li key={m.id} className="space-y-2 rounded-2xl bg-brand-50 p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
-                        <span>
-                          {m.displayName} {m.role === 'owner' ? '· مالک' : ''} {m.isPot ? '· صندوق' : ''}
+                        <span className="flex min-w-0 items-center gap-2">
+                          <UserAvatar
+                            name={m.displayName}
+                            src={memberAvatarSrc(m, profile, avatarByUserId)}
+                            size="md"
+                          />
+                          <span>
+                          {m.displayName} {m.role === 'owner' ? '· مالک' : m.role === 'manager' ? '· مدیر' : ''} {m.isPot ? '· صندوق' : ''}
                           {m.excludeFromNew ? ' · غایب' : ''}
                           {m.unitLabel ? ` · ${m.unitLabel}` : ''}
                           {!m.isPot && m.role !== 'owner' && !m.phone && !m.email ? ' · فقط محلی — بدون دسترسی ابری' : ''}
+                          </span>
                         </span>
-                        {!isViewer && !m.isPot && m.role !== 'owner' ? (
+                        {(['manager', 'member', 'viewer'] as const).some((next) =>
+                          canAssignMemberRole(actorRole, { role: m.role, isOwner: targetIsOwner(m) }, next),
+                        ) ? (
                           <select
-                            className="input !w-auto !py-1 text-xs"
+                            className="input !w-auto min-h-11 text-xs"
                             value={m.role}
                             onChange={(e) => setRole(m, e.target.value as LocalMember['role'])}
                           >
+                            {isOwner ? <option value="manager">مدیر</option> : null}
                             <option value="member">عضو</option>
                             <option value="viewer">بیننده</option>
                           </select>
@@ -922,7 +1007,7 @@ export function PeriodPage() {
                             dir="ltr"
                             defaultValue={m.phone || ''}
                             onBlur={(e) => saveMemberPhone(m, e.target.value)}
-                            disabled={isViewer}
+                            disabled={!canEditSeat(m)}
                           />
                           <input
                             className="input !py-2"
@@ -930,7 +1015,7 @@ export function PeriodPage() {
                             dir="ltr"
                             defaultValue={m.email || ''}
                             onBlur={(e) => saveMemberEmail(m, e.target.value)}
-                            disabled={isViewer}
+                            disabled={!canEditSeat(m)}
                           />
                           {period.template === 'building' ? (
                             <input
@@ -938,14 +1023,14 @@ export function PeriodPage() {
                               placeholder="واحد (مثلاً ۱۲)"
                               defaultValue={m.unitLabel || ''}
                               onBlur={(e) => saveUnit(m, e.target.value)}
-                              disabled={isViewer}
+                              disabled={!canEditSeat(m)}
                             />
                           ) : null}
                           <label className="flex items-center gap-2 text-xs">
                             <input
                               type="checkbox"
                               checked={!!m.excludeFromNew}
-                              disabled={isViewer}
+                              disabled={!canEditSeat(m)}
                               onChange={() => toggleAbsent(m)}
                             />
                             غایب از هزینه‌های جدید
@@ -955,12 +1040,13 @@ export function PeriodPage() {
                     </li>
                   ))}
                 </ul>
-                {!isViewer ? (
+                {canManage ? (
                   <div className="space-y-2">
                     <MemberPicker
                       selected={pickNames}
                       onChange={setPickNames}
                       excludeNames={members.map((m) => m.displayName)}
+                      excludeUserIds={members.map((m) => m.userId).filter((uid): uid is string => Boolean(uid))}
                       draftInputId="period-add-member"
                     />
                     <button type="button" className="btn-primary w-full" onClick={() => void addPickedMembers()}>
@@ -969,6 +1055,7 @@ export function PeriodPage() {
                   </div>
                 ) : null}
               </div>
+              {canManage ? (
               <div className="card-surface space-y-2">
                 <h3 className="font-bold">دعوت لینک / QR</h3>
                 <button type="button" className="btn-primary w-full" onClick={createInvite}>
@@ -992,6 +1079,7 @@ export function PeriodPage() {
                       ))
                   : null}
               </div>
+              ) : null}
               {period.template === 'work' ? (
                 <div className="card-surface space-y-2">
                   <h3 className="font-bold">نوبت ناهار</h3>
@@ -999,7 +1087,7 @@ export function PeriodPage() {
                     این هفته:{' '}
                     {members.find((m) => m.id === period.lunchTurnMemberId)?.displayName || members.find((m) => !m.isPot)?.displayName || '—'}
                   </p>
-                  {!isViewer ? (
+                  {canManage ? (
                     <button type="button" className="btn-primary w-full" onClick={() => void rotateLunch()}>
                       نوبت بعدی
                     </button>
@@ -1015,7 +1103,7 @@ export function PeriodPage() {
                     defaultValue={period.buildingCharge || ''}
                     placeholder="مبلغ شارژ هر واحد"
                     onBlur={(e) => void saveBuildingCharge(Number(e.target.value) || 0)}
-                    disabled={isViewer}
+                    disabled={!canManage}
                   />
                 </div>
               ) : null}
@@ -1023,7 +1111,7 @@ export function PeriodPage() {
                 <h3 className="font-bold">همگام QR آفلاین</h3>
                 <p className="text-xs text-ink-700/70">بدون سرور، اسنپ‌شات دوره را با QR یا فایل بین دستگاه‌ها رد و بدل کنید. تیک زیر فقط AES ستون‌های حساس روی سرور را روشن می‌کند. عبارت عبور QR جدا و اختیاری است.</p>
                 <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={!!period.encrypted} onChange={() => void toggleEncrypt()} disabled={isViewer} />
+                  <input type="checkbox" checked={!!period.encrypted} onChange={() => void toggleEncrypt()} disabled={!canManage} />
                   رمز AES داده روی سرور
                 </label>
                 <button type="button" className="btn-ghost w-full" onClick={() => setSnapPrompt(true)}>
@@ -1070,7 +1158,7 @@ export function PeriodPage() {
                     onClick={async () => {
                       const snap = await buildPeriodSnapshot(id);
                       downloadJson(`dongham-period-${period.title}.json`, snap);
-                      setToast('فایل JSON ذخیره شد');
+                      setToast('فایل JSON ذخیره شد', 'success');
                     }}
                   >
                     JSON
@@ -1105,7 +1193,7 @@ export function PeriodPage() {
               <button type="button" className="btn-primary w-full" onClick={syncNow}>
                 همگام‌سازی اکنون
               </button>
-            </div>
+            </PeriodTabPanel>
           ) : null}
         </div>
 
@@ -1125,6 +1213,18 @@ export function PeriodPage() {
           </div>
         </aside>
       </div>
+      <Modal open={mediaOpen} onClose={() => setMediaOpen(false)} title="ظاهر دوره">
+        <PeriodMediaPicker
+          value={{
+            coverPreset: period.coverPreset,
+            coverDataUrl: period.coverDataUrl,
+          }}
+          onChange={(next) => void savePeriodMedia(id, next)}
+        />
+        <button type="button" className="btn-primary mt-4 w-full" onClick={() => setMediaOpen(false)}>
+          تمام
+        </button>
+      </Modal>
       <PromptDialog
         open={snapPrompt}
         title="رمز اسنپ‌شات"

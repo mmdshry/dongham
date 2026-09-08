@@ -1,114 +1,169 @@
 import { NavLink, useLocation } from 'react-router-dom';
+import {
+  Home,
+  PieChart,
+  Plus,
+  User,
+  Wallet,
+  type LucideIcon,
+} from 'lucide-react';
+import { BrandLogo } from './BrandLogo';
+import { Icon } from './Icon';
 import { useKeyboardInset } from '../lib/keyboard';
+import { JOIN_OFFLINE_ERROR } from '../lib/joinPeriod';
+import { APP_HOME } from '../lib/paths';
+import { useUiStore } from '../store/ui';
 
 export const NAV_ITEMS = [
-  { to: '/', label: 'دوره‌ها', icon: 'periods' as const },
-  { to: '/friends', label: 'دوستام', icon: 'friends' as const },
-  { to: '/auth', label: 'حساب', icon: 'account' as const },
-  { to: '/more', label: 'بیشتر', icon: 'more' as const },
+  { to: APP_HOME, label: 'دوره‌ها', icon: Home },
+  { to: '/transactions', label: 'تراکنش‌ها', icon: Wallet },
+  { to: '/reports', label: 'گزارش‌ها', icon: PieChart },
+  { to: '/profile', label: 'پروفایل', icon: User },
 ];
 
-function NavIcon({ name }: { name: (typeof NAV_ITEMS)[number]['icon'] }) {
-  const cn = 'h-5 w-5';
-  if (name === 'periods') {
-    return (
-      <svg className={cn} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
-        <rect x="3.5" y="5" width="17" height="15" rx="2.2" />
-        <path d="M8 3.5v4M16 3.5v4M3.5 10h17" />
-      </svg>
-    );
-  }
-  if (name === 'friends') {
-    return (
-      <svg className={cn} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
-        <circle cx="9" cy="8" r="3" />
-        <path d="M3.5 19c.4-3.2 2.6-5 5.5-5s5.1 1.8 5.5 5" />
-        <circle cx="17" cy="9" r="2.4" />
-        <path d="M16 14.2c2.2.3 3.8 1.8 4.2 4.3" />
-      </svg>
-    );
-  }
-  if (name === 'account') {
-    return (
-      <svg className={cn} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
-        <circle cx="12" cy="8" r="3.2" />
-        <path d="M5 19.2c.6-3.6 3.2-5.4 7-5.4s6.4 1.8 7 5.4" />
-      </svg>
-    );
-  }
-  return (
-    <svg className={cn} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
-      <path d="M4 7h16M4 12h16M4 17h16" strokeLinecap="round" />
-    </svg>
-  );
+function NavIcon({ icon, active, size = 20 }: { icon: LucideIcon; active?: boolean; size?: number }) {
+  return <Icon icon={icon} size={size} strokeWidth={active ? 2.4 : 1.8} />;
 }
 
 function navActive(to: string, pathname: string, isActive: boolean) {
-  if (to === '/') return pathname === '/' || pathname.startsWith('/periods');
+  if (to === APP_HOME) {
+    return pathname === APP_HOME || pathname === `${APP_HOME}/` || pathname.startsWith('/periods');
+  }
+  if (to === '/profile') {
+    return isActive || pathname.startsWith('/auth') || pathname.startsWith('/friends') || pathname.startsWith('/more');
+  }
   return isActive;
 }
 
 export function DesktopNav() {
   const location = useLocation();
+  const openSheet = useUiStore((s) => s.openSheet);
+  const online = useUiStore((s) => s.online);
   return (
     <nav
-      className="sticky top-0 z-40 hidden border-b border-brand-700/10 bg-surface/90 pt-[env(safe-area-inset-top)] backdrop-blur md:block"
+      className="sticky top-0 z-40 hidden border-b border-brand-800/20 bg-surface/95 pt-[env(safe-area-inset-top)] backdrop-blur md:block"
       aria-label="ناوبری اصلی"
     >
       <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 py-2">
-        <span className="text-sm font-extrabold text-brand-800">Dongham</span>
-        <ul className="flex gap-1">
+        <BrandLogo size="sm" />
+        <ul className="flex items-center gap-1">
           {NAV_ITEMS.map((item) => (
             <li key={item.to}>
               <NavLink
                 to={item.to}
-                end={item.to === '/'}
+                end={item.to === APP_HOME}
                 className={({ isActive }) =>
                   `inline-flex min-h-11 items-center gap-2 rounded-2xl px-3 text-sm font-semibold ${
                     navActive(item.to, location.pathname, isActive)
                       ? 'bg-brand-100 text-brand-800'
-                      : 'text-ink-700/70 hover:bg-surface'
+                      : 'text-ink-700/70 hover:bg-brand-50'
                   }`
                 }
               >
-                <NavIcon name={item.icon} />
-                {item.label}
+                {({ isActive }) => (
+                  <>
+                    <NavIcon icon={item.icon} active={navActive(item.to, location.pathname, isActive)} />
+                    {item.label}
+                  </>
+                )}
               </NavLink>
             </li>
           ))}
+          <li>
+            <button
+              type="button"
+              className="btn-ghost !min-h-11 !px-3"
+              disabled={!online}
+              title={!online ? JOIN_OFFLINE_ERROR : undefined}
+              onClick={() => openSheet('join')}
+            >
+              ورود با شناسه
+            </button>
+          </li>
+          <li>
+            <button type="button" className="btn-primary !min-h-11 !px-4" onClick={() => openSheet('create')}>
+              دوره جدید
+            </button>
+          </li>
         </ul>
       </div>
     </nav>
   );
 }
 
+function MobileNavItem({
+  item,
+  pathname,
+}: {
+  item: (typeof NAV_ITEMS)[number];
+  pathname: string;
+}) {
+  return (
+    <li>
+      <NavLink
+        to={item.to}
+        end={item.to === APP_HOME}
+        className={({ isActive }) =>
+          `flex min-h-12 flex-col items-center justify-center gap-1 px-1 text-xs font-semibold duration-150 active:opacity-80 ${
+            navActive(item.to, pathname, isActive) ? 'text-white' : 'text-white/75'
+          }`
+        }
+      >
+        {({ isActive }) => (
+          <>
+            <NavIcon icon={item.icon} size={24} active={navActive(item.to, pathname, isActive)} />
+            <span>{item.label}</span>
+          </>
+        )}
+      </NavLink>
+    </li>
+  );
+}
+
 export function BottomNav() {
   const kb = useKeyboardInset();
+  const location = useLocation();
+  const openSheet = useUiStore((s) => s.openSheet);
+  const right = NAV_ITEMS.slice(0, 2);
+  const left = NAV_ITEMS.slice(2);
   return (
     <nav
-      className={`fixed inset-x-0 bottom-0 z-40 border-t border-brand-700/10 bg-surface/90 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1 backdrop-blur transition-transform md:hidden ${
+      className={`fixed inset-x-4 bottom-[max(0.75rem,env(safe-area-inset-bottom))] z-40 text-white transition-transform md:hidden ${
         kb > 60 ? 'pointer-events-none translate-y-full' : ''
       }`}
       aria-label="ناوبری اصلی"
     >
-      <ul className="mx-auto grid max-w-lg grid-cols-4 gap-1">
-        {NAV_ITEMS.map((item) => (
-          <li key={item.to}>
-            <NavLink
-              to={item.to}
-              end={item.to === '/'}
-              className={({ isActive }) =>
-                `flex min-h-11 flex-col items-center justify-center rounded-2xl px-2 py-1 text-xs font-medium ${
-                  isActive ? 'bg-brand-100 text-brand-800' : 'text-ink-700/70'
-                }`
-              }
-            >
-              <NavIcon name={item.icon} />
-              <span className="mt-0.5">{item.label}</span>
-            </NavLink>
-          </li>
-        ))}
-      </ul>
+      <div className="relative drop-shadow-[0_10px_28px_rgba(46,58,50,0.28)]">
+        <div className="bottom-nav-pill rounded-full bg-nav">
+          <ul className="mx-auto grid h-[4.5rem] max-w-lg grid-cols-5 items-center px-2">
+            {right.map((item) => (
+              <MobileNavItem key={item.to} item={item} pathname={location.pathname} />
+            ))}
+            <li>
+              <button
+                type="button"
+                className="flex h-full min-h-12 w-full flex-col items-center justify-center gap-1 px-0.5 text-[10px] font-semibold leading-tight text-white"
+                onClick={() => openSheet('create')}
+              >
+                <span className="h-6 w-6" aria-hidden />
+                دوره جدید
+              </button>
+            </li>
+            {left.map((item) => (
+              <MobileNavItem key={item.to} item={item} pathname={location.pathname} />
+            ))}
+          </ul>
+        </div>
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-hidden
+          className="absolute left-1/2 top-0 z-10 inline-flex h-12 w-12 -translate-x-1/2 -translate-y-6 items-center justify-center rounded-full bg-nav text-white shadow-[0_6px_16px_rgba(0,0,0,0.16)] duration-150 active:opacity-90"
+          onClick={() => openSheet('create')}
+        >
+          <Icon icon={Plus} size={24} strokeWidth={2.2} />
+        </button>
+      </div>
     </nav>
   );
 }

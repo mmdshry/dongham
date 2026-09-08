@@ -3,7 +3,7 @@ import { nanoid } from 'nanoid';
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import type { SplitMode } from '@dongham/ledger';
-import { expenseTotal, validateShares } from '@dongham/ledger';
+import { describeSplitError, evenPercentShares, expenseTotal, validateShares } from '@dongham/ledger';
 import { ConfirmDialog } from '../components/Dialog';
 import { CurrencySelect } from '../components/CurrencySelect';
 import { FxRatesPanel } from '../components/FxRatesPanel';
@@ -13,6 +13,7 @@ import { SplitEditor, type ShareDraft } from '../components/SplitEditor';
 import { TagPicker, uniqueTags } from '../components/TagPicker';
 import { Shell } from '../components/ui';
 import { db, noneCharge } from '../lib/db';
+import { isSelfMember } from '../lib/memberLabel';
 import { fetchFxSnapshot, rateToPeriod } from '../lib/fx';
 import { compressImage, parseReceiptHeuristic } from '../lib/ocr';
 import { formatGrouped, formatMoney, parseMoneyInput, toLatinDigits, toPersianDigits, tomanToRial } from '../lib/format';
@@ -48,11 +49,7 @@ export function ExpenseFormPage() {
   );
 
   const people = members.filter((m) => !m.isPot);
-  const isViewer = members.some(
-    (m) =>
-      m.role === 'viewer' &&
-      (m.guestKey === profile?.guestKey || (profile?.userId && m.userId === profile.userId)),
-  );
+  const isViewer = members.some((m) => m.role === 'viewer' && isSelfMember(m, profile));
 
   const [title, setTitle] = useState('');
   const [amount, setAmount] = useState<number>(0);
@@ -75,7 +72,6 @@ export function ExpenseFormPage() {
   const [fxDraft, setFxDraft] = useState<string | null>(null);
   const [occurredAt, setOccurredAt] = useState(new Date().toISOString());
   const [itemSplits, setItemSplits] = useState<{ name: string; amount: number; memberId: string }[]>([]);
-  const [currencyWarn, setCurrencyWarn] = useState<string | null>(null);
   const [needManualFx, setNeedManualFx] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [fxRates, setFxRates] = useState<Record<string, number>>({});
@@ -160,7 +156,7 @@ export function ExpenseFormPage() {
           memberId: people[0].id,
         })),
       );
-      setToast(`مبلغ از نام فایل حدس زده شد (اطمینان ${toPersianDigits(Math.round(ocr.confidence * 100), persian)}٪)`);
+      setToast(`مبلغ از نام فایل حدس زده شد (اطمینان ${toPersianDigits(Math.round(ocr.confidence * 100), persian)}٪)`, 'info');
     }
   };
 
@@ -180,7 +176,7 @@ export function ExpenseFormPage() {
         excluded: !byMember.has(m.id),
       })),
     );
-    setToast('تقسیم آیتمی اعمال شد');
+    setToast('تقسیم آیتمی اعمال شد', 'success');
   };
 
   const grandTotal = expenseTotal({
@@ -195,6 +191,9 @@ export function ExpenseFormPage() {
     service: { type: serviceType, value: serviceValue },
     tip: { type: tipType, value: tipValue },
   });
+  const payersSum = useMultiPayer
+    ? people.reduce((s, m) => s + Math.round(payerAmounts[m.id] || 0), 0)
+    : grandTotal;
 
   const applyFreeFx = async (from = currency) => {
     if (!period) return;
@@ -202,20 +201,27 @@ export function ExpenseFormPage() {
     const rate = rateToPeriod(snap.rates, from, period.currency);
     if (!rate) {
       setNeedManualFx(true);
-      setToast('نرخ این ارز موجود نیست — قیمت را وارد کنید');
+      setToast('نرخ این ارز موجود نیست — قیمت را وارد کنید', 'warn');
       return;
     }
     setFxRate(rate);
     setFxDraft(null);
     setNeedManualFx(false);
-    setToast('نرخ آزاد اعمال شد');
+    setToast('نرخ آزاد اعمال شد', 'success');
   };
 
   const onCurrencyChange = (next: string) => {
     if ((currency === 'IRT' && next === 'IRR') || (currency === 'IRR' && next === 'IRT')) {
-      setCurrencyWarn(next === 'IRR' ? 'تبدیل تومان به ریال معمولاً ×۱۰ است' : 'تبدیل ریال به تومان معمولاً ÷۱۰ است');
-    } else {
-      setCurrencyWarn(null);
+      const msg = next === 'IRR' ? 'تبدیل تومان به ریال معمولاً ×۱۰ است' : 'تبدیل ریال به تومان معمولاً ÷۱۰ است';
+      setToast(msg, 'warn', {
+        source: 'currency-warn',
+        action: {
+          label: 'اعمال تبدیل',
+          onClick: () => {
+            setAmount((a) => (next === 'IRR' ? Math.round(a * 10) : Math.round(a / 10)));
+          },
+        },
+      });
     }
     setCurrency(next);
     if (!period) return;
@@ -225,29 +231,45 @@ export function ExpenseFormPage() {
       setNeedManualFx(false);
       return;
     }
+    // تومان↔ریال is a fixed ×10 — never depends on a network rate and never stays at 1.
+    const fixed = rateToPeriod({}, next, period.currency);
+    if (fixed) {
+      setFxRate(fixed);
+      setFxDraft(null);
+      setNeedManualFx(false);
+      return;
+    }
     void applyFreeFx(next);
   };
 
   const save = async () => {
     if (isViewer) {
-      setToast('نقش بیننده اجازهٔ ذخیره ندارد');
+      setToast('نقش بیننده اجازهٔ ذخیره ندارد', 'error');
       return;
     }
     if (!title.trim() || amount <= 0 || !payerId) {
-      setToast('عنوان، مبلغ و پرداخت‌کننده لازم است');
+      setToast('عنوان، مبلغ و پرداخت‌کننده لازم است', 'error');
       return;
     }
+    let savedFxRate = fxRate;
     if (period && currency !== period.currency) {
-      const irtIrr =
-        (currency === 'IRT' && period.currency === 'IRR') || (currency === 'IRR' && period.currency === 'IRT');
-      if (!irtIrr && (!fxRate || fxRate === 1)) {
-        setToast('نرخ تبدیل به ارز دوره لازم است');
+      // تومان↔ریال: always store the fixed 10 / 0.1 rate so balances never see a 10× error.
+      const fixed = rateToPeriod({}, currency, period.currency);
+      if (fixed) {
+        savedFxRate = fixed;
+      } else if (!fxRate || fxRate === 1) {
+        setToast('نرخ تبدیل به ارز دوره لازم است', 'error');
         return;
       }
     }
     const check = validateShares(splitMode, grandTotal, shares);
     if (!check.ok) {
-      setToast(check.error);
+      setToast(describeSplitError(check.error), 'error');
+      return;
+    }
+    // Ledger credits payers exactly what they typed, so it must add up to the taxed total.
+    if (useMultiPayer && payersSum !== grandTotal) {
+      setToast('جمع پرداخت‌کننده‌ها باید با مبلغ کل (با مالیات و سرویس) برابر باشد', 'error');
       return;
     }
     const now = new Date().toISOString();
@@ -293,13 +315,13 @@ export function ExpenseFormPage() {
       note: note || undefined,
       attachmentId,
       attachmentDataUrl,
-      fxRate,
+      fxRate: savedFxRate,
       createdAt: existing?.createdAt || now,
       occurredAt,
       updatedAt: now,
       version: (existing?.version || 0) + 1,
     });
-    setToast('هزینه ذخیره شد');
+    setToast('هزینه ذخیره شد', 'success');
     navigate(`/periods/${periodId}`);
   };
 
@@ -318,7 +340,7 @@ export function ExpenseFormPage() {
       updatedAt: now,
       version: row.version + 1,
     });
-    setToast('هزینه حذف شد');
+    setToast('هزینه حذف شد', 'success');
     navigate(`/periods/${periodId}`);
   };
 
@@ -396,12 +418,19 @@ export function ExpenseFormPage() {
             mode={splitMode}
             onModeChange={(m) => {
               setSplitMode(m);
+              // Percent defaults must add up to exactly 100 over the included members.
+              const included = people.filter((mem) => !mem.excludeFromNew);
+              const percents = evenPercentShares(included.length);
               setShares(
-                people.map((mem) => ({
-                  memberId: mem.id,
-                  value: m === 'percent' ? Math.round(100 / Math.max(people.length, 1)) : m === 'exact' ? 0 : mem.weightDefault || 1,
-                  excluded: !!mem.excludeFromNew,
-                })),
+                people.map((mem) => {
+                  const idx = included.indexOf(mem);
+                  return {
+                    memberId: mem.id,
+                    value:
+                      m === 'percent' ? (idx >= 0 ? percents[idx] : 0) : m === 'exact' ? 0 : mem.weightDefault || 1,
+                    excluded: !!mem.excludeFromNew,
+                  };
+                }),
               );
             }}
             members={people}
@@ -419,22 +448,6 @@ export function ExpenseFormPage() {
             </label>
             <CurrencySelect id="exp-currency" value={currency} onChange={onCurrencyChange} rates={fxRates} />
           </div>
-          {currencyWarn ? (
-            <div className="rounded-2xl bg-amber-50 px-3 py-2 text-xs text-amber-900">
-              {currencyWarn}
-              <button
-                type="button"
-                className="ms-2 underline"
-                onClick={() => {
-                  if (currency === 'IRR') setAmount(Math.round(amount * 10));
-                  if (currency === 'IRT') setAmount(Math.round(amount / 10));
-                  setCurrencyWarn(null);
-                }}
-              >
-                اعمال تبدیل
-              </button>
-            </div>
-          ) : null}
           {currency !== period?.currency ? (
             <div className="space-y-2">
               <label className="label" htmlFor="fx-rate">
@@ -484,8 +497,9 @@ export function ExpenseFormPage() {
               <input type="checkbox" className="h-5 w-5" checked={useMultiPayer} onChange={(e) => setUseMultiPayer(e.target.checked)} />
               چند پرداخت‌کننده
             </label>
-            {useMultiPayer
-              ? people.map((m) => (
+            {useMultiPayer ? (
+              <>
+                {people.map((m) => (
                   <MoneyInput
                     key={m.id}
                     id={`payer-${m.id}`}
@@ -493,8 +507,14 @@ export function ExpenseFormPage() {
                     value={payerAmounts[m.id] || 0}
                     onChange={(n) => setPayerAmounts((prev) => ({ ...prev, [m.id]: n }))}
                   />
-                ))
-              : null}
+                ))}
+                {payersSum === grandTotal ? (
+                  <p className="text-xs text-brand-800" role="status">
+                    جمع پرداخت‌کننده‌ها با مبلغ کل برابر است
+                  </p>
+                ) : null}
+              </>
+            ) : null}
             {chargeSelect('service-type', 'حق سرویس', serviceType, setServiceType, serviceValue, setServiceValue)}
             {chargeSelect('tax-type', 'مالیات', taxType, setTaxType, taxValue, setTaxValue)}
             {chargeSelect('tip-type', 'انعام', tipType, setTipType, tipValue, setTipValue)}
@@ -570,9 +590,9 @@ export function ExpenseFormPage() {
           </div>
         ) : null}
 
-        <div className="sticky z-20 -mx-4 mt-1 flex gap-2 border-t border-brand-700/10 bg-surface/90 px-4 py-3 backdrop-blur bottom-[max(4.75rem,calc(var(--keyboard-inset,0px)+0.5rem))] md:bottom-0">
+        <div className="sticky z-20 -mx-4 mt-1 flex gap-2 border-t border-brand-800/20 bg-surface/90 px-4 py-3 backdrop-blur bottom-[max(4.75rem,calc(var(--keyboard-inset,0px)+0.5rem))] md:bottom-0">
           {!isNew && !isViewer ? (
-            <button type="button" className="btn-ghost text-rose-700" onClick={() => setConfirmDelete(true)}>
+            <button type="button" className="btn-ghost text-danger" onClick={() => setConfirmDelete(true)}>
               حذف
             </button>
           ) : null}

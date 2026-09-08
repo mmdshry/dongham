@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { PageLoading } from '../components/ui';
 import { api, apiDownload, faDate, faNum } from '../lib/api';
 import { useSession } from '../lib/session';
 import type { AdminSettings } from '../lib/types';
@@ -18,10 +19,10 @@ export function SettingsPage() {
   };
 
   useEffect(() => {
-    void load().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+    void load().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
   }, [setToast]);
 
-  if (!data) return <p className="text-sm text-ink-700/70">در حال بارگذاری…</p>;
+  if (!data) return <PageLoading />;
 
   const savePhones = async () => {
     const extraAdminPhones = phones
@@ -34,7 +35,7 @@ export function SettingsPage() {
     });
     setPhones(res.extraAdminPhones.join('\n'));
     setData({ ...data, extraAdminPhones: res.extraAdminPhones });
-    setToast('شماره‌ها ذخیره شد');
+    setToast('شماره‌ها ذخیره شد', 'success');
   };
 
   const refreshFx = async () => {
@@ -42,7 +43,7 @@ export function SettingsPage() {
     try {
       const fx = await api<NonNullable<AdminSettings['fx']> & { source: string }>('/admin/fx/refresh', { method: 'POST' });
       setData({ ...data, fx });
-      setToast('نرخ ارز نوسازی شد');
+      setToast('نرخ ارز نوسازی شد', 'success');
     } finally {
       setBusy(false);
     }
@@ -55,7 +56,7 @@ export function SettingsPage() {
     });
     setTitle('');
     setBody('');
-    setToast('نوتیف همگانی ارسال شد');
+    setToast('نوتیف همگانی ارسال شد', 'success');
   };
 
   return (
@@ -99,7 +100,7 @@ export function SettingsPage() {
             ))}
           </ul>
         ) : null}
-        <button type="button" className="btn-primary" disabled={busy} onClick={() => void refreshFx().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'))}>
+        <button type="button" className="btn-primary" disabled={busy} onClick={() => void refreshFx().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))}>
           نوسازی نرخ
         </button>
       </section>
@@ -109,7 +110,7 @@ export function SettingsPage() {
         <p className="text-xs text-ink-700/60">از محیط (ثابت): {data.envAdminPhones.join('، ') || '—'}</p>
         <label className="label">شماره‌های اضافه (هر خط یکی)</label>
         <textarea className="input min-h-28" dir="ltr" value={phones} onChange={(e) => setPhones(e.target.value)} />
-        <button type="button" className="btn-primary" onClick={() => void savePhones().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'))}>
+        <button type="button" className="btn-primary" onClick={() => void savePhones().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))}>
           ذخیره شماره‌ها
         </button>
       </section>
@@ -118,7 +119,7 @@ export function SettingsPage() {
         <h2 className="font-bold">نوتیف همگانی</h2>
         <input className="input" placeholder="عنوان" value={title} onChange={(e) => setTitle(e.target.value)} />
         <textarea className="input min-h-24" placeholder="متن" value={body} onChange={(e) => setBody(e.target.value)} />
-        <button type="button" className="btn-primary" onClick={() => void broadcast().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'))}>
+        <button type="button" className="btn-primary" onClick={() => void broadcast().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))}>
           ارسال به همه
         </button>
       </section>
@@ -131,8 +132,8 @@ export function SettingsPage() {
           className="btn-ghost"
           onClick={() =>
             void apiDownload('/admin/export', `dongham-export-${new Date().toISOString().slice(0, 10)}.json`)
-              .then(() => setToast('دانلود شد'))
-              .catch((e) => setToast(e instanceof Error ? e.message : 'خطا'))
+              .then(() => setToast('دانلود شد', 'success'))
+              .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))
           }
         >
           دانلود JSON

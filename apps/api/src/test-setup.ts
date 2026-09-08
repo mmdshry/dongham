@@ -24,5 +24,6 @@ loadEnv(join(here, '..', '..', '..', '.env'));
 loadEnv(join(here, '..', '.env'));
 process.env.MYSQL_DATABASE = process.env.MYSQL_TEST_DATABASE || 'dongham_test';
 process.env.OTP_PROVIDER = 'mock';
+process.env.SMTP_MOCK = '1';
 delete process.env.SENATOR_API_KEY;
 delete process.env.KAVENEGAR_API_KEY;

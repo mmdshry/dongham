@@ -3,28 +3,32 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --env-file .env --env-file ../../.env src/index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node --env-file=.env --env-file=../../.env dist/index.js",
+    "dev": "tsx watch --env-file-if-exists .env --env-file-if-exists ../../.env src/index.ts",
+    "build": "tsc -p tsconfig.json && node --input-type=module -e \"import { cpSync, mkdirSync } from 'node:fs'; mkdirSync('dist/assets', { recursive: true }); cpSync('src/assets/email-logo.png', 'dist/assets/email-logo.png');\"",
+    "start": "node --env-file-if-exists=.env --env-file-if-exists=../../.env dist/index.js",
     "test": "vitest run",
-    "migrate": "tsx --env-file .env --env-file ../../.env src/migrate.ts",
-    "import-store": "tsx --env-file .env --env-file ../../.env src/import-store.ts",
+    "migrate": "tsx --env-file-if-exists .env --env-file-if-exists ../../.env src/migrate.ts",
+    "import-store": "tsx --env-file-if-exists .env --env-file-if-exists ../../.env src/import-store.ts",
     "load-sync": "tsx src/load-sync.harness.ts"
   },
   "dependencies": {
-    "@hono/node-server": "^1.14.1",
-    "bcryptjs": "^3.0.2",
-    "hono": "^4.7.5",
-    "jose": "^6.0.10",
+    "@dongham/ledger": "workspace:*",
+    "@hono/node-server": "^2.1.1",
+    "bcryptjs": "^3.0.3",
+    "hono": "^4.13.7",
+    "jose": "^6.2.12",
+    "mysql2": "^3.24.3",
     "nanoid": "^5.1.5",
-    "mysql2": "^3.14.1",
-    "@dongham/ledger": "workspace:*"
+    "nodemailer": "^7.0.11",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
-    "@types/node": "^22.13.10",
-    "tsx": "^4.19.3",
-    "typescript": "^5.8.2",
-    "vitest": "^3.0.9"
+    "@types/node": "^24.5.2",
+    "@types/nodemailer": "^7.0.3",
+    "@types/web-push": "^3.6.4",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
   }
 }

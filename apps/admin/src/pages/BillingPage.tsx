@@ -27,7 +27,7 @@ export function BillingPage() {
   };
 
   useEffect(() => {
-    void load().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+    void load().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
   }, [setToast]);
 
   const loadMoreEvents = async () => {
@@ -37,7 +37,7 @@ export function BillingPage() {
       const next = await api<Page<BillingEvent>>(`/admin/billing/events?limit=50&offset=${events.items.length}`);
       setEvents({ ...next, items: [...events.items, ...next.items] });
     } catch (e) {
-      setToast(e instanceof Error ? e.message : 'خطا');
+      setToast(e instanceof Error ? e.message : 'خطا', 'error');
     } finally {
       setLoadingMore(false);
     }
@@ -74,7 +74,10 @@ export function BillingPage() {
                   <td dir="ltr">{row.userId}</td>
                   <td>{sourceLabel[row.source]}</td>
                   <td>{row.sku || '—'}</td>
-                  <td>{row.amount != null ? `${faNum(row.amount)} ریال` : '—'}</td>
+                  {/* Zarinpal stores rial; everything else in Dongham is toman. */}
+                  <td title={row.amount != null ? `${faNum(row.amount)} ریال` : undefined}>
+                    {row.amount != null ? `${faNum(Math.round(row.amount / 10))} تومان` : '—'}
+                  </td>
                   <td>{faDate(row.until)}</td>
                   <td>{faDate(row.createdAt)}</td>
                 </tr>
@@ -116,7 +119,7 @@ export function BillingPage() {
                   <td>{faNum(row.amount)} ریال</td>
                   <td>{faDate(row.createdAt)}</td>
                   <td>
-                    <button type="button" className="btn-ghost text-rose-700" onClick={() => setDrop(row.authority)}>
+                    <button type="button" className="btn-ghost text-danger" onClick={() => setDrop(row.authority)}>
                       حذف
                     </button>
                   </td>
@@ -175,8 +178,8 @@ export function BillingPage() {
           if (!authority) return;
           void api(`/admin/billing/zarinpal-pending/${encodeURIComponent(authority)}`, { method: 'DELETE' })
             .then(() => load())
-            .then(() => setToast('حذف شد'))
-            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+            .then(() => setToast('حذف شد', 'success'))
+            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
         }}
       />
     </div>

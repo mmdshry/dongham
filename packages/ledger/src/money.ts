@@ -27,6 +27,37 @@ export function toBaseCurrency(amount: number, fxRate = 1): number {
   return roundMoney(amount * fxRate);
 }
 
+/**
+ * Rate that converts `from` into `periodCurrency`. `rates` are تومان per 1 unit of each code.
+ * تومان↔ریال is fixed (×10) and needs no live rate. Returns 0 when unknown.
+ */
+export function rateToPeriod(rates: Record<string, number>, from: string, periodCurrency: string): number {
+  if (from === periodCurrency) return 1;
+  const tomanPerFrom = from === 'IRT' ? 1 : from === 'IRR' ? 0.1 : rates[from];
+  if (!tomanPerFrom) return 0;
+  if (periodCurrency === 'IRT') return tomanPerFrom;
+  if (periodCurrency === 'IRR') return tomanPerFrom * 10;
+  const tomanPerPeriod = rates[periodCurrency];
+  if (!tomanPerPeriod) return 0;
+  return tomanPerFrom / tomanPerPeriod;
+}
+
+/**
+ * Convert a stored fxRate (amount × rate = period currency) from one period currency to another.
+ * Returns null when the conversion factor is unknown so callers can abort.
+ */
+export function rebaseFxRate(
+  oldFxRate: number,
+  fromPeriodCurrency: string,
+  toPeriodCurrency: string,
+  rates: Record<string, number>,
+): number | null {
+  if (fromPeriodCurrency === toPeriodCurrency) return oldFxRate;
+  const factor = rateToPeriod(rates, fromPeriodCurrency, toPeriodCurrency);
+  if (!factor) return null;
+  return oldFxRate * factor;
+}
+
 /** Round a settlement amount to the nearest step; 0 means no rounding. */
 export function roundToStep(amount: number, step: number): number {
   if (!step || step <= 0) return roundMoney(amount);

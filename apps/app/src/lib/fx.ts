@@ -136,14 +136,5 @@ export function startFxLoop() {
   };
 }
 
-/** Rate to convert `from` into period currency (IRT/IRR). Rates are تومان per 1 unit. 0 if unknown. */
-export function rateToPeriod(rates: FxRates, from: string, periodCurrency: string): number {
-  if (from === periodCurrency) return 1;
-  const tomanPerFrom = from === 'IRT' ? 1 : from === 'IRR' ? 0.1 : rates[from];
-  if (!tomanPerFrom) return 0;
-  if (periodCurrency === 'IRT') return tomanPerFrom;
-  if (periodCurrency === 'IRR') return tomanPerFrom * 10;
-  const tomanPerPeriod = rates[periodCurrency];
-  if (!tomanPerPeriod) return 0;
-  return tomanPerFrom / tomanPerPeriod;
-}
+/** Rate to convert `from` into period currency — shared with the API via `@dongham/ledger`. */
+export { rateToPeriod } from '@dongham/ledger';

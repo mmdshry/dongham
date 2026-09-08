@@ -1,5 +1,3 @@
-import { LocalNotifications } from '@capacitor/local-notifications';
-import { Capacitor } from '@capacitor/core';
 import { db } from './db';
 import { formatMoney } from './format';
 
@@ -32,19 +30,7 @@ export async function scheduleDebtReminders(input: {
   await db.notifications.put(n);
   await db.meta.put({ key: LAST_KEY, value: String(Date.now()) });
 
-  if (Capacitor.isNativePlatform()) {
-    await LocalNotifications.requestPermissions();
-    await LocalNotifications.schedule({
-      notifications: [
-        {
-          id: 71001,
-          title: n.title,
-          body: n.body,
-          schedule: { at: new Date(Date.now() + 1500) },
-        },
-      ],
-    });
-  } else if ('Notification' in window) {
+  if ('Notification' in window) {
     const perm = await Notification.requestPermission();
     if (perm === 'granted') new Notification(n.title, { body: n.body });
   }

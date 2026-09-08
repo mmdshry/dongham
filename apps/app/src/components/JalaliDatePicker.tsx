@@ -1,3 +1,5 @@
+import { Calendar, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Icon } from './Icon';
 import { useEffect, useId, useRef, useState } from 'react';
 import type { CalendarMode } from '../lib/jalali';
 import {
@@ -10,7 +12,7 @@ import {
   shiftCalendarMonth,
 } from '../lib/jalali';
 import { formatCalendarDate, toPersianDigits } from '../lib/format';
-import { readCalendarMode, writeCalendarMode } from '../lib/calendarPref';
+import { useCalendarMode } from '../lib/calendarPref';
 import { updateAccountPrefs } from '../lib/cloudProfile';
 import { usePersianDigits } from '../lib/usePersianDigits';
 
@@ -27,13 +29,10 @@ export function JalaliDatePicker({
   const titleId = useId();
   const wrapRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
-  const [mode, setMode] = useState<CalendarMode>('jalali');
+  // Single source of truth shared with every other date label (profile → localStorage fallback).
+  const mode = useCalendarMode();
   const selected = isoToCalendarParts(iso || new Date().toISOString(), mode);
   const [view, setView] = useState({ y: selected.y, m: selected.m });
-
-  useEffect(() => {
-    setMode(readCalendarMode());
-  }, []);
 
   useEffect(() => {
     const next = isoToCalendarParts(iso || new Date().toISOString(), mode);
@@ -70,8 +69,8 @@ export function JalaliDatePicker({
   };
 
   const switchMode = (next: CalendarMode) => {
-    setMode(next);
-    writeCalendarMode(next);
+    if (next === mode) return;
+    // updateAccountPrefs writes localStorage + Dexie profile, so useCalendarMode re-renders every date label at once.
     void updateAccountPrefs({ calendarMode: next });
   };
 
@@ -89,15 +88,12 @@ export function JalaliDatePicker({
         onClick={() => setOpen((v) => !v)}
       >
         <span>{formatCalendarDate(iso || todayIso, mode, persian)}</span>
-        <svg className="h-5 w-5 shrink-0 text-brand-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden>
-          <rect x="3.5" y="5" width="17" height="15" rx="2.2" />
-          <path d="M8 3.5v4M16 3.5v4M3.5 10h17" />
-        </svg>
+        <Icon icon={Calendar} size={20} className="shrink-0 text-brand-700" />
       </button>
       {open ? (
         <>
           <div
-            className="fixed inset-0 z-50 bg-scrim/40 md:hidden"
+            className="fixed inset-0 z-50 bg-scrim/55 md:hidden"
             aria-hidden
             onClick={() => setOpen(false)}
           />
@@ -110,14 +106,14 @@ export function JalaliDatePicker({
             <div className="mb-3 flex gap-1 rounded-2xl bg-brand-50 p-1">
               <button
                 type="button"
-                className={`chip flex-1 !min-h-10 ${mode === 'jalali' ? 'bg-brand-700 text-white' : 'text-ink-800'}`}
+                className={`chip flex-1 !min-h-10 ${mode === 'jalali' ? 'bg-brand-700 text-on-brand' : 'text-ink-800'}`}
                 onClick={() => switchMode('jalali')}
               >
                 شمسی
               </button>
               <button
                 type="button"
-                className={`chip flex-1 !min-h-10 ${mode === 'gregorian' ? 'bg-brand-700 text-white' : 'text-ink-800'}`}
+                className={`chip flex-1 !min-h-10 ${mode === 'gregorian' ? 'bg-brand-700 text-on-brand' : 'text-ink-800'}`}
                 onClick={() => switchMode('gregorian')}
               >
                 میلادی
@@ -130,9 +126,7 @@ export function JalaliDatePicker({
                 aria-label="ماه قبل"
                 onClick={() => setView((v) => shiftCalendarMonth(v.y, v.m, -1))}
               >
-                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-                  <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
+                <Icon icon={ChevronRight} size={20} />
               </button>
               <p className="min-w-0 flex-1 text-center text-sm font-bold">
                 {calendarMonthName(view.m, mode)}
@@ -155,9 +149,7 @@ export function JalaliDatePicker({
                 aria-label="ماه بعد"
                 onClick={() => setView((v) => shiftCalendarMonth(v.y, v.m, 1))}
               >
-                <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-                  <path d="M15 6l-6 6 6 6" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
+                <Icon icon={ChevronLeft} size={20} />
               </button>
             </div>
             <div className="grid grid-cols-7 gap-0.5 text-center text-xs text-ink-700/60">
@@ -178,7 +170,7 @@ export function JalaliDatePicker({
                     aria-current={isSelected ? 'date' : undefined}
                     className={`min-h-11 rounded-xl text-sm tabular-nums ${
                       isSelected
-                        ? 'bg-brand-700 font-bold text-white'
+                        ? 'bg-brand-700 font-bold text-on-brand'
                         : isToday
                           ? 'bg-brand-100 font-semibold text-brand-800'
                           : cell.inMonth

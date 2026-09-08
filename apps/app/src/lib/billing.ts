@@ -1,22 +1,24 @@
 import { isPremium as isPremiumEntitlement } from '@dongham/ledger';
-import { Capacitor, registerPlugin } from '@capacitor/core';
 import { api, updateProfile } from './api';
 import type { LocalProfile } from './db';
 
-interface StorePlugin {
-  purchase(options: { sku: string }): Promise<{ purchaseToken: string; sku: string }>;
-  queryPremium(options: { sku: string }): Promise<{ owned: boolean; purchaseToken?: string }>;
-}
-
-const Bazaar = registerPlugin<StorePlugin>('DonghamBazaar');
-const Myket = registerPlugin<StorePlugin>('DonghamMyket');
-
 export const PREMIUM_SKU_MONTHLY = 'premium_monthly';
 export const PREMIUM_SKU_YEARLY = 'premium_yearly';
-export const PREMIUM_SKU = PREMIUM_SKU_MONTHLY;
 
 export function isPremium(profile?: LocalProfile | null): boolean {
   return isPremiumEntitlement(profile);
+}
+
+export type PremiumPlan = { sku: string; rial: number; toman: number; days: number };
+
+/** Prices come from the API (env-configured); the gateway bills rial, the UI shows toman. */
+export async function fetchPremiumPlans(): Promise<PremiumPlan[]> {
+  try {
+    const res = await api<{ plans: PremiumPlan[] }>('/billing/plans');
+    return Array.isArray(res.plans) ? res.plans : [];
+  } catch {
+    return [];
+  }
 }
 
 async function applyUser(user: { plan?: string; premiumUntil?: string }) {
@@ -24,40 +26,6 @@ async function applyUser(user: { plan?: string; premiumUntil?: string }) {
     plan: user.plan === 'premium' ? 'premium' : 'free',
     premiumUntil: user.premiumUntil,
   });
-}
-
-export async function buyPremiumBazaar(sku = PREMIUM_SKU_MONTHLY): Promise<{ ok: boolean; error?: string }> {
-  if (!Capacitor.isNativePlatform()) {
-    return { ok: false, error: 'خرید بازار فقط در اپ اندروید ممکن است' };
-  }
-  try {
-    const result = await Bazaar.purchase({ sku });
-    const res = await api<{ user: { plan?: string; premiumUntil?: string } }>('/billing/bazaar/verify', {
-      method: 'POST',
-      body: JSON.stringify({ sku: result.sku, purchaseToken: result.purchaseToken }),
-    });
-    await applyUser(res.user);
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : 'خرید ناموفق' };
-  }
-}
-
-export async function buyPremiumMyket(sku = PREMIUM_SKU_MONTHLY): Promise<{ ok: boolean; error?: string }> {
-  if (!Capacitor.isNativePlatform()) {
-    return { ok: false, error: 'خرید مایکت فقط در اپ اندروید ممکن است' };
-  }
-  try {
-    const result = await Myket.purchase({ sku });
-    const res = await api<{ user: { plan?: string; premiumUntil?: string } }>('/billing/myket/verify', {
-      method: 'POST',
-      body: JSON.stringify({ sku: result.sku, purchaseToken: result.purchaseToken }),
-    });
-    await applyUser(res.user);
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : 'خرید ناموفق' };
-  }
 }
 
 export async function buyPremiumWeb(
@@ -89,10 +57,4 @@ export async function verifyZarinpalReturn(authority: string, status: string): P
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : 'تأیید پرداخت ناموفق' };
   }
-}
-
-/** @deprecated use buyPremiumBazaar / buyPremiumWeb */
-export async function buyPremium(): Promise<{ ok: boolean; error?: string }> {
-  if (Capacitor.isNativePlatform()) return buyPremiumBazaar();
-  return buyPremiumWeb();
 }

@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid';
 import { normalizeEmail, normalizeIranMobile, normalizeOtpCode } from '@dongham/ledger';
 import {
   claimMemberships,
+  consumeEmailOtp,
   consumeOtp,
   deleteSessionByToken,
   extraAdminPhones as loadExtraAdminPhones,
@@ -14,10 +15,12 @@ import {
   getUserById,
   insertSession,
   insertUser,
+  storeEmailOtp as repoStoreEmailOtp,
   storeOtp as repoStoreOtp,
   updateUser,
 } from './repo.js';
 import type { UserRecord } from './types.js';
+import { isSmtpMock, sendOtpEmail, type EmailOtpPurpose } from './mail.js';
 
 const secret = () => new TextEncoder().encode(process.env.JWT_SECRET || 'dongham-dev-secret');
 
@@ -254,6 +257,56 @@ export async function verifyOtp(phone: string, code: string): Promise<boolean> {
   const otp = normalizeOtpCode(code);
   if (!local || !otp) return false;
   return consumeOtp(local, otp);
+}
+
+const EMAIL_OTP_WINDOW_MS = 60 * 60_000;
+const EMAIL_OTP_MAX = 5;
+const emailOtpHits = new Map<string, number[]>();
+
+function allowEmailOtp(email: string): boolean {
+  if (process.env.NODE_ENV === 'test') return true;
+  const now = Date.now();
+  const prev = (emailOtpHits.get(email) || []).filter((t) => now - t < EMAIL_OTP_WINDOW_MS);
+  if (prev.length >= EMAIL_OTP_MAX) {
+    emailOtpHits.set(email, prev);
+    return false;
+  }
+  prev.push(now);
+  emailOtpHits.set(email, prev);
+  return true;
+}
+
+export function isEmailOtpMock(): boolean {
+  return isSmtpMock();
+}
+
+export class EmailOtpRateLimitError extends Error {
+  constructor() {
+    super('لطفاً کمی بعد دوباره تلاش کنید');
+    this.name = 'EmailOtpRateLimitError';
+  }
+}
+
+export async function sendEmailOtp(email: string, purpose: EmailOtpPurpose, userId?: string): Promise<string> {
+  const normalized = normalizeEmail(email);
+  if (!normalized) throw new Error('ایمیل نامعتبر است');
+  if (!allowEmailOtp(`${purpose}:${normalized}`)) throw new EmailOtpRateLimitError();
+  const code = String(Math.floor(100000 + Math.random() * 900000));
+  await sendOtpEmail(normalized, code, purpose);
+  await repoStoreEmailOtp(normalized, purpose, code, Date.now() + 5 * 60_000, userId);
+  return code;
+}
+
+export async function verifyEmailOtp(
+  email: string,
+  code: string,
+  purpose: EmailOtpPurpose,
+  userId?: string,
+): Promise<boolean> {
+  const normalized = normalizeEmail(email);
+  const otp = normalizeOtpCode(code);
+  if (!normalized || !otp) return false;
+  return consumeEmailOtp(normalized, purpose, otp, userId);
 }
 
 export async function claimListedMemberships(user: UserRecord): Promise<void> {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { CurrencyMark } from './Flag';
 import { browseRateCurrencies, currencyInfo, displayTomanRate } from '../lib/currencyCatalog';
@@ -48,6 +48,7 @@ export function FxRatesPanel({ compact = false }: { compact?: boolean }) {
   const [watch, setWatch] = useState<string[]>([]);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const staleWarned = useRef(false);
   const [q, setQ] = useState('');
 
   const load = async () => {
@@ -73,6 +74,18 @@ export function FxRatesPanel({ compact = false }: { compact?: boolean }) {
     return () => window.clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [persian]);
+
+  useEffect(() => {
+    const source = snap?.source;
+    if (source === 'offline' || source === 'stale' || source === 'none') {
+      if (!staleWarned.current) {
+        staleWarned.current = true;
+        setToast('نرخ زنده قطع است؛ آخرین قیمت ذخیره‌شده نمایش داده می‌شود.', 'warn');
+      }
+      return;
+    }
+    staleWarned.current = false;
+  }, [snap?.source, setToast]);
 
   const persistWatch = async (codes: string[]) => {
     await saveFxWatchlist(codes);
@@ -108,7 +121,7 @@ export function FxRatesPanel({ compact = false }: { compact?: boolean }) {
       if (n > 0) rates[code] = n;
     }
     await saveManualRates(rates);
-    setToast('نرخ‌های دستی ذخیره شد');
+    setToast('نرخ‌های دستی ذخیره شد', 'success');
     await load();
   };
 
@@ -132,11 +145,6 @@ export function FxRatesPanel({ compact = false }: { compact?: boolean }) {
           {snap.fetchedAt ? ` · آخرین بروزرسانی ${formatCalendarDateTime(snap.fetchedAt, calendarMode, persian)}` : ''}
         </p>
       ) : null}
-      {snap?.source === 'offline' || snap?.source === 'stale' || snap?.source === 'none' ? (
-        <p className="rounded-2xl bg-amber-50 px-3 py-2 text-xs text-amber-900">
-          نرخ زنده قطع است؛ آخرین قیمت ذخیره‌شده نمایش داده می‌شود.
-        </p>
-      ) : null}
       <input
         className="input"
         placeholder="جستجوی ارز…"
@@ -152,7 +160,7 @@ export function FxRatesPanel({ compact = false }: { compact?: boolean }) {
                 <CurrencyMark info={c} />
                 <div className="flex items-center gap-2">
                   <FxTomanPrice amount={n} persian={persian} />
-                  <button type="button" className="btn-ghost !px-2 !py-1 !text-xs" onClick={() => void addCode(c.code)}>
+                  <button type="button" className="btn-ghost btn-sm" onClick={() => void addCode(c.code)}>
                     افزودن
                   </button>
                 </div>
@@ -178,7 +186,7 @@ export function FxRatesPanel({ compact = false }: { compact?: boolean }) {
                     <FxTomanPrice amount={n} persian={persian} />
                     <button
                       type="button"
-                      className="btn-ghost !px-2 !py-1 !text-xs"
+                      className="btn-ghost btn-sm"
                       onClick={() => void removeCode(c.code)}
                     >
                       حذف

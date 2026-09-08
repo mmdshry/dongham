@@ -7,7 +7,6 @@ build
 .env
 .env.*
 !.env.example
-apps/app/ios
 apps/app/dev-dist
 coverage
 test-results
@@ -17,3 +16,6 @@ playwright-report
 .DS_Store
 Thumbs.db
 apps/api/data
+*.tsbuildinfo
+.astro/
+.idea/

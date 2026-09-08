@@ -1,4 +1,4 @@
-import { computeBalances, computeShares, suggestSettlements } from '@dongham/ledger';
+import { computeBalances, computeShares, suggestSettlements, toBaseCurrency } from '@dongham/ledger';
 import type { LocalExpense, LocalMember, LocalPayment, LocalPeriod } from './db';
 import { noneCharge } from './db';
 import { rateToPeriod, type FxRates } from './fx';
@@ -47,11 +47,15 @@ export function periodAnalytics(
   const { expenses: e, payments: p } = buildLedgerInputs(expenses, payments);
   const balances = computeBalances(e, p);
   const settlements = suggestSettlements(balances, roundTo);
+  // Totals and tags are in the period currency, converted with the stored fxRate — same as balances.
   const byTag: Record<string, number> = {};
   let total = 0;
   for (const exp of e) {
     const shares = computeShares(exp);
-    const sum = shares.reduce((s, x) => s + x.amount, 0);
+    const sum = toBaseCurrency(
+      shares.reduce((s, x) => s + x.amount, 0),
+      exp.fxRate ?? 1,
+    );
     total += sum;
     for (const tag of expenses.find((x) => x.id === exp.id)?.tags || ['بدون‌تگ']) {
       byTag[tag] = (byTag[tag] || 0) + sum;
@@ -59,6 +63,33 @@ export function periodAnalytics(
   }
   const nameOf = (id: string) => members.find((m) => m.id === id)?.displayName || id;
   return { balances, settlements, total, byTag, nameOf };
+}
+
+/** Tag totals across periods, rolled up to toman with the live period→IRT rate. */
+export function globalTagTotals(
+  periods: LocalPeriod[],
+  allMembers: LocalMember[],
+  allExpenses: LocalExpense[],
+  allPayments: LocalPayment[],
+  rates: FxRates = {},
+): { byTag: [string, number][]; mixedUnconverted: boolean } {
+  const acc: Record<string, number> = {};
+  let mixedUnconverted = false;
+  for (const period of periods) {
+    const pe = allExpenses.filter((e) => e.periodId === period.id);
+    const pp = allPayments.filter((p) => p.periodId === period.id);
+    const pm = allMembers.filter((m) => m.periodId === period.id);
+    const { byTag } = periodAnalytics(pe, pp, pm, period.roundTo || 0);
+    for (const [tag, amount] of Object.entries(byTag)) {
+      const irt = toIrt(amount, period.currency, rates);
+      if (irt == null) {
+        if (amount) mixedUnconverted = true;
+        continue;
+      }
+      acc[tag] = (acc[tag] || 0) + irt;
+    }
+  }
+  return { byTag: Object.entries(acc).sort((a, b) => b[1] - a[1]), mixedUnconverted };
 }
 
 export type PersonKey = string;
@@ -88,7 +119,7 @@ export function globalDebts(
   const selfMemberLike: LocalMember = {
     id: 'self',
     periodId: '',
-    displayName: self.displayName || 'من',
+    displayName: self.displayName || '',
     userId: self.userId,
     guestKey: self.guestKey,
     phone: self.phone,
@@ -106,31 +137,30 @@ export function globalDebts(
     const members = allMembers.filter((m) => m.periodId === period.id);
     const expenses = allExpenses.filter((e) => e.periodId === period.id);
     const payments = allPayments.filter((p) => p.periodId === period.id);
-    const { balances } = periodAnalytics(expenses, payments, members, period.roundTo || 0);
+    // Same pairwise «کی به کی» edges the period's balance tab shows, not each person's group net.
+    const { settlements } = periodAnalytics(expenses, payments, members, period.roundTo || 0);
     const myMember = members.find((m) => personKey(m) === me);
     if (!myMember) continue;
-    const myBal = balances[myMember.id] || 0;
-    const converted = toIrt(myBal, period.currency, rates);
-    if (converted == null && myBal) {
-      mixedUnconverted = true;
-      continue;
-    }
-    const irtBal = converted ?? 0;
-    if (irtBal > 0) owedToMe += irtBal;
-    if (irtBal < 0) iOwe += -irtBal;
 
-    for (const [mid, bal] of Object.entries(balances)) {
-      if (mid === myMember.id || !bal) continue;
-      const other = members.find((m) => m.id === mid);
+    for (const edge of settlements) {
+      const owedByMe = edge.fromMemberId === myMember.id;
+      const owedToMeEdge = edge.toMemberId === myMember.id;
+      if (!owedByMe && !owedToMeEdge) continue;
+      const otherId = owedByMe ? edge.toMemberId : edge.fromMemberId;
+      const other = members.find((m) => m.id === otherId);
       if (!other || other.isPot) continue;
-      const otherIrt = toIrt(bal, period.currency, rates);
-      if (otherIrt == null) {
+      const irt = toIrt(edge.amount, period.currency, rates);
+      if (irt == null) {
         mixedUnconverted = true;
         continue;
       }
+      // Positive = they owe me, negative = I owe them.
+      const signed = owedByMe ? -irt : irt;
+      if (signed > 0) owedToMe += signed;
+      else iOwe += -signed;
       const key = personKey(other);
       const prev = acc.get(key) || { name: other.displayName, amount: 0 };
-      prev.amount += -otherIrt;
+      prev.amount += signed;
       acc.set(key, prev);
     }
   }

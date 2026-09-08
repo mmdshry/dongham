@@ -95,14 +95,39 @@ export function computeShares(expense: ExpenseInput): ComputedShare[] {
   }
 }
 
-/** Validate share inputs before save (UI can call this). */
+/**
+ * Integer percentages for `count` people that always sum to 100
+ * (the last members absorb the remainder: 3 → 33/33/34).
+ */
+export function evenPercentShares(count: number): number[] {
+  if (count <= 0) return [];
+  const base = Math.floor(100 / count);
+  const remainder = 100 - base * count;
+  return Array.from({ length: count }, (_, i) => (i >= count - remainder ? base + 1 : base));
+}
+
+export type SplitErrorCode = 'NO_ACTIVE_SHARES' | 'EXACT_SPLIT_MISMATCH' | 'PERCENT_SPLIT_MISMATCH' | 'UNKNOWN_SPLIT_MODE';
+
+/** User-facing Persian text for a split validation error (code or raw ledger message). */
+export function describeSplitError(error: string): string {
+  if (error.startsWith('NO_ACTIVE_SHARES')) return 'حداقل یک نفر باید در تقسیم باشد';
+  if (error.startsWith('EXACT_SPLIT_MISMATCH')) return 'جمع مبالغ ثابت باید با مبلغ کل (با مالیات و سرویس) برابر باشد';
+  if (error.startsWith('PERCENT_SPLIT_MISMATCH')) return 'جمع درصدها باید دقیقاً ۱۰۰ باشد';
+  if (error.startsWith('UNKNOWN_SPLIT_MODE')) return 'روش تقسیم نامعتبر است';
+  return error;
+}
+
+/**
+ * Validate share inputs before save (UI and API both call this).
+ * `total` must already include tax/service/tip (see `expenseTotal`).
+ */
 export function validateShares(
   mode: SplitMode,
   total: number,
   shares: ExpenseShareInput[],
 ): { ok: true } | { ok: false; error: string } {
   try {
-    computeShares({
+    const computed = computeShares({
       id: 'tmp',
       title: '',
       amount: total,
@@ -112,6 +137,8 @@ export function validateShares(
       shares,
       tax: { type: 'none', value: 0 },
     });
+    // Equal/weight with nobody active silently produce [] — that books a credit with no debtors.
+    if (computed.length === 0) return { ok: false, error: 'NO_ACTIVE_SHARES: nobody shares this expense' };
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

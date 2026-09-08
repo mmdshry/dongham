@@ -1,4 +1,15 @@
 User-agent: *
 Allow: /
+Disallow: /apps/
+Disallow: /app
+Disallow: /auth
+Disallow: /periods
+Disallow: /i/
+Disallow: /transactions
+Disallow: /reports
+Disallow: /profile
+Disallow: /friends
+Disallow: /more
+Disallow: /api/
 
-Sitemap: https://dongham.ir/sitemap.xml
+Sitemap: https://dongham.ir/sitemap-index.xml

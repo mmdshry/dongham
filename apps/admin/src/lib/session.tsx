@@ -1,12 +1,18 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
-import { api, getToken, setToken } from '../lib/api';
-import type { AdminUser } from '../lib/types';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { api, getToken, setToken } from './api';
+import { buildToast, toastDurationMs, type ToastKind, type ToastOpts, type ToastPayload } from './toast';
+import type { AdminUser } from './types';
+
+type SetToast = {
+  (message: null): void;
+  (message: string, kind: ToastKind, opts?: ToastOpts): void;
+};
 
 type SessionCtx = {
   ready: boolean;
   user: AdminUser | null;
-  toast: string;
-  setToast: (msg: string) => void;
+  toast: ToastPayload | null;
+  setToast: SetToast;
   login: (token: string, user: AdminUser) => void;
   logout: () => Promise<void>;
 };
@@ -16,13 +22,28 @@ const Ctx = createContext<SessionCtx | null>(null);
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [user, setUser] = useState<AdminUser | null>(null);
-  const [toast, setToast] = useState('');
+  const [toast, setToastState] = useState<ToastPayload | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
 
-  useEffect(() => {
-    if (!toast) return;
-    const t = window.setTimeout(() => setToast(''), 3200);
-    return () => window.clearTimeout(t);
-  }, [toast]);
+  const setToast = useCallback<SetToast>((message: string | null, kind?: ToastKind, opts?: ToastOpts) => {
+    if (toastTimer.current !== undefined) {
+      window.clearTimeout(toastTimer.current);
+      toastTimer.current = undefined;
+    }
+    if (!message) {
+      setToastState(null);
+      return;
+    }
+    const next = buildToast(message, kind ?? 'error', opts);
+    setToastState(next);
+    const ms = toastDurationMs(next);
+    if (ms != null) {
+      toastTimer.current = window.setTimeout(() => {
+        setToastState(null);
+        toastTimer.current = undefined;
+      }, ms);
+    }
+  }, []);
 
   useEffect(() => {
     const token = getToken();
@@ -63,7 +84,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         setUser(null);
       },
     }),
-    [ready, user, toast],
+    [ready, user, toast, setToast],
   );
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

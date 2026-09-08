@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isPeriodId } from '@dongham/ledger';
 import mysql from 'mysql2/promise';
+import { isEncryptedValue } from './at-rest.js';
 import type { Pool, PoolConnection } from 'mysql2/promise';
 import type {
   Charge,
@@ -41,11 +42,12 @@ const CLEAR_TABLES = [
   'invites',
   'activity',
   'notifications',
+  // push_subscriptions is device state, not part of DbShape: kept, then pruned to surviving users.
   'friends',
-  'telegram_links',
   'zarinpal_pending',
   'billing_events',
   'otps',
+  'email_otps',
   'sessions',
   'admin_audit',
   'impersonation_tickets',
@@ -163,7 +165,6 @@ export async function hydrateDb(): Promise<DbShape> {
     otps,
     zarinpal,
     billing,
-    telegram,
     shebaDays,
     shebaCache,
     audit,
@@ -194,7 +195,6 @@ export async function hydrateDb(): Promise<DbShape> {
     all(p, 'SELECT * FROM otps'),
     all(p, 'SELECT * FROM zarinpal_pending'),
     all(p, 'SELECT * FROM billing_events'),
-    all(p, 'SELECT * FROM telegram_links'),
     all(p, 'SELECT * FROM sheba_lookup_days'),
     all(p, 'SELECT * FROM sheba_lookup_cache'),
     all(p, 'SELECT * FROM admin_audit'),
@@ -310,11 +310,6 @@ export async function hydrateDb(): Promise<DbShape> {
       amount: num(row.amount),
       createdAt: toIso(row.created_at),
     })),
-    telegramLinks: telegram.map((row) => ({
-      chatId: str(row.chat_id),
-      periodId: trimId(row.period_id),
-      payerMemberId: strOpt(row.payer_member_id),
-    })),
     shebaLookups: shebaDays.map((row) => {
       const key = `${str(row.identity)}|${str(row.day)}`;
       const cache: Record<string, ShebaLookupCache> = {};
@@ -386,6 +381,7 @@ export async function persistMysql(db: DbShape): Promise<void> {
       await conn.query(`DELETE FROM \`${table}\``);
     }
     await insertAll(conn, prepared);
+    await conn.query('DELETE FROM push_subscriptions WHERE user_id NOT IN (SELECT id FROM users)');
     await conn.query('SET FOREIGN_KEY_CHECKS=1');
     await conn.commit();
   } catch (err) {
@@ -415,7 +411,14 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
       'use_persian_digits',
       'debt_reminders',
       'calendar_mode',
+      'auto_sync',
       'prefs_updated_at',
+      'avatar_preset',
+      'avatar_data_url',
+      'avatar_updated_at',
+      'username',
+      'profile_cover_preset',
+      'profile_cover_data_url',
     ],
     db.users.map((u) => [
       clip(u.id, 32),
@@ -432,7 +435,14 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
       boolSql(u.usePersianDigits),
       boolSql(u.debtReminders),
       u.calendarMode === 'gregorian' || u.calendarMode === 'jalali' ? u.calendarMode : null,
+      boolSql(u.autoSync),
       toDate(u.prefsUpdatedAt),
+      nullStr(u.avatarPreset, 32),
+      u.avatarDataUrl || null,
+      toDate(u.avatarUpdatedAt),
+      nullStr(u.username, 20),
+      nullStr(u.profileCoverPreset, 32),
+      u.profileCoverDataUrl || null,
     ]),
   );
 
@@ -506,6 +516,8 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
       nullStr(p.lunchTurnMemberId, 32),
       p.encrypted ? 1 : 0,
       p.visibility === 'public' ? 'public' : 'private',
+      nullStr(p.coverPreset, 32),
+      nullStr(p.coverDataUrl),
     ]);
   }
   await insertRows(
@@ -527,6 +539,8 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
       'lunch_turn_member_id',
       'encrypted',
       'visibility',
+      'cover_preset',
+      'cover_data_url',
     ],
     periodRows,
   );
@@ -566,7 +580,7 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
         nullStr(m.phone, 15),
         nullStr(m.email, 191),
         persistMemberCard(m.cardNumber),
-        nullStr(m.sheba, 32),
+        nullStr(m.sheba, 128),
         nullStr(m.cardHolderName, 80),
         nullStr(m.bankName, 80),
         m.excludeFromNew ? 1 : 0,
@@ -879,15 +893,6 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
 
   await insertRows(
     conn,
-    'telegram_links',
-    ['chat_id', 'period_id', 'payer_member_id'],
-    (db.telegramLinks || [])
-      .filter((l) => validPeriods.has(asPeriodId(l.periodId) || ''))
-      .map((l) => [clip(l.chatId, 32), asPeriodId(l.periodId), nullStr(l.payerMemberId, 32)]),
-  );
-
-  await insertRows(
-    conn,
     'sheba_lookup_days',
     ['identity', 'day', 'lookup_count'],
     (db.shebaLookups || []).map((s) => [clip(s.identity, 80), clip(s.day, 10), num(s.count)]),
@@ -977,6 +982,7 @@ export function prepareDb(input: DbShape): DbShape {
   const seenPhone = new Set<string>();
   const seenEmail = new Set<string>();
   const seenGoogle = new Set<string>();
+  const seenUsername = new Set<string>();
   for (const u of db.users) {
     if (u.deletedAt) continue;
     if (u.phone) {
@@ -996,6 +1002,12 @@ export function prepareDb(input: DbShape): DbShape {
         console.warn(`mysql: duplicate google id, clearing on ${u.id}`);
         delete u.googleId;
       } else seenGoogle.add(u.googleId);
+    }
+    if (u.username) {
+      if (seenUsername.has(u.username)) {
+        console.warn(`mysql: duplicate username ${u.username}, clearing on ${u.id}`);
+        delete u.username;
+      } else seenUsername.add(u.username);
     }
     if (u.payoutMethods?.length) {
       const cards = new Set<string>();
@@ -1078,7 +1090,6 @@ export function prepareDb(input: DbShape): DbShape {
   dedupeById(db.recurring, (r) => r.id);
   dedupeById(db.activity, (a) => a.id);
   if (db.zarinpalPending) dedupeById(db.zarinpalPending, (z) => z.authority);
-  if (db.telegramLinks) dedupeById(db.telegramLinks, (l) => l.chatId);
   if (db.adminAudit) dedupeById(db.adminAudit, (a) => a.id);
   if (db.impersonationTickets) dedupeById(db.impersonationTickets, (t) => t.code);
   if (db.billingEvents) dedupeById(db.billingEvents, (e) => e.id);
@@ -1115,7 +1126,22 @@ export function mapUser(row: Row, payouts: Row[], watch: Row[]): UserRecord {
   if (row.use_persian_digits != null) user.usePersianDigits = bool(row.use_persian_digits);
   if (row.debt_reminders != null) user.debtReminders = bool(row.debt_reminders);
   if (row.calendar_mode === 'jalali' || row.calendar_mode === 'gregorian') user.calendarMode = row.calendar_mode;
+  if (row.auto_sync != null) user.autoSync = bool(row.auto_sync);
   if (prefsUpdatedAt) user.prefsUpdatedAt = prefsUpdatedAt;
+  const avatarPreset = strOpt(row.avatar_preset);
+  if (avatarPreset) user.avatarPreset = avatarPreset;
+  const avatar = strOpt(row.avatar_data_url);
+  if (avatar) user.avatarDataUrl = avatar;
+  const avatarUpdatedAt = toIsoOpt(row.avatar_updated_at);
+  if (avatarUpdatedAt) user.avatarUpdatedAt = avatarUpdatedAt;
+  if (row.has_avatar != null) user.hasAvatar = bool(row.has_avatar) || Number(row.has_avatar) === 1;
+  else if (avatar || avatarPreset) user.hasAvatar = true;
+  const username = strOpt(row.username);
+  if (username) user.username = username;
+  const profileCoverPreset = strOpt(row.profile_cover_preset);
+  if (profileCoverPreset) user.profileCoverPreset = profileCoverPreset;
+  const profileCover = strOpt(row.profile_cover_data_url);
+  if (profileCover) user.profileCoverDataUrl = profileCover;
   if (payouts.length) {
     user.payoutMethods = payouts.map((m) => ({
       id: str(m.id),
@@ -1152,6 +1178,10 @@ export function mapPeriod(row: Row): PeriodRecord {
   if (lunch) period.lunchTurnMemberId = lunch;
   if (row.building_charge != null) period.buildingCharge = num(row.building_charge);
   if (bool(row.encrypted)) period.encrypted = true;
+  const coverPreset = strOpt(row.cover_preset);
+  const coverDataUrl = strOpt(row.cover_data_url);
+  if (coverPreset) period.coverPreset = coverPreset;
+  if (coverDataUrl) period.coverDataUrl = coverDataUrl;
   return period;
 }
 
@@ -1376,8 +1406,10 @@ export function persistSessionToken(token: string): string {
   return token || '';
 }
 
+/** 16-digit plaintext or server `enc:v1:` ciphertext (encrypted periods); anything else is dropped. */
 export function persistMemberCard(raw?: string | null): string | null {
   if (raw == null) return null;
+  if (isEncryptedValue(raw)) return raw.length <= 128 ? raw : null;
   const digits = raw.replace(/\D/g, '');
   return digits.length === 16 ? digits : null;
 }
@@ -1392,7 +1424,7 @@ function asKind(v: unknown): NonNullable<PeriodRecord['kind']> {
 }
 
 function asRole(v: unknown): NonNullable<MemberRecord['role']> {
-  return v === 'owner' || v === 'viewer' ? v : 'member';
+  return v === 'owner' || v === 'manager' || v === 'viewer' ? v : 'member';
 }
 
 function asSplit(v: unknown): ExpenseRecord['splitMode'] {

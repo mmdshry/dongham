@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ConfirmDialog } from '../components/ui';
+import { ChevronRight } from 'lucide-react';
+import { ConfirmDialog, PageLoading } from '../components/ui';
+import { Icon } from '../components/Icon';
 import { isPremium } from '@dongham/ledger';
 import { api, faDate } from '../lib/api';
 import { useSession } from '../lib/session';
@@ -10,10 +12,20 @@ type Notif = { id: string; title: string; body: string; read: boolean; createdAt
 
 type Detail = {
   user: AdminUser;
+  avatarDataUrl?: string;
+  avatarPreset?: string;
+  profileCoverPreset?: string;
+  profileCoverDataUrl?: string;
   periods: { id: string; title: string; currency: string; ownerId: string; createdAt: string; version: number }[];
   sessions: { id: string; deviceId: string; createdAt: string }[];
   friends: { id: string; displayName: string; phone?: string; email?: string }[];
 };
+
+function adminAvatarSrc(preset?: string, dataUrl?: string): string | undefined {
+  if (dataUrl) return dataUrl;
+  const match = /^(male|female|teen|child)-(0[1-9]|10)$/.exec(preset || '');
+  return match ? `/avatars/${match[1]}/${match[2]}.svg` : undefined;
+}
 
 export function UserDetailPage() {
   const { id } = useParams();
@@ -23,7 +35,7 @@ export function UserDetailPage() {
   const [name, setName] = useState('');
   const [notifTitle, setNotifTitle] = useState('');
   const [notifBody, setNotifBody] = useState('');
-  const [confirm, setConfirm] = useState<'delete' | 'revoke' | 'impersonate' | 'premium' | 'revoke-premium' | 'ban' | 'unban' | null>(null);
+  const [confirm, setConfirm] = useState<'delete' | 'revoke' | 'impersonate' | 'premium' | 'revoke-premium' | 'ban' | 'unban' | 'avatar' | 'cover' | null>(null);
   const [friendId, setFriendId] = useState<string | null>(null);
 
   const load = async () => {
@@ -36,11 +48,12 @@ export function UserDetailPage() {
   };
 
   useEffect(() => {
-    void load().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+    void load().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
   }, [id]);
 
-  if (!data) return <p className="text-sm text-ink-700/70">در حال بارگذاری…</p>;
+  if (!data) return <PageLoading />;
   const u = data.user;
+  const avatarSrc = adminAvatarSrc(data.avatarPreset, data.avatarDataUrl);
 
   const saveName = async () => {
     try {
@@ -49,9 +62,9 @@ export function UserDetailPage() {
         body: JSON.stringify({ displayName: name }),
       });
       setData({ ...data, user: res.user });
-      setToast('ذخیره شد');
+      setToast('ذخیره شد', 'success');
     } catch (e) {
-      setToast(e instanceof Error ? e.message : 'خطا');
+      setToast(e instanceof Error ? e.message : 'خطا', 'error');
     }
   };
 
@@ -61,7 +74,7 @@ export function UserDetailPage() {
       body: JSON.stringify({ days }),
     });
     setData({ ...data, user: res.user });
-    setToast('پریمیوم اعمال شد');
+    setToast('پریمیوم اعمال شد', 'success');
   };
 
   const revokePremium = async () => {
@@ -70,7 +83,7 @@ export function UserDetailPage() {
       body: JSON.stringify({ revoke: true }),
     });
     setData({ ...data, user: res.user });
-    setToast('پریمیوم برداشته شد');
+    setToast('پریمیوم برداشته شد', 'success');
   };
 
   const sendNotif = async () => {
@@ -81,19 +94,56 @@ export function UserDetailPage() {
     setNotifTitle('');
     setNotifBody('');
     await load();
-    setToast('نوتیف ارسال شد');
+    setToast('نوتیف ارسال شد', 'success');
   };
 
   return (
     <div className="animate-rise space-y-5">
-      <Link to="/users" className="text-sm text-brand-800">
-        ← کاربران
+      <Link to="/users" className="inline-flex items-center gap-1 text-sm text-brand-800">
+        <Icon icon={ChevronRight} size={16} />
+        کاربران
       </Link>
       <h1 className="text-2xl font-extrabold">{u.displayName}</h1>
-      {u.deletedAt ? <p className="text-sm text-rose-700">این حساب حذف شده است ({faDate(u.deletedAt)})</p> : null}
-      {u.bannedAt ? <p className="text-sm text-rose-700">مسدود از {faDate(u.bannedAt)}</p> : null}
+      {u.deletedAt ? <p className="text-sm text-danger">این حساب حذف شده است ({faDate(u.deletedAt)})</p> : null}
+      {u.bannedAt ? <p className="text-sm text-danger">مسدود از {faDate(u.bannedAt)}</p> : null}
+
+      <div className="card flex items-center gap-4">
+        {avatarSrc ? (
+          <img src={avatarSrc} alt="" className="h-16 w-16 rounded-full object-cover" />
+        ) : (
+          <span className="inline-flex h-16 w-16 items-center justify-center rounded-full bg-brand-100 text-lg font-extrabold text-brand-800">
+            {u.displayName.slice(0, 1) || '؟'}
+          </span>
+        )}
+        <div className="min-w-0 flex-1">
+          <p className="text-sm text-ink-700/70">{avatarSrc ? 'آواتار ثبت شده' : 'بدون آواتار'}</p>
+          {avatarSrc ? (
+            <button type="button" className="btn-ghost mt-2 !px-3 !py-1 !text-xs text-danger" onClick={() => setConfirm('avatar')}>
+              حذف آواتار
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="card space-y-2">
+        <p className="text-sm text-ink-700/70">
+          بک‌گراند:{' '}
+          {data.profileCoverDataUrl ? 'عکس سفارشی' : data.profileCoverPreset ? data.profileCoverPreset : 'ثبت نشده'}
+        </p>
+        {data.profileCoverDataUrl ? (
+          <img src={data.profileCoverDataUrl} alt="" className="h-20 w-32 rounded-xl object-cover" />
+        ) : null}
+        {data.profileCoverDataUrl || data.profileCoverPreset ? (
+          <button type="button" className="btn-ghost !px-3 !py-1 !text-xs text-danger" onClick={() => setConfirm('cover')}>
+            حذف بک‌گراند
+          </button>
+        ) : null}
+      </div>
 
       <div className="card space-y-3">
+        <p className="text-sm">
+          یوزرنیم: <span dir="ltr">{u.username ? `@${u.username}` : '—'}</span>
+        </p>
         <p className="text-sm">
           موبایل: <span dir="ltr">{u.phone || '—'}</span>
         </p>
@@ -143,7 +193,7 @@ export function UserDetailPage() {
             onClick={() =>
               void api(`/admin/users/${u.id}/restore`, { method: 'POST' })
                 .then(() => load())
-                .catch((e) => setToast(e instanceof Error ? e.message : 'خطا'))
+                .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))
             }
           >
             تلاش برای بازیابی
@@ -155,7 +205,7 @@ export function UserDetailPage() {
         <h2 className="font-bold">نوتیفیکیشن</h2>
         <input className="input" placeholder="عنوان" value={notifTitle} onChange={(e) => setNotifTitle(e.target.value)} />
         <textarea className="input min-h-20" placeholder="متن" value={notifBody} onChange={(e) => setNotifBody(e.target.value)} />
-        <button type="button" className="btn-primary" onClick={() => void sendNotif().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'))}>
+        <button type="button" className="btn-primary" onClick={() => void sendNotif().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))}>
           ارسال به این کاربر
         </button>
         <ul className="max-h-48 space-y-1 overflow-auto text-sm">
@@ -202,7 +252,7 @@ export function UserDetailPage() {
               <span>
                 {f.displayName} {f.phone || f.email || ''}
               </span>
-              <button type="button" className="btn-ghost text-rose-700" onClick={() => setFriendId(f.id)}>
+              <button type="button" className="btn-ghost text-danger" onClick={() => setFriendId(f.id)}>
                 حذف
               </button>
             </li>
@@ -224,8 +274,8 @@ export function UserDetailPage() {
           if (!fid) return;
           void api(`/admin/users/${u.id}/friends/${fid}`, { method: 'DELETE' })
             .then(() => load())
-            .then(() => setToast('حذف شد'))
-            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+            .then(() => setToast('حذف شد', 'success'))
+            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
         }}
       />
       <ConfirmDialog
@@ -239,8 +289,8 @@ export function UserDetailPage() {
           setConfirm(null);
           void api(`/admin/users/${u.id}/delete`, { method: 'POST' })
             .then(() => load())
-            .then(() => setToast('حذف شد'))
-            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+            .then(() => setToast('حذف شد', 'success'))
+            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
         }}
       />
       <ConfirmDialog
@@ -255,8 +305,8 @@ export function UserDetailPage() {
           void api<{ user: AdminUser }>(`/admin/users/${u.id}/ban`, { method: 'POST' })
             .then((res) => setData({ ...data, user: res.user }))
             .then(() => load())
-            .then(() => setToast('مسدود شد'))
-            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+            .then(() => setToast('مسدود شد', 'success'))
+            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
         }}
       />
       <ConfirmDialog
@@ -269,8 +319,8 @@ export function UserDetailPage() {
           void api<{ user: AdminUser }>(`/admin/users/${u.id}/unban`, { method: 'POST' })
             .then((res) => setData({ ...data, user: res.user }))
             .then(() => load())
-            .then(() => setToast('رفع شد'))
-            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+            .then(() => setToast('رفع شد', 'success'))
+            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
         }}
       />
       <ConfirmDialog
@@ -282,8 +332,8 @@ export function UserDetailPage() {
           setConfirm(null);
           void api(`/admin/users/${u.id}/revoke-sessions`, { method: 'POST' })
             .then(() => load())
-            .then(() => setToast('نشست‌ها باطل شد'))
-            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+            .then(() => setToast('نشست‌ها باطل شد', 'success'))
+            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
         }}
       />
       <ConfirmDialog
@@ -297,9 +347,43 @@ export function UserDetailPage() {
           void api<{ appUrl: string }>(`/admin/users/${u.id}/impersonate`, { method: 'POST' })
             .then((res) => {
               window.open(res.appUrl, '_blank', 'noopener');
-              setToast('لینک ورود پشتیبانی باز شد');
+              setToast('لینک ورود پشتیبانی باز شد', 'success');
             })
-            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
+        }}
+      />
+      <ConfirmDialog
+        open={confirm === 'avatar'}
+        title="حذف آواتار"
+        message="عکس پروفایل این کاربر پاک می‌شود."
+        confirmLabel="حذف"
+        danger
+        onClose={() => setConfirm(null)}
+        onConfirm={() => {
+          setConfirm(null);
+          void api<{ user: AdminUser }>(`/admin/users/${u.id}/avatar`, { method: 'DELETE' })
+            .then((res) =>
+              setData({ ...data, user: res.user, avatarDataUrl: undefined, avatarPreset: undefined }),
+            )
+            .then(() => setToast('آواتار حذف شد', 'success'))
+            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
+        }}
+      />
+      <ConfirmDialog
+        open={confirm === 'cover'}
+        title="حذف بک‌گراند"
+        message="بک‌گراند پروفایل این کاربر پاک می‌شود."
+        confirmLabel="حذف"
+        danger
+        onClose={() => setConfirm(null)}
+        onConfirm={() => {
+          setConfirm(null);
+          void api<{ user: AdminUser }>(`/admin/users/${u.id}/cover`, { method: 'DELETE' })
+            .then((res) =>
+              setData({ ...data, user: res.user, profileCoverDataUrl: undefined, profileCoverPreset: undefined }),
+            )
+            .then(() => setToast('بک‌گراند حذف شد', 'success'))
+            .catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
         }}
       />
       <ConfirmDialog
@@ -310,7 +394,7 @@ export function UserDetailPage() {
         onClose={() => setConfirm(null)}
         onConfirm={() => {
           setConfirm(null);
-          void grantPremium(30).catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+          void grantPremium(30).catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
         }}
       />
       <ConfirmDialog
@@ -321,12 +405,12 @@ export function UserDetailPage() {
         onClose={() => setConfirm(null)}
         onConfirm={() => {
           setConfirm(null);
-          void revokePremium().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+          void revokePremium().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
         }}
       />
       {!u.deletedAt ? (
         <div className="flex gap-2 text-xs text-ink-700/60">
-          <button type="button" className="btn-ghost" onClick={() => void grantPremium(365).catch((e) => setToast(e instanceof Error ? e.message : 'خطا'))}>
+          <button type="button" className="btn-ghost" onClick={() => void grantPremium(365).catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))}>
             اعطای یک‌ساله
           </button>
         </div>

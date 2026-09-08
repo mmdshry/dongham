@@ -12,6 +12,12 @@ export async function persistPremiumExpiry(u: UserRecord): Promise<UserRecord> {
   return u;
 }
 
+export function parseRequiredDisplayName(raw?: string, max = 80): string | undefined {
+  const name = (raw || '').trim().slice(0, max);
+  if (!name || name === 'من') return undefined;
+  return name;
+}
+
 export function publicUser(u: UserRecord) {
   expirePremium(u);
   return {
@@ -25,6 +31,8 @@ export function publicUser(u: UserRecord) {
     bannedAt: u.bannedAt,
     plan: u.plan || 'free',
     premiumUntil: u.premiumUntil,
+    hasAvatar: Boolean(u.hasAvatar || u.avatarDataUrl || u.avatarPreset),
+    username: u.username,
   };
 }
 
@@ -33,6 +41,7 @@ export type UserProfilePatch = {
   usePersianDigits?: boolean;
   debtReminders?: boolean;
   calendarMode?: 'jalali' | 'gregorian';
+  autoSync?: boolean;
   fxWatchlist?: unknown;
   payoutMethods?: unknown;
 };
@@ -101,9 +110,16 @@ export function cloudProfile(u: UserRecord): CloudProfile {
     usePersianDigits: u.usePersianDigits !== false,
     debtReminders: u.debtReminders !== false,
     calendarMode: u.calendarMode === 'gregorian' ? 'gregorian' : 'jalali',
+    autoSync: u.autoSync !== false,
     fxWatchlist: Array.isArray(u.fxWatchlist) ? sanitizeFxWatchlist(u.fxWatchlist) : [],
     payoutMethods: u.payoutMethods === undefined ? undefined : sanitizePayoutMethods(u.payoutMethods),
     prefsUpdatedAt: u.prefsUpdatedAt,
+    avatarDataUrl: u.avatarDataUrl,
+    avatarPreset: u.avatarPreset,
+    avatarUpdatedAt: u.avatarUpdatedAt,
+    username: u.username,
+    profileCoverPreset: u.profileCoverPreset,
+    profileCoverDataUrl: u.profileCoverDataUrl,
   };
 }
 
@@ -116,7 +132,8 @@ export async function applyUserProfilePatch(userId: string, patch: UserProfilePa
   const row = await getUserById(userId);
   if (!row || row.deletedAt) return null;
   if (typeof patch.displayName === 'string') {
-    const name = patch.displayName.trim().slice(0, 40);
+    // Same ceiling as the client's DISPLAY_NAME_MAX and users.display_name VARCHAR(80).
+    const name = parseRequiredDisplayName(patch.displayName, 80);
     if (name) row.displayName = name;
   }
   if (typeof patch.usePersianDigits === 'boolean') row.usePersianDigits = patch.usePersianDigits;
@@ -124,9 +141,19 @@ export async function applyUserProfilePatch(userId: string, patch: UserProfilePa
   if (patch.calendarMode === 'jalali' || patch.calendarMode === 'gregorian') {
     row.calendarMode = patch.calendarMode;
   }
+  if (typeof patch.autoSync === 'boolean') row.autoSync = patch.autoSync;
   if (patch.fxWatchlist !== undefined) row.fxWatchlist = sanitizeFxWatchlist(patch.fxWatchlist);
   if (patch.payoutMethods !== undefined) row.payoutMethods = sanitizePayoutMethods(patch.payoutMethods);
   row.prefsUpdatedAt = new Date().toISOString();
   await updateUser(row);
   return row;
+}
+
+export function wipePublicProfile(user: UserRecord): void {
+  user.username = undefined;
+  user.profileCoverPreset = undefined;
+  user.profileCoverDataUrl = undefined;
+  user.avatarDataUrl = undefined;
+  user.avatarPreset = undefined;
+  user.avatarUpdatedAt = undefined;
 }

@@ -1,0 +1,24 @@
+RewriteEngine On
+RewriteBase /
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Strict-Transport-Security "max-age=31536000"
+</IfModule>
+
+# HTTP → HTTPS (covers hosts that only set X-Forwarded-Proto)
+RewriteCond %{HTTPS} !=on
+RewriteCond %{HTTP:X-Forwarded-Proto} !https
+RewriteRule ^ https://dongham.ir%{REQUEST_URI} [L,R=301]
+
+# www → apex
+RewriteCond %{HTTP_HOST} ^www\.dongham\.ir$ [NC]
+RewriteRule ^ https://dongham.ir%{REQUEST_URI} [L,R=301]
+
+# Trailing slash for HTML routes (skip real files, hashed assets, and SPA prefixes)
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_URI} !/$
+RewriteCond %{REQUEST_URI} !\.[a-zA-Z0-9]{1,8}$
+RewriteCond %{REQUEST_URI} !^/(app|auth|periods|i|transactions|reports|profile|friends|more|api)(/|$)
+RewriteRule ^(.*)$ /$1/ [L,R=301]

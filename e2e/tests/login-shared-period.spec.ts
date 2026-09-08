@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { loginOtp } from './helpers';
+import { createPeriodSubmit, loginOtp, newPeriodButton } from './helpers';
 
 test('two logged-in users share one period and both see an expense', async ({ browser }) => {
   const ownerCtx = await browser.newContext();
@@ -8,14 +8,14 @@ test('two logged-in users share one period and both see an expense', async ({ br
   const member = await memberCtx.newPage();
 
   await loginOtp(owner, '09121111111', 'مالک تست');
-  await owner.goto('/');
-  await owner.getByRole('button', { name: 'دوره جدید' }).click();
+  await owner.goto('/app');
+  await newPeriodButton(owner).click();
   await owner.locator('#period-title').fill('دوره مشترک');
-  await owner.getByRole('button', { name: 'ساخت' }).click();
+  await createPeriodSubmit(owner).click();
   await owner.waitForURL(/\/periods\//, { timeout: 15_000 });
   await expect(owner.getByRole('heading', { level: 1, name: 'دوره مشترک' })).toBeVisible();
 
-  await owner.getByRole('tab', { name: 'ابزار' }).click();
+  await owner.getByRole('tab', { name: 'تنظیمات' }).click();
   const inviteWait = owner.waitForResponse(
     (res) => res.url().includes('/invites') && res.request().method() === 'POST' && res.ok(),
   );

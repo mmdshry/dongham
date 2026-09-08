@@ -22,7 +22,7 @@ usage() {
   cat <<EOF
 Usage: deploy/import-prod-mysql.sh [--all] [--backup] [--freeze] [--check-env] [--import] [--force] [--cutover]
 
-  --backup      Copy store.json (and dongham_store JSONB if DATABASE_URL is set)
+  --backup      Copy the legacy store.json before the one-time MySQL import
   --freeze      pm2 stop dongham-api, then take a final store.json copy
   --check-env   Require MYSQL_* and JWT_SECRET in $ENV_FILE (does not rewrite secrets)
   --import      pnpm migrate + import-store into MYSQL_DATABASE
@@ -89,16 +89,6 @@ copy_store() {
   fi
   cp -a "$STORE" "$dest/store.json"
   echo "copied $STORE → $dest/store.json ($(wc -c < "$STORE") bytes)"
-
-  local database_url
-  database_url="$(env_get DATABASE_URL || true)"
-  if [ -n "${database_url:-}" ] && command -v psql >/dev/null 2>&1; then
-    PGPASSWORD="" psql "$database_url" -At -c "SELECT value FROM dongham_store WHERE key = 'main'" \
-      > "$dest/dongham_store.json" || echo "warn: could not dump dongham_store" >&2
-    if [ -s "$dest/dongham_store.json" ]; then
-      echo "copied dongham_store JSONB → $dest/dongham_store.json"
-    fi
-  fi
 }
 
 if [ "$DO_BACKUP" -eq 1 ]; then

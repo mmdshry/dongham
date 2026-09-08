@@ -12,7 +12,7 @@ export async function renderCardToCardImage(input: {
 }): Promise<string> {
   const bank =
     input.bank || detectBank(input.card, input.sheba)?.name || '';
-  const color = detectBank(input.card, input.sheba)?.color || '#4A6B5C';
+  const color = detectBank(input.card, input.sheba)?.color || '#5E7262';
   const canvas = document.createElement('canvas');
   canvas.width = 900;
   canvas.height = 540;

@@ -1,3 +1,4 @@
+import { rateToPeriod } from '@dongham/ledger';
 import type { FxCacheRecord } from './types.js';
 import { getFxCache, setFxCache } from './repo.js';
 
@@ -14,6 +15,15 @@ function fetchWithTimeout(url: string, init: RequestInit = {}): Promise<Response
 
 export function missingFxCodes(rates: Record<string, number>): string[] {
   return NEEDED.filter((k) => !rates[k] || rates[k] <= 0);
+}
+
+/** Recurring rules normally share the period currency (rate 1); otherwise convert with the cached FX table. */
+export async function recurringFxRate(ruleCurrency: string, periodCurrency?: string): Promise<number> {
+  if (!periodCurrency || ruleCurrency === periodCurrency) return 1;
+  const fixed = rateToPeriod({}, ruleCurrency, periodCurrency);
+  if (fixed) return fixed;
+  const { rates } = await getFxRates();
+  return rateToPeriod(rates, ruleCurrency, periodCurrency) || 1;
 }
 
 function toTomanUsdLike(raw: number): number {

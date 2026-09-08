@@ -1,92 +1,117 @@
 ﻿---
 import Base from '../layouts/Base.astro';
+import Cta from '../components/Cta.astro';
+import { House, Plane, WifiOff } from '@lucide/astro';
 ---
 <Base
-  title="دونگ‌هام | تقسیم هزینه گروهی آنلاین و آفلاین"
-  description="Dongham اپلیکیشن تقسیم هزینه برای سفر، خوابگاه و خانه — Offline-first، دعوت با QR، تسویه هوشمند، رمز AES روی سرور برای دوره‌های قفل‌شده."
+  schema="software"
+  preloadImage="/theme/cover-travel.webp"
+  title="تقسیم هزینه گروهی آنلاین و آفلاین | دونگ‌هام"
+  description="دونگ‌هام دفتر حساب گروهی فارسی است. هزینه سفر، خوابگاه و خانه را حتی بدون اینترنت ثبت کنید، با QR دعوت کنید و کارت‌به‌کارت تسویه کنید."
 >
   <section class="hero">
-    <p class="brand">Dongham</p>
-    <h1>دونگ‌هام</h1>
-    <p class="lead">هزینه‌های گروهی را بدون دردسر حساب کنید — حتی بدون اینترنت.</p>
-    <div class="cta">
-      <a class="primary" href="https://app.dongham.ir">شروع وب‌اپ</a>
-      <a class="ghost" href="/features">ویژگی‌ها</a>
+    <p class="eyebrow">دفتر حساب گروهی</p>
+    <h1>تقسیم هزینه گروهی بدون دردسر</h1>
+    <p class="lead">هزینه سفر، خوابگاه و خانه را ثبت کنید، سهم هر نفر را ببینید و تسویه کنید. حتی وقتی اینترنت قطع است.</p>
+    <Cta ghostHref="/guide/" ghostLabel="آموزش استفاده" />
+    <div class="photos">
+      <img src="/theme/cover-travel.webp" width="720" height="480" fetchpriority="high" decoding="async" alt="گروه دوستان در سفر که هزینه مشترک دارند" />
     </div>
   </section>
 
-  <section class="cards" aria-label="خلاصه قابلیت‌ها">
-    <article>
-      <h2>آفلاین</h2>
-      <p>دوره و هزینه را بدون اینترنت ثبت کنید؛ بعداً همگام می‌شود.</p>
-    </article>
-    <article>
-      <h2>تقسیم</h2>
-      <p>مساوی، ضریب، مبلغ یا درصد — با تگ و چند ارز.</p>
-    </article>
-    <article>
-      <h2>تسویه</h2>
-      <p>ببینید چه کسی به چه کسی چقدر بپردازد.</p>
-    </article>
+  <section class="cards" aria-label="موارد استفاده">
+    <a class="card" href="/travel/">
+      <img src="/theme/cover-travel.webp" width="720" height="480" loading="lazy" decoding="async" alt="" />
+      <h2><Plane size={18} stroke-width={1.8} /> تقسیم هزینه سفر</h2>
+      <p>دوره بسازید، چند ارز ثبت کنید و دونگ را قبل از برگشت شفاف کنید.</p>
+    </a>
+    <a class="card" href="/dorm/">
+      <img src="/theme/cover-home.webp" width="720" height="480" loading="lazy" decoding="async" alt="" />
+      <h2><House size={18} stroke-width={1.8} /> خوابگاه و هم‌خانه</h2>
+      <p>شارژ، قبض و خرید مشترک را با ضریب یا مبلغ ثابت بین اعضا تقسیم کنید.</p>
+    </a>
+    <a class="card" href="/features/">
+      <img src="/theme/cover-empty.webp" width="720" height="480" loading="lazy" decoding="async" alt="" />
+      <h2><WifiOff size={18} stroke-width={1.8} /> آفلاین و امن</h2>
+      <p>بدون اینترنت هم ثبت کنید. کارت و شبا روی دستگاه رمز می‌شوند.</p>
+    </a>
   </section>
 </Base>
 
 <style>
   .hero {
-    min-height: 72dvh;
     display: grid;
-    align-content: center;
+    align-content: start;
     gap: 1rem;
-    padding: 2.5rem 0 2rem;
-    background:
-      radial-gradient(800px 400px at 90% 10%, color-mix(in srgb, var(--brand-soft) 28%, transparent), transparent 60%),
-      linear-gradient(180deg, var(--bg), var(--surface) 70%);
+    padding: 2.5rem 0 1.5rem;
   }
-  .brand {
+  .eyebrow {
     margin: 0;
     color: var(--brand);
     font-weight: 800;
-    letter-spacing: .04em;
-    font-size: 1.1rem;
+    font-size: .95rem;
   }
   h1 {
     margin: 0;
-    font-size: clamp(2.4rem, 8vw, 4.2rem);
-    line-height: 1.08;
+    font-size: clamp(2rem, 6vw, 3.4rem);
+    line-height: 1.15;
   }
   .lead {
     margin: 0;
-    max-width: 34rem;
+    max-width: 36rem;
     font-size: 1.1rem;
     color: var(--muted);
   }
-  .cta {
-    display: flex;
-    flex-wrap: wrap;
+  .photos {
+    display: grid;
     gap: .75rem;
-    margin-top: .25rem;
+    margin-top: 1.5rem;
+  }
+  .photos img {
+    width: 100%;
+    height: 180px;
+    object-fit: cover;
+    border-radius: var(--radius);
   }
   .cards {
     display: grid;
     gap: 1rem;
     padding: 0 0 4rem;
   }
-  .cards article {
+  .card {
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--radius);
-    padding: 1.1rem 1.2rem;
+    overflow: hidden;
+    text-decoration: none;
+    color: inherit;
   }
-  .cards h2 {
-    margin: 0 0 .35rem;
+  .card img {
+    width: 100%;
+    height: 140px;
+    object-fit: cover;
+    display: block;
+  }
+  .card h2 {
+    margin: 0 1.1rem .35rem;
+    padding-top: 1rem;
     font-size: 1.05rem;
+    display: flex;
+    align-items: center;
+    gap: .45rem;
+    color: var(--ink);
   }
-  .cards p {
-    margin: 0;
+  .card h2 :global(svg) {
+    flex-shrink: 0;
+    color: var(--brand-fill);
+  }
+  .card p {
+    margin: 0 1.1rem 1.1rem;
     color: var(--muted);
     font-size: .95rem;
   }
   @media (min-width: 768px) {
+    .photos img { height: 280px; }
     .cards { grid-template-columns: repeat(3, 1fr); }
   }
 </style>

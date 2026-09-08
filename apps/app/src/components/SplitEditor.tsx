@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { validateShares, type SplitMode } from '@dongham/ledger';
+import { evenPercentShares, validateShares, type SplitMode } from '@dongham/ledger';
 import type { LocalMember } from '../lib/db';
 import {
   formatGrouped,
@@ -32,7 +32,6 @@ export function SplitEditor({
   onChange: (shares: ShareDraft[]) => void;
   totalAmount: number;
 }) {
-  const [error, setError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const persian = usePersianDigits();
 
@@ -43,15 +42,12 @@ export function SplitEditor({
     { id: 'percent', label: 'درصد' },
   ];
 
-  const validation = useMemo(() => {
-    if (mode === 'equal') return { ok: true as const };
-    return validateShares(mode, totalAmount, shares);
-  }, [mode, shares, totalAmount]);
+  // Equal mode is validated too: excluding everyone must be flagged before save.
+  const validation = useMemo(() => validateShares(mode, totalAmount, shares), [mode, shares, totalAmount]);
 
   const update = (memberId: string, patch: Partial<ShareDraft>) => {
     const next = shares.map((s) => (s.memberId === memberId ? { ...s, ...patch } : s));
     onChange(next);
-    setError(null);
   };
 
   const setMode = (next: SplitMode) => {
@@ -67,7 +63,7 @@ export function SplitEditor({
             key={m.id}
             type="button"
             className={`chip ${
-              mode === m.id ? 'bg-brand-700 text-white' : 'bg-surface/80 text-ink-700 ring-1 ring-brand-700/10'
+              mode === m.id ? 'bg-brand-700 text-on-brand' : 'bg-surface/80 text-ink-700 ring-1 ring-brand-800/20'
             }`}
             onClick={() => setMode(m.id)}
           >
@@ -77,10 +73,10 @@ export function SplitEditor({
       </div>
 
       <ul className="space-y-2">
-        {members.map((m) => {
+        {members.map((m, index) => {
           const share = shares.find((s) => s.memberId === m.id) || {
             memberId: m.id,
-            value: mode === 'percent' ? Math.round(100 / members.length) : 1,
+            value: mode === 'percent' ? evenPercentShares(members.length)[index] : 1,
           };
           const shareText =
             drafts[m.id] !== undefined
@@ -93,7 +89,7 @@ export function SplitEditor({
                     : ''
                   : toPersianDigits(share.value, persian);
           return (
-            <li key={m.id} className="flex items-center gap-2 rounded-2xl bg-surface/70 p-3 ring-1 ring-brand-700/10">
+            <li key={m.id} className="flex items-center gap-2 rounded-2xl bg-surface/70 p-3 ring-1 ring-brand-800/20">
               <label className="flex min-h-11 min-w-0 flex-1 items-center gap-2 text-sm font-medium">
                 <input
                   type="checkbox"
@@ -138,14 +134,7 @@ export function SplitEditor({
         })}
       </ul>
 
-      {!validation.ok ? (
-        <p className="text-xs text-red-700" role="alert">
-          {validation.error}
-          {error ? ` — ${error}` : ''}
-        </p>
-      ) : (
-        <p className="text-xs text-brand-800">جمع سهم‌ها معتبر است</p>
-      )}
+      {validation.ok ? <p className="text-xs text-brand-800">جمع سهم‌ها معتبر است</p> : null}
     </div>
   );
 }

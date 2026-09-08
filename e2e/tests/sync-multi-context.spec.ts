@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { loginAdmin, loginOtp } from './helpers';
+import { createPeriodSubmit, loginAdmin, loginOtp, newPeriodButton } from './helpers';
 
 test('four browsers plus admin converge on one period', async ({ browser }) => {
   test.setTimeout(180_000);
@@ -16,15 +16,15 @@ test('four browsers plus admin converge on one period', async ({ browser }) => {
   const admin = await adminCtx.newPage();
 
   await loginOtp(owner, '09121110001', 'مالک همگام');
-  await owner.goto('/');
+  await owner.goto('/app');
   const periodTitle = `همگام ${Date.now()}`;
-  await owner.getByRole('button', { name: 'دوره جدید' }).click();
+  await newPeriodButton(owner).click();
   await owner.locator('#period-title').fill(periodTitle);
-  await owner.getByRole('button', { name: 'ساخت' }).click();
+  await createPeriodSubmit(owner).click();
   await owner.waitForURL(/\/periods\//, { timeout: 15_000 });
   await expect(owner.getByRole('heading', { level: 1, name: periodTitle })).toBeVisible();
 
-  await owner.getByRole('tab', { name: 'ابزار' }).click();
+  await owner.getByRole('tab', { name: 'تنظیمات' }).click();
   const inviteWait = owner.waitForResponse(
     (res) => res.url().includes('/invites') && res.request().method() === 'POST' && res.ok(),
   );

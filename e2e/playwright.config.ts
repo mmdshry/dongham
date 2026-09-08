@@ -30,5 +30,17 @@ export default defineConfig({
       timeout: 180_000,
     },
   ],
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    {
+      name: 'chromium',
+      use: {
+        ...devices['Desktop Chrome'],
+        // Geo-restricted CI/dev hosts can set E2E_BROWSER_CHANNEL=chrome|msedge
+        // instead of downloading Playwright's Chromium build.
+        ...(process.env.E2E_BROWSER_CHANNEL
+          ? { channel: process.env.E2E_BROWSER_CHANNEL as 'chrome' | 'msedge' }
+          : {}),
+      },
+    },
+  ],
 });

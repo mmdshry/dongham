@@ -146,7 +146,6 @@ describe('share', () => {
   it('builds wa.me url', () => {
     const urls = messengerUrls('09121234567', 'سلام');
     expect(urls.whatsapp).toContain('https://wa.me/989121234567');
-    expect(urls.telegram).toContain('https://t.me/+989121234567');
     expect(urls.bale).toContain('https://ble.ir/09121234567');
   });
 

@@ -1,7 +1,17 @@
 {
   "ci": {
     "collect": {
-      "url": ["http://127.0.0.1:4321/", "http://127.0.0.1:4321/features", "http://127.0.0.1:4321/privacy"],
+      "startServerCommand": "pnpm --filter @dongham/marketing preview",
+      "startServerReadyPattern": "4321",
+      "url": [
+        "http://127.0.0.1:4321/",
+        "http://127.0.0.1:4321/features/",
+        "http://127.0.0.1:4321/guide/",
+        "http://127.0.0.1:4321/privacy/",
+        "http://127.0.0.1:4321/faq/",
+        "http://127.0.0.1:4321/travel/",
+        "http://127.0.0.1:4321/compare/"
+      ],
       "numberOfRuns": 1
     },
     "assert": {

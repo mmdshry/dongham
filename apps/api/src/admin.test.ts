@@ -360,4 +360,35 @@ describe('admin panel api', () => {
     expect(storedDb.members.find((m) => m.userId === owner.id && m.periodId === period.id)?.role).toBe('member');
     void memberToken;
   });
+
+  it('shows and deletes a user avatar', async () => {
+    const png =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const { token: userToken, user } = await userLogin('09121112222');
+    const put = await app.request('/auth/me/avatar', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${userToken}` },
+      body: JSON.stringify({ mime: 'image/png', dataBase64: png }),
+    });
+    expect(put.status).toBe(200);
+    const { token } = await adminLogin();
+    const list = await app.request('/admin/users', { headers: { Authorization: `Bearer ${token}` } });
+    const listBody = (await json(list)) as { items: { id: string; hasAvatar?: boolean; avatarDataUrl?: string }[] };
+    const row = listBody.items.find((u) => u.id === user.id);
+    expect(row?.hasAvatar).toBe(true);
+    expect(row?.avatarDataUrl).toBeUndefined();
+    const detail = await app.request(`/admin/users/${user.id}`, { headers: { Authorization: `Bearer ${token}` } });
+    const detailBody = (await json(detail)) as { avatarDataUrl?: string; user: { hasAvatar?: boolean } };
+    expect(detailBody.user.hasAvatar).toBe(true);
+    expect(detailBody.avatarDataUrl).toContain(png);
+    const del = await app.request(`/admin/users/${user.id}/avatar`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(del.status).toBe(200);
+    const after = await app.request(`/admin/users/${user.id}`, { headers: { Authorization: `Bearer ${token}` } });
+    const afterBody = (await json(after)) as { avatarDataUrl?: string; user: { hasAvatar?: boolean } };
+    expect(afterBody.avatarDataUrl).toBeUndefined();
+    expect(afterBody.user.hasAvatar).toBe(false);
+  });
 });

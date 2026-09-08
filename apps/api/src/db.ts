@@ -29,7 +29,6 @@ export async function rewriteLegacyPeriodIds(d: DbShape): Promise<boolean> {
   d.attachments = retarget(d.attachments)!;
   d.activity = retarget(d.activity)!;
   d.recurring = retarget(d.recurring)!;
-  if (d.telegramLinks) d.telegramLinks = retarget(d.telegramLinks);
   return true;
 }
 

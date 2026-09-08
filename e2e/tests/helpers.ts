@@ -1,5 +1,21 @@
 import { expect, type Page } from '@playwright/test';
 
+export function newPeriodButton(page: Page) {
+  return page.getByRole('button', { name: 'دوره جدید', exact: true });
+}
+
+export function createPeriodSubmit(page: Page) {
+  return page.getByRole('button', { name: 'ساخت', exact: true });
+}
+
+export async function setGuestDisplayName(page: Page, name = 'محمد') {
+  const dialog = page.getByRole('dialog', { name: 'نام شما' });
+  await expect(dialog).toBeVisible({ timeout: 15_000 });
+  await dialog.getByLabel('نام نمایشی').fill(name);
+  await dialog.getByRole('button', { name: 'ادامه' }).click();
+  await expect(dialog).toHaveCount(0);
+}
+
 export async function loginOtp(page: Page, phone: string, displayName: string) {
   await page.goto('/auth');
   await page

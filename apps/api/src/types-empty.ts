@@ -16,7 +16,6 @@ export const emptyDb = (): DbShape => ({
   recurring: [],
   activity: [],
   zarinpalPending: [],
-  telegramLinks: [],
   shebaLookups: [],
   adminAudit: [],
   impersonationTickets: [],

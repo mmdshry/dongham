@@ -1,4 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { X } from 'lucide-react';
+import { Icon } from './Icon';
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
@@ -8,17 +10,21 @@ export function Modal({
   onClose,
   title,
   children,
+  dismissible = true,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   children: ReactNode;
+  dismissible?: boolean;
 }) {
   const panelRef = useRef<HTMLDivElement>(null);
   const lastFocus = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
+  const dismissibleRef = useRef(dismissible);
   const titleId = useId();
   onCloseRef.current = onClose;
+  dismissibleRef.current = dismissible;
 
   useEffect(() => {
     if (!open) return;
@@ -34,7 +40,7 @@ export function Modal({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onCloseRef.current();
+        if (dismissibleRef.current) onCloseRef.current();
         return;
       }
       if (e.key !== 'Tab' || !panel) return;
@@ -64,10 +70,10 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim/40 p-4 md:items-center"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-scrim/55 p-4 md:items-center"
       role="presentation"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (dismissible && e.target === e.currentTarget) onClose();
       }}
     >
       <div
@@ -81,9 +87,11 @@ export function Modal({
           <h2 id={titleId} className="text-lg font-bold">
             {title}
           </h2>
-          <button type="button" className="btn-ghost !min-h-11 !min-w-11 !px-3" onClick={onClose} aria-label="بستن">
-            ×
-          </button>
+          {dismissible ? (
+            <button type="button" className="btn-ghost !min-h-11 !min-w-11 !px-3" onClick={onClose} aria-label="بستن">
+              <Icon icon={X} size={20} />
+            </button>
+          ) : null}
         </div>
         {children}
       </div>
@@ -119,7 +127,7 @@ export function ConfirmDialog({
         </button>
         <button
           type="button"
-          className={`flex-1 ${danger ? 'btn-ghost text-rose-700' : 'btn-primary'}`}
+          className={`flex-1 ${danger ? 'btn-ghost text-danger' : 'btn-primary'}`}
           onClick={onConfirm}
         >
           {confirmLabel}

@@ -3,7 +3,9 @@ import { nanoid } from 'nanoid';
 import { encryptText, decryptMaybe } from './crypto';
 import { db, type LocalProfile, type PayoutMethod } from './db';
 import { iranCardOk, normalizeCard, normalizeSheba, shebaOk } from './format';
+import { isSelfMember, needsDisplayName, normalizeDisplayName } from './memberLabel';
 import { updateProfile } from './api';
+import { userAvatarSrc } from './userAvatarPresets';
 
 export interface DecryptedPayout {
   id: string;
@@ -64,10 +66,7 @@ export async function syncSelfPayoutToMembers(): Promise<void> {
   const members = await db.members.toArray();
   const { queueOp } = await import('./sync');
   for (const member of members) {
-    const isSelf =
-      (profile.guestKey && member.guestKey === profile.guestKey) ||
-      Boolean(profile.userId && member.userId === profile.userId);
-    if (!isSelf) continue;
+    if (!isSelfMember(member, profile)) continue;
     const next = {
       ...member,
       cardNumber: def?.card || '',
@@ -77,6 +76,38 @@ export async function syncSelfPayoutToMembers(): Promise<void> {
     };
     await db.members.put(next);
     await queueOp(member.periodId, 'member', 'upsert', next);
+  }
+}
+
+export async function syncSelfNameToMembers(): Promise<void> {
+  const profile = await db.profile.get('self');
+  if (!profile) return;
+  const name = needsDisplayName(profile.displayName) ? undefined : normalizeDisplayName(profile.displayName);
+  const members = await db.members.toArray();
+  const { queueOp } = await import('./sync');
+  const { cacheAvatar } = await import('./avatarCache');
+  for (const member of members) {
+    if (!isSelfMember(member, profile)) continue;
+    const next = { ...member };
+    let changed = false;
+    if (name && member.displayName !== name) {
+      next.displayName = name;
+      changed = true;
+    }
+    if (profile.userId && member.userId !== profile.userId) {
+      const alreadyLinked = members.some((row) => row.periodId === member.periodId && row.userId === profile.userId);
+      if (!alreadyLinked) {
+        next.userId = profile.userId;
+        changed = true;
+      }
+    }
+    if (!changed) continue;
+    await db.members.put(next);
+    await queueOp(member.periodId, 'member', 'upsert', next);
+  }
+  if (profile.userId) {
+    const src = userAvatarSrc(profile);
+    if (src) await cacheAvatar(profile.userId, src);
   }
 }
 

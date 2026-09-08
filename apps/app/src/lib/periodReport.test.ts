@@ -77,7 +77,7 @@ describe('period report html', () => {
   const members = [
     member('m1', 'وجید'),
     member('m2', 'سارا'),
-    member('m3', 'من'),
+    member('m3', 'محمد'),
     member('m4', 'هادی'),
   ];
   const shares = members.map((m) => ({ memberId: m.id, value: 1 }));
@@ -110,6 +110,8 @@ describe('period report html', () => {
     expect(html).toContain('وجید');
     expect(html).toContain('سارا');
     expect(html).toContain('هادی');
+    expect(html).toContain('محمد');
+    expect(html).not.toContain('(من)');
     expect(html).toContain('اقامت ویلا');
     expect(html).toContain('مساوی');
     expect(html).toContain('باید به');
@@ -164,7 +166,7 @@ describe('period report model and excel sheets', () => {
   const members = [
     member('m1', 'وجید'),
     member('m2', 'سارا'),
-    member('m3', 'من'),
+    member('m3', 'محمد'),
     member('m4', 'هادی'),
   ];
   const shares = members.map((m) => ({ memberId: m.id, value: 1 }));
@@ -226,7 +228,7 @@ describe('period report model and excel sheets', () => {
     expect(byName['هزینه‌ها'].rows[0]).toEqual([
       model.expenses[0].date,
       'اقامت ویلا',
-      'من',
+      'محمد',
       8_000_000,
       'مساوی',
       'اقامت',
@@ -234,7 +236,7 @@ describe('period report model and excel sheets', () => {
     expect(byName['پرداخت‌ها'].rows[0]).toEqual([
       model.payments[0].date,
       'هادی',
-      'من',
+      'محمد',
       500_000,
       'قرض · در انتظار تأیید',
     ]);

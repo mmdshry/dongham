@@ -1,20 +1,112 @@
 ﻿---
+import '@fontsource-variable/vazirmatn/index.css';
+import { Menu, X } from '@lucide/astro';
+import {
+  SITE_ORIGIN,
+  OG_PATH,
+  SAME_AS,
+  navLinks,
+  footerLinks,
+  type Crumb,
+} from '../lib/site';
+
 interface Props {
   title: string;
   description: string;
+  schema?: 'software' | 'webpage' | 'faq' | 'about';
+  faq?: { q: string; a: string | string[] }[];
+  crumbs?: Crumb[];
+  preloadImage?: string;
 }
-const { title, description } = Astro.props;
-const canonical = new URL(Astro.url.pathname, Astro.site);
-const jsonLd = {
-  '@context': 'https://schema.org',
+
+const { title, description, schema = 'webpage', faq, crumbs, preloadImage } = Astro.props;
+const origin = Astro.site?.origin ?? SITE_ORIGIN;
+const canonical = new URL(Astro.url.pathname, `${origin}/`);
+const ogImage = new URL(OG_PATH, `${origin}/`).href;
+const path = Astro.url.pathname;
+const year = new Date().getFullYear();
+
+const organization = {
+  '@type': 'Organization',
+  '@id': `${origin}/#org`,
+  name: 'دونگ‌هام',
+  alternateName: 'Dongham',
+  url: `${origin}/`,
+  logo: `${origin}/favicon.svg`,
+  sameAs: [...SAME_AS],
+};
+
+const software = {
   '@type': 'SoftwareApplication',
-  name: 'Dongham',
+  '@id': `${origin}/#app`,
+  name: 'دونگ‌هام',
+  alternateName: 'Dongham',
+  url: `${origin}/`,
+  image: ogImage,
   applicationCategory: 'FinanceApplication',
   operatingSystem: 'Web, Android',
   inLanguage: 'fa',
   description,
-  offers: { '@type': 'Offer', price: '0', priceCurrency: 'IRT' },
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'IRR' },
+  publisher: { '@id': `${origin}/#org` },
+  sameAs: [...SAME_AS],
 };
+
+const webpageType = schema === 'about' ? 'AboutPage' : schema === 'faq' ? 'FAQPage' : 'WebPage';
+
+const webpage: Record<string, unknown> = {
+  '@type': webpageType,
+  '@id': `${canonical.href}#page`,
+  url: canonical.href,
+  name: title,
+  description,
+  inLanguage: 'fa-IR',
+  isPartOf: { '@id': `${origin}/#website` },
+  about: { '@id': `${origin}/#app` },
+};
+
+if (faq?.length) {
+  webpage.mainEntity = faq.map(({ q, a }) => ({
+    '@type': 'Question',
+    name: q,
+    acceptedAnswer: {
+      '@type': 'Answer',
+      text: Array.isArray(a) ? a.join(' ') : a,
+    },
+  }));
+}
+
+const website = {
+  '@type': 'WebSite',
+  '@id': `${origin}/#website`,
+  url: `${origin}/`,
+  name: 'دونگ‌هام',
+  inLanguage: 'fa-IR',
+  publisher: { '@id': `${origin}/#org` },
+};
+
+const graph: unknown[] = [organization, website, webpage];
+if (schema === 'software') graph.push(software);
+
+if (crumbs?.length) {
+  graph.push({
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'خانه', item: `${origin}/` },
+      ...crumbs.map((c, i) => ({
+        '@type': 'ListItem',
+        position: i + 2,
+        name: c.name,
+        item: new URL(c.href, `${origin}/`).href,
+      })),
+    ],
+  });
+}
+
+const jsonLdText = JSON.stringify({ '@context': 'https://schema.org', '@graph': graph }).replace(
+  /</g,
+  '\\u003c',
+);
 ---
 <!doctype html>
 <html lang="fa" dir="rtl">
@@ -29,36 +121,49 @@ const jsonLd = {
     <meta property="og:type" content="website" />
     <meta property="og:locale" content="fa_IR" />
     <meta property="og:url" content={canonical} />
-    <meta name="theme-color" content="#4A6B5C" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#0B0F14" media="(prefers-color-scheme: dark)" />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:site_name" content="دونگ‌هام" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+    <meta name="theme-color" content="#5E7262" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1C221F" media="(prefers-color-scheme: dark)" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;800&display=swap" rel="stylesheet" />
-    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    {preloadImage ? <link rel="preload" as="image" href={preloadImage} fetchpriority="high" /> : null}
+    <script type="application/ld+json" set:html={jsonLdText} />
   </head>
   <body>
     <a class="skip" href="#main">پرش به محتوا</a>
     <header class="top">
-      <a class="logo" href="/">Dongham</a>
+      <a class="logo" href="/">
+        <img src="/favicon.svg" width="32" height="32" alt="" />
+        <span>دونگ‌هام</span>
+      </a>
       <input type="checkbox" id="nav-toggle" class="nav-toggle" />
-      <label for="nav-toggle" class="nav-btn" id="nav-btn" aria-label="منو" aria-controls="site-nav" aria-expanded="false">
-        <span></span>
-        <span></span>
-        <span></span>
-      </label>
+      <button type="button" class="nav-btn" id="nav-btn" aria-label="منو" aria-controls="site-nav" aria-expanded="false">
+        <span class="nav-icon-open"><Menu size={22} stroke-width={1.8} /></span>
+        <span class="nav-icon-close"><X size={22} stroke-width={1.8} /></span>
+      </button>
       <nav id="site-nav" aria-label="اصلی">
-        <a href="/features">ویژگی‌ها</a>
-        <a href="/guide">راهنما</a>
-        <a href="/about">درباره</a>
-        <a href="/privacy">حریم خصوصی</a>
+        {navLinks.map((item) => (
+          <a href={item.href} aria-current={path === item.href ? 'page' : undefined}>{item.label}</a>
+        ))}
       </nav>
     </header>
     <main id="main" class="wrap">
       <slot />
     </main>
     <footer class="foot">
-      <p>© {new Date().getFullYear()} Dongham — دونگ‌هام</p>
+      <nav class="foot-nav" aria-label="پاورقی">
+        {footerLinks.map((item) => (
+          <a href={item.href}>{item.label}</a>
+        ))}
+      </nav>
+      <p>© {year} دونگ‌هام · دفتر حساب گروهی، نه کیف پول</p>
     </footer>
     <script is:inline>
       (function () {
@@ -68,6 +173,10 @@ const jsonLd = {
         function sync() {
           btn.setAttribute('aria-expanded', toggle.checked ? 'true' : 'false');
         }
+        btn.addEventListener('click', function () {
+          toggle.checked = !toggle.checked;
+          sync();
+        });
         toggle.addEventListener('change', sync);
         document.addEventListener('keydown', function (e) {
           if (e.key === 'Escape' && toggle.checked) {
@@ -85,34 +194,36 @@ const jsonLd = {
 <style is:global>
   :root {
     color-scheme: light;
-    --brand: #4a6b5c;
-    --brand-fill: #4a6b5c;
-    --brand-soft: #6b8f7c;
-    --ink: #1c1917;
-    --muted: #5c564e;
-    --line: rgba(74, 107, 92, 0.14);
-    --surface: #fffaf5;
-    --radius: 1rem;
+    --brand: #5e7262;
+    --brand-fill: #5e7262;
+    --brand-soft: #7a8f7e;
+    --ink: #241e1c;
+    --muted: #5a524a;
+    --line: rgba(94, 114, 98, 0.14);
+    --surface: #fffcf8;
+    --radius: 1.25rem;
     --space: 1.25rem;
-    --bg: #f4f1ea;
+    --bg: #f6f0e8;
+    --nav: #536758;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       color-scheme: dark;
-      --brand: #8fae9a;
-      --brand-fill: #4a6b5c;
-      --brand-soft: #6b8f7c;
-      --ink: #e8eef2;
-      --muted: #9aa3ad;
-      --line: rgba(143, 174, 154, 0.16);
-      --surface: #141a22;
-      --bg: #0b0f14;
+      --brand: #9ab0a0;
+      --brand-fill: #6e8a76;
+      --brand-soft: #8aa696;
+      --ink: #ecefec;
+      --muted: #b0bab2;
+      --line: rgba(154, 176, 160, 0.22);
+      --surface: #2a342e;
+      --bg: #1c221f;
+      --nav: #303c36;
     }
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    font-family: Vazirmatn, Tahoma, sans-serif;
+    font-family: "Vazirmatn Variable", Vazirmatn, Tahoma, sans-serif;
     color: var(--ink);
     background: var(--bg);
     line-height: 1.7;
@@ -134,13 +245,27 @@ const jsonLd = {
     padding: 0.75rem var(--space);
     padding-top: max(0.75rem, env(safe-area-inset-top));
     border-bottom: 1px solid var(--line);
-    background: color-mix(in srgb, var(--surface) 85%, transparent);
+    background: color-mix(in srgb, var(--surface) 92%, transparent);
     backdrop-filter: blur(8px);
     position: sticky;
     top: 0;
     z-index: 20;
   }
-  .logo { color: var(--brand); font-weight: 800; text-decoration: none; font-size: 1.1rem; }
+  .logo {
+    color: var(--ink);
+    font-weight: 800;
+    text-decoration: none;
+    font-size: 1.05rem;
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.5rem;
+    line-height: 1;
+  }
+  .logo img {
+    width: 2rem;
+    height: 2rem;
+  }
   .nav-toggle { position: absolute; opacity: 0; pointer-events: none; }
   .nav-btn {
     display: none;
@@ -148,20 +273,20 @@ const jsonLd = {
     height: 44px;
     align-items: center;
     justify-content: center;
-    flex-direction: column;
-    gap: 5px;
     border-radius: 12px;
     cursor: pointer;
+    color: var(--ink);
+    background: transparent;
+    border: 0;
+    padding: 0;
+    font: inherit;
   }
-  .nav-btn span {
-    display: block;
-    width: 18px;
-    height: 2px;
-    background: var(--ink);
-    border-radius: 1px;
-  }
-  nav { display: flex; gap: 1rem; flex-wrap: wrap; }
-  nav a {
+  .nav-icon-close { display: none; }
+  .nav-icon-open, .nav-icon-close { line-height: 0; }
+  .nav-toggle:checked ~ .nav-btn .nav-icon-open { display: none; }
+  .nav-toggle:checked ~ .nav-btn .nav-icon-close { display: block; }
+  .top nav { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .top nav a, .foot-nav a {
     color: var(--muted);
     text-decoration: none;
     font-size: .95rem;
@@ -169,19 +294,21 @@ const jsonLd = {
     display: inline-flex;
     align-items: center;
   }
-  nav a:hover { color: var(--brand); }
+  .top nav a:hover,
+  .top nav a[aria-current="page"],
+  .foot-nav a:hover { color: var(--brand); }
   @media (max-width: 640px) {
     .nav-btn { display: flex; }
-    nav {
+    .top nav {
       display: none;
       width: 100%;
       flex-direction: column;
       gap: 0;
       padding-bottom: 0.5rem;
     }
-    nav a { padding-inline: 0.25rem; }
+    .top nav a { padding-inline: 0.25rem; }
     .nav-toggle:checked ~ nav { display: flex; }
-    .nav-toggle:focus-visible + .nav-btn { outline: 2px solid var(--brand); outline-offset: 2px; }
+    .nav-btn:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
   }
   .wrap { width: min(960px, calc(100% - 2rem)); margin-inline: auto; }
   .foot {
@@ -190,9 +317,26 @@ const jsonLd = {
     font-size: .9rem;
     text-align: center;
   }
+  .foot-nav {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: .35rem 1.1rem;
+    margin-bottom: 1rem;
+  }
   .page { padding: 2.5rem 0 4rem; max-width: 42rem; }
   .page h1 { margin-top: 0; font-size: clamp(1.6rem, 4vw, 2.1rem); }
-  .page p { color: var(--muted); }
+  .page h2 { font-size: 1.2rem; margin: 1.75rem 0 .5rem; }
+  .page h3 { font-size: 1.05rem; margin: 1.25rem 0 .4rem; }
+  .page p, .page li { color: var(--muted); }
+  .page-photo {
+    width: 100%;
+    height: 160px;
+    object-fit: cover;
+    border-radius: var(--radius);
+    margin-bottom: 1.25rem;
+    display: block;
+  }
   .primary, .ghost {
     display: inline-flex;
     align-items: center;
@@ -205,4 +349,40 @@ const jsonLd = {
   }
   .primary { background: var(--brand-fill); color: #fff; }
   .ghost { background: color-mix(in srgb, var(--surface) 80%, transparent); color: var(--ink); border: 1px solid var(--line); }
+  .cta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .75rem;
+    margin-top: 1.5rem;
+  }
+  .faq { display: grid; gap: .65rem; padding: 0; }
+  .faq details {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: .85rem 1.1rem;
+  }
+  .faq summary {
+    cursor: pointer;
+    font-weight: 700;
+    color: var(--ink);
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+  }
+  .faq details p { margin: .35rem 0 0; line-height: 1.75; }
+  .faq details p + p { margin-top: .7rem; }
+  .table-wrap { overflow-x: auto; margin: 1rem 0 1.5rem; }
+  .table-wrap table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: .92rem;
+  }
+  .table-wrap th, .table-wrap td {
+    border: 1px solid var(--line);
+    padding: .65rem .75rem;
+    text-align: start;
+    color: var(--muted);
+  }
+  .table-wrap th { color: var(--ink); background: color-mix(in srgb, var(--surface) 70%, var(--bg)); }
 </style>

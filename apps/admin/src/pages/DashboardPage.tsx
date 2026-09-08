@@ -13,7 +13,7 @@ export function DashboardPage() {
       try {
         setStats(await api<AdminStats>('/admin/stats'));
       } catch (e) {
-        setToast(e instanceof Error ? e.message : 'خطا');
+        setToast(e instanceof Error ? e.message : 'خطا', 'error');
       }
     })();
   }, [setToast]);
@@ -28,7 +28,6 @@ export function DashboardPage() {
         { label: 'تسویه‌ها', value: stats.payments, to: '/periods' },
         { label: 'نشست‌ها', value: stats.sessions, to: '/users' },
         { label: 'زرین‌پال معلق', value: stats.zarinpalPending, to: '/billing' },
-        { label: 'لینک تلگرام', value: stats.telegramLinks, to: '/telegram' },
       ]
     : [];
 

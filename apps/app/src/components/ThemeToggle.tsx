@@ -1,9 +1,11 @@
+import { Monitor, Moon, Sun } from 'lucide-react';
+import { Icon } from './Icon';
 import { useThemePref, type ThemePref } from '../lib/themePref';
 
-const OPTIONS: { id: ThemePref; label: string }[] = [
-  { id: 'light', label: 'روشن' },
-  { id: 'dark', label: 'تیره' },
-  { id: 'system', label: 'سیستم' },
+const OPTIONS: { id: ThemePref; label: string; icon: typeof Sun }[] = [
+  { id: 'light', label: 'روشن', icon: Sun },
+  { id: 'dark', label: 'تیره', icon: Moon },
+  { id: 'system', label: 'سیستم', icon: Monitor },
 ];
 
 export function ThemeToggle() {
@@ -16,12 +18,13 @@ export function ThemeToggle() {
           <button
             key={opt.id}
             type="button"
-            className={`chip flex-1 !min-h-10 ${
-              pref === opt.id ? 'bg-brand-700 text-white' : 'text-ink-800'
+            className={`chip flex-1 !min-h-11 gap-1.5 ${
+              pref === opt.id ? 'bg-brand-700 text-on-brand' : 'text-ink-800'
             }`}
             aria-pressed={pref === opt.id}
             onClick={() => setPref(opt.id)}
           >
+            <Icon icon={opt.icon} size={16} />
             {opt.label}
           </button>
         ))}

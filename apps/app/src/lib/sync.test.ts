@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { ApiError } from './api';
-import { coalesceSyncOps, parseSyncConflict } from './sync';
+import { shouldImmediateSync } from './connectionMode';
+import { coalesceSyncOps } from './sync';
 
 describe('coalesceSyncOps', () => {
   it('merges period upserts into the last payload', () => {
@@ -24,50 +24,9 @@ describe('coalesceSyncOps', () => {
   });
 });
 
-describe('parseSyncConflict', () => {
-  it('reads 409 snapshot and serverVersion', () => {
-    const snapshot = {
-      period: {
-        id: 'p1',
-        title: 'سفر',
-        currency: 'IRT',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        updatedAt: '2026-01-02T00:00:00.000Z',
-        version: 4,
-      },
-      members: [{ id: 'm1', displayName: 'علی' }],
-      expenses: [],
-    };
-    const error = new ApiError('نسخهٔ سرور با این دستگاه یکی نیست', 409, {
-      error: 'نسخهٔ سرور با این دستگاه یکی نیست',
-      serverVersion: 4,
-      snapshot,
-    });
-    expect(parseSyncConflict(error, 'p1')).toEqual({
-      periodId: 'p1',
-      message: 'نسخهٔ سرور با این دستگاه یکی نیست',
-      serverVersion: 4,
-      snapshot,
-    });
-  });
-
-  it('falls back to snapshot.period.version when serverVersion is missing', () => {
-    const snapshot = {
-      period: {
-        id: 'p1',
-        title: 'سفر',
-        currency: 'IRT',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        updatedAt: '2026-01-02T00:00:00.000Z',
-        version: 7,
-      },
-      members: [],
-    };
-    const error = new ApiError('conflict', 409, { snapshot });
-    expect(parseSyncConflict(error, 'p1')?.serverVersion).toBe(7);
-  });
-
-  it('returns null for non-409 errors', () => {
-    expect(parseSyncConflict(new ApiError('server', 500, {}), 'p1')).toBeNull();
+describe('auto sync gate', () => {
+  it('does not flush immediately when autoSync is off', () => {
+    expect(shouldImmediateSync({ token: 't', autoSync: false }, true)).toBe(false);
+    expect(shouldImmediateSync({ token: 't' }, true)).toBe(true);
   });
 });

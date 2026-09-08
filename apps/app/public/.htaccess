@@ -2,7 +2,10 @@ RewriteEngine On
 RewriteBase /
 
 <IfModule mod_headers.c>
-  <FilesMatch "^(sw\.js|registerSW\.js)$">
+  <FilesMatch "\.(html)$">
+    Header set X-Robots-Tag "noindex, nofollow"
+  </FilesMatch>
+  <FilesMatch "^(sw\.js|registerSW\.js|index\.html|manifest\.webmanifest)$">
     Header set Cache-Control "no-cache, no-store, must-revalidate"
     Header set Pragma "no-cache"
   </FilesMatch>

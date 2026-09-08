@@ -21,7 +21,7 @@ export type SettlementStatus = 'sent' | 'pending_confirm' | 'settled';
 
 export type IndexAsset = 'none' | 'gold' | 'usd';
 
-export type MemberRole = 'owner' | 'member' | 'viewer';
+export type MemberRole = 'owner' | 'manager' | 'member' | 'viewer';
 
 export type RoundTo = 0 | 1000 | 10000;
 

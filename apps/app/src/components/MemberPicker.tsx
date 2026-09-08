@@ -1,7 +1,15 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { nanoid } from 'nanoid';
 import { useMemo, useState } from 'react';
+import { parseUsername } from '@dongham/ledger';
+import { api, ApiError } from '../lib/api';
 import { db } from '../lib/db';
+import {
+  memberPickKey,
+  memberPickLabel,
+  uniqueMemberPicks,
+  type MemberPick,
+} from '../lib/memberPick';
 import { useUiStore } from '../store/ui';
 
 function uniqueNames(names: string[]): string[] {
@@ -20,55 +28,115 @@ export function MemberPicker({
   selected,
   onChange,
   excludeNames = [],
+  excludeUserIds = [],
   draftInputId,
 }: {
-  selected: string[];
-  onChange: (names: string[]) => void;
+  selected: MemberPick[];
+  onChange: (picks: MemberPick[]) => void;
   excludeNames?: string[];
+  excludeUserIds?: string[];
   draftInputId?: string;
 }) {
   const setToast = useUiStore((s) => s.setToast);
   const friends = useLiveQuery(() => db.friends.toArray(), []) || [];
   const members = useLiveQuery(() => db.members.toArray(), []) || [];
-  const [extra, setExtra] = useState<string[]>([]);
+  const [extra, setExtra] = useState<MemberPick[]>([]);
   const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const excluded = useMemo(() => new Set(excludeNames.map((n) => n.trim()).filter(Boolean)), [excludeNames]);
-
-  const candidates = useMemo(
-    () =>
-      uniqueNames([
-        ...friends.map((f) => f.displayName),
-        ...members.filter((m) => !m.isPot).map((m) => m.displayName),
-        ...extra,
-      ]).filter((n) => !excluded.has(n)),
-    [friends, members, extra, excluded],
+  const excludedNames = useMemo(
+    () => new Set(excludeNames.map((n) => n.trim()).filter(Boolean)),
+    [excludeNames],
   );
+  const excludedUsers = useMemo(() => new Set(excludeUserIds.filter(Boolean)), [excludeUserIds]);
+  const selectedKeys = useMemo(() => new Set(selected.map(memberPickKey)), [selected]);
 
-  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const candidates = useMemo(() => {
+    const fromBook: MemberPick[] = uniqueNames([
+      ...friends.map((f) => f.displayName),
+      ...members.filter((m) => !m.isPot).map((m) => m.displayName),
+    ])
+      .filter((n) => !excludedNames.has(n))
+      .map((displayName) => ({ kind: 'name' as const, displayName }));
+    return uniqueMemberPicks([...fromBook, ...extra, ...selected]).filter((pick) => {
+      if (pick.kind === 'name') return !excludedNames.has(pick.displayName);
+      return !excludedUsers.has(pick.userId);
+    });
+  }, [friends, members, extra, selected, excludedNames, excludedUsers]);
 
-  const toggle = (name: string, checked: boolean) => {
-    if (checked) onChange(uniqueNames([...selected, name]));
-    else onChange(selected.filter((n) => n !== name));
+  const toggle = (pick: MemberPick, checked: boolean) => {
+    const key = memberPickKey(pick);
+    if (checked) onChange(uniqueMemberPicks([...selected, pick]));
+    else onChange(selected.filter((row) => memberPickKey(row) !== key));
+  };
+
+  const addUsername = async (raw: string): Promise<'ok' | 'missing' | 'error'> => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setToast('برای افزودن با یوزرنیم باید آنلاین باشید', 'error');
+      return 'error';
+    }
+    const parsed = parseUsername(raw);
+    if (!parsed.ok) {
+      setToast('یوزرنیم نامعتبر است', 'error');
+      return 'error';
+    }
+    setBusy(true);
+    try {
+      const found = await api<{ userId: string; displayName: string; username: string }>(
+        `/users/lookup?username=${encodeURIComponent(parsed.username)}`,
+      );
+      if (excludedUsers.has(found.userId) || selected.some((p) => p.kind === 'user' && p.userId === found.userId)) {
+        setToast('این فرد از قبل در دوره است', 'error');
+        setDraft('');
+        return 'error';
+      }
+      const pick: MemberPick = {
+        kind: 'user',
+        userId: found.userId,
+        displayName: found.displayName,
+        username: found.username || parsed.username,
+      };
+      setExtra((prev) => uniqueMemberPicks([...prev, pick]));
+      onChange(uniqueMemberPicks([...selected, pick]));
+      setDraft('');
+      return 'ok';
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return 'missing';
+      setToast(e instanceof Error ? e.message : 'جستجو ممکن نشد', 'error');
+      return 'error';
+    } finally {
+      setBusy(false);
+    }
   };
 
   const addDraft = async () => {
     const name = draft.trim();
-    if (!name) return;
+    if (!name || busy) return;
     if (/[,،]/.test(name)) {
-      setToast('نام را بدون ویرگول وارد کنید و با تیک انتخاب کنید');
+      setToast('نام را بدون ویرگول وارد کنید و با تیک انتخاب کنید', 'error');
       return;
     }
-    if (excluded.has(name)) {
-      setToast('این فرد از قبل در دوره است');
+    const forcedUsername = name.startsWith('@');
+    const looksUsername = forcedUsername || parseUsername(name).ok;
+    if (looksUsername) {
+      const result = await addUsername(name);
+      if (result === 'ok' || result === 'error') return;
+      if (forcedUsername) {
+        setToast('کاربری با این یوزرنیم پیدا نشد', 'error');
+        return;
+      }
+    }
+    if (excludedNames.has(name)) {
+      setToast('این فرد از قبل در دوره است', 'error');
       setDraft('');
       return;
     }
     if (!friends.some((f) => f.displayName === name)) {
       await db.friends.put({ id: nanoid(), displayName: name });
     }
-    setExtra((prev) => uniqueNames([...prev, name]));
-    onChange(uniqueNames([...selected, name]));
+    const pick: MemberPick = { kind: 'name', displayName: name };
+    setExtra((prev) => uniqueMemberPicks([...prev, pick]));
+    onChange(uniqueMemberPicks([...selected, pick]));
     setDraft('');
   };
 
@@ -76,22 +144,23 @@ export function MemberPicker({
     <div className="space-y-2">
       <p className="label">اعضا</p>
       {candidates.length === 0 ? (
-        <p className="text-xs text-ink-700/70">هنوز کسی در لیست نیست. یک نام اضافه کنید یا از صفحه دوستان وارد کنید.</p>
+        <p className="text-xs text-ink-700/70">هنوز کسی در لیست نیست. یک نام یا @یوزرنیم اضافه کنید.</p>
       ) : (
         <ul className="max-h-48 space-y-1 overflow-y-auto rounded-2xl bg-brand-50 p-2">
-          {candidates.map((name) => {
-            const boxId = `${draftInputId || 'member'}-${name}`;
+          {candidates.map((pick) => {
+            const key = memberPickKey(pick);
+            const boxId = `${draftInputId || 'member'}-${key}`;
             return (
-              <li key={name}>
+              <li key={key}>
                 <label htmlFor={boxId} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-xl px-2 py-2 text-sm">
                   <input
                     id={boxId}
                     type="checkbox"
                     className="h-5 w-5 shrink-0"
-                    checked={selectedSet.has(name)}
-                    onChange={(e) => toggle(name, e.target.checked)}
+                    checked={selectedKeys.has(key)}
+                    onChange={(e) => toggle(pick, e.target.checked)}
                   />
-                  <span className="truncate">{name}</span>
+                  <span className="truncate">{memberPickLabel(pick)}</span>
                 </label>
               </li>
             );
@@ -102,8 +171,9 @@ export function MemberPicker({
         <input
           id={draftInputId}
           className="input min-w-0 flex-1"
-          placeholder="نام جدید"
+          placeholder="نام یا @یوزرنیم"
           value={draft}
+          disabled={busy}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
@@ -112,8 +182,8 @@ export function MemberPicker({
             }
           }}
         />
-        <button type="button" className="btn-ghost shrink-0 sm:!px-3" onClick={() => void addDraft()}>
-          افزودن به لیست
+        <button type="button" className="btn-ghost shrink-0 sm:!px-3" disabled={busy} onClick={() => void addDraft()}>
+          {busy ? '...' : 'افزودن به لیست'}
         </button>
       </div>
     </div>

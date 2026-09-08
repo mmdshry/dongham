@@ -33,7 +33,6 @@ export function buildSettlementText(input: {
 }
 
 export function messengerUrls(phone: string, text: string): {
-  telegram: string;
   bale: string;
   whatsapp: string;
 } {
@@ -41,7 +40,6 @@ export function messengerUrls(phone: string, text: string): {
   const e164 = toWhatsAppE164(phone) || '';
   const local09 = toIranLocal09(phone) || '';
   return {
-    telegram: e164 ? `https://t.me/+${e164}` : `https://t.me/share/url?text=${encoded}`,
     bale: local09 ? `https://ble.ir/${local09}` : `https://ble.ir/share?text=${encoded}`,
     whatsapp: e164 ? `https://wa.me/${e164}?text=${encoded}` : `https://wa.me/?text=${encoded}`,
   };

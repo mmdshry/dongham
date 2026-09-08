@@ -1,0 +1,14 @@
+---
+import { APP_URL } from '../lib/site';
+
+interface Props {
+  ghostHref?: string;
+  ghostLabel?: string;
+}
+
+const { ghostHref = '/features/', ghostLabel = 'ویژگی‌ها' } = Astro.props;
+---
+<p class="cta-row">
+  <a class="primary" href={APP_URL}>شروع در وب‌اپ</a>
+  <a class="ghost" href={ghostHref}>{ghostLabel}</a>
+</p>

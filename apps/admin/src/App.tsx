@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout';
+import { PageLoading, ToastHost } from './components/ui';
 import { SessionProvider, useSession } from './lib/session';
 import { AuditPage } from './pages/AuditPage';
 import { BillingPage } from './pages/BillingPage';
@@ -8,14 +9,17 @@ import { LoginPage } from './pages/LoginPage';
 import { PeriodDetailPage } from './pages/PeriodDetailPage';
 import { PeriodsPage } from './pages/PeriodsPage';
 import { SettingsPage } from './pages/SettingsPage';
-import { TelegramPage } from './pages/TelegramPage';
 import { UserDetailPage } from './pages/UserDetailPage';
 import { UsersPage } from './pages/UsersPage';
 
 function Gate() {
   const { ready, user } = useSession();
   if (!ready) {
-    return <p className="p-8 text-center text-sm text-ink-700/70">در حال بارگذاری…</p>;
+    return (
+      <div className="p-8">
+        <PageLoading />
+      </div>
+    );
   }
   if (!user) return <LoginPage />;
   return (
@@ -27,7 +31,6 @@ function Gate() {
         <Route path="/periods" element={<PeriodsPage />} />
         <Route path="/periods/:id" element={<PeriodDetailPage />} />
         <Route path="/billing" element={<BillingPage />} />
-        <Route path="/telegram" element={<TelegramPage />} />
         <Route path="/audit" element={<AuditPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
@@ -41,6 +44,7 @@ export default function App() {
     <BrowserRouter>
       <SessionProvider>
         <Gate />
+        <ToastHost />
       </SessionProvider>
     </BrowserRouter>
   );

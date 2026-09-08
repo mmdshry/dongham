@@ -3,6 +3,7 @@ import {
   applyTax,
   computeBalances,
   computeShares,
+  evenPercentShares,
   expenseTotal,
   roundToStep,
   suggestSettlements,
@@ -164,6 +165,33 @@ describe('split modes', () => {
     ]);
     expect(bad.ok).toBe(false);
   });
+
+  it('validateShares rejects splits with nobody active', () => {
+    const excluded = validateShares('equal', 1000, [
+      { memberId: 'a', value: 1, excluded: true },
+      { memberId: 'b', value: 1, excluded: true },
+    ]);
+    expect(excluded.ok).toBe(false);
+    if (!excluded.ok) expect(excluded.error).toMatch(/NO_ACTIVE_SHARES/);
+    const zeroWeights = validateShares('weight', 1000, [
+      { memberId: 'a', value: 0 },
+      { memberId: 'b', value: 0 },
+    ]);
+    expect(zeroWeights.ok).toBe(false);
+    expect(validateShares('equal', 1000, []).ok).toBe(false);
+    expect(validateShares('equal', 1000, [{ memberId: 'a', value: 1 }]).ok).toBe(true);
+  });
+
+  it('evenPercentShares always sums to 100', () => {
+    for (let n = 1; n <= 12; n += 1) {
+      const parts = evenPercentShares(n);
+      expect(parts).toHaveLength(n);
+      expect(parts.reduce((s, x) => s + x, 0)).toBe(100);
+      expect(validateShares('percent', 1000, parts.map((value, i) => ({ memberId: String(i), value }))).ok).toBe(true);
+    }
+    expect(evenPercentShares(3)).toEqual([33, 33, 34]);
+    expect(evenPercentShares(0)).toEqual([]);
+  });
 });
 
 describe('balances and settlement', () => {
@@ -270,6 +298,23 @@ describe('iran banks', () => {
     expect(bankFromDrapi('eghtesad-novin')?.code).toBe('055');
     expect(formatCardGrouped('6037991111111111')).toBe('6037 9911 1111 1111');
   });
+
+  it('uses official CBI IBAN codes (bank code = IBAN positions 4–6)', async () => {
+    const { detectBankFromSheba, detectBankFromCard, bankByCode, listIranBanks } = await import('./iran-banks.js');
+    expect(detectBankFromSheba('IR000700000000000000000000')?.name).toBe('رسالت');
+    expect(detectBankFromSheba('IR000780000000000000000000')?.name).toBe('خاورمیانه');
+    expect(detectBankFromSheba('IR000630000000000000000000')?.name).toBe('انصار');
+    expect(detectBankFromSheba('IR000200000000000000000000')?.name).toBe('توسعه صادرات');
+    expect(detectBankFromSheba('IR000220000000000000000000')?.name).toBe('توسعه تعاون');
+    expect(detectBankFromSheba('IR000110000000000000000000')?.name).toBe('صنعت و معدن');
+    // BIN table agrees with the same codes.
+    expect(detectBankFromCard('5041721111111111')?.code).toBe('070');
+    expect(detectBankFromCard('5859471111111111')?.code).toBe('078');
+    expect(detectBankFromCard('6273811111111111')?.code).toBe('063');
+    // Every entry's key is its own code, so bankByCode(x).code === x and the list has no duplicates.
+    for (const b of listIranBanks()) expect(bankByCode(b.code)?.code).toBe(b.code);
+    expect(new Set(listIranBanks().map((b) => b.code)).size).toBe(listIranBanks().length);
+  });
 });
 
 describe('jalali recurring', () => {
@@ -304,15 +349,9 @@ describe('jalali recurring', () => {
   });
 });
 
-describe('telegram parse and gold index', () => {
-  it('parses persian expense lines', async () => {
-    const { parseExpenseText, indexedAmountNow } = await import('./telegram-parse.js');
-    expect(parseExpenseText('علی ناهار ۵۰۰۰۰۰')).toEqual({
-      payerName: 'علی',
-      title: 'ناهار',
-      amount: 500000,
-    });
-    expect(parseExpenseText('ناهار 250000')?.title).toBe('ناهار');
+describe('gold index', () => {
+  it('scales principal by rate change', async () => {
+    const { indexedAmountNow } = await import('./normalize.js');
     expect(indexedAmountNow(1_000_000, 5_000_000, 6_000_000)).toBe(1_200_000);
   });
 });

@@ -1,4 +1,5 @@
 import type { PeriodTemplate, RecurringCadence, SplitMode } from '@dongham/ledger';
+import { formatMoney } from './format';
 
 export const TEMPLATES: {
   id: PeriodTemplate;
@@ -82,12 +83,21 @@ export const ROUND_OPTIONS = [
   { id: 10000 as const, label: 'ده‌هزار تومان' },
 ];
 
+/** Same steps, but named in the period's own currency (a USD period is not rounded to «هزار تومان»). */
+export function roundOptionsFor(currency: string, persian = true): { id: 0 | 1000 | 10000; label: string }[] {
+  if (currency === 'IRT') return ROUND_OPTIONS;
+  return ROUND_OPTIONS.map((r) => ({
+    id: r.id,
+    label: r.id === 0 ? r.label : `${formatMoney(r.id, currency, persian)}`,
+  }));
+}
+
 export const CADENCE_OPTIONS: { id: RecurringCadence; label: string }[] = [
   { id: 'jalaliMonthly', label: 'هر ماه شمسی' },
   { id: 'jalaliBimonthly', label: 'هر دو ماه شمسی' },
   { id: 'days', label: 'هر N روز' },
 ];
-
 export function defaultSplitMode(): SplitMode {
   return 'equal';
 }
+

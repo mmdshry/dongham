@@ -2,6 +2,7 @@ import { nanoid } from 'nanoid';
 import type { PeriodKind, PeriodTemplate, PeriodVisibility, RoundTo } from '@dongham/ledger';
 import { isInviteExpired, newPeriodId } from '@dongham/ledger';
 import { ApiError, api, ensureProfile } from './api';
+import { shouldImmediateSync } from './connectionMode';
 import { useUiStore } from '../store/ui';
 import {
   db,
@@ -18,6 +19,9 @@ import {
   type LocalRecurring,
 } from './db';
 import { templateById } from './templates';
+import { needsDisplayName } from './memberLabel';
+import type { MemberPick } from './memberPick';
+import { periodMediaFields, periodMediaSyncPayload, presetFromTemplate } from './periodCover';
 
 type OutboxEntity = 'expense' | 'payment' | 'member' | 'chat' | 'period' | 'activity' | 'recurring';
 
@@ -71,6 +75,7 @@ async function postPeriodToCloud(period: LocalPeriod) {
       lunchTurnMemberId: period.lunchTurnMemberId,
       encrypted: period.encrypted,
       visibility: period.visibility,
+      ...periodMediaSyncPayload(period),
       members,
     }),
   });
@@ -141,6 +146,19 @@ async function flushOneOp(periodId: string, op: SyncOp): Promise<number | undefi
     );
   }
   if (op.entity === 'member') {
+    const memberId = typeof payload.id === 'string' ? payload.id : '';
+    if (memberId) {
+      try {
+        return versionOf(
+          await api<WriteResult>(`/periods/${periodId}/members/${memberId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ ...payload, periodId }),
+          }),
+        );
+      } catch (e) {
+        if (!(e instanceof ApiError) || e.status !== 404) throw e;
+      }
+    }
     return versionOf(
       await api<WriteResult>(`/periods/${periodId}/members`, {
         method: 'POST',
@@ -207,19 +225,27 @@ export async function queueOp(
   payload: unknown,
 ) {
   const profile = await ensureProfile();
-  if (profile.token && isOnline()) {
+  if (shouldImmediateSync(profile, isOnline())) {
     try {
       const version = await flushOneOp(periodId, { entity, action, payload });
       await markPeriodSynced(periodId, version);
       return;
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) {
-        const conflict = parseSyncConflict(e, periodId);
-        if (conflict) useUiStore.getState().setSyncConflict(conflict);
+      // The server rejected this write for good (auth / validation / duplicate): queuing it would
+      // only make the outbox fail forever. Surface the message and keep the local row unsynced.
+      if (e instanceof ApiError && isTerminalWriteError(e)) {
+        useUiStore.getState().setToast(e.message || 'ذخیره روی سرور انجام نشد', 'error');
+        await db.periods.update(periodId, { synced: false });
+        return;
       }
     }
   }
   await enqueueOp(periodId, entity, action, payload);
+}
+
+/** 4xx answers that will not change on retry (network/5xx are retried via the outbox). */
+function isTerminalWriteError(e: ApiError): boolean {
+  return e.status === 400 || e.status === 403 || e.status === 409 || e.status === 410;
 }
 
 export async function logActivity(
@@ -265,35 +291,6 @@ export type CloudPeriodSnapshot = {
 
 export type PeriodSnapshot = CloudPeriodSnapshot;
 
-export type SyncConflictChoice = 'keep-local' | 'take-server';
-
-export function parseSyncConflict(error: ApiError, periodId: string) {
-  if (error.status !== 409) return null;
-  const data =
-    error.data && typeof error.data === 'object'
-      ? (error.data as {
-          error?: string;
-          serverVersion?: number;
-          snapshot?: PeriodSnapshot;
-        })
-      : {};
-  const snapshot = data.snapshot;
-  const serverVersion =
-    typeof data.serverVersion === 'number'
-      ? data.serverVersion
-      : typeof snapshot?.period?.version === 'number'
-        ? snapshot.period.version
-        : typeof snapshot?.version === 'number'
-          ? snapshot.version
-          : 0;
-  return {
-    periodId,
-    message: error.message || data.error || 'نسخهٔ سرور با این دستگاه یکی نیست',
-    serverVersion,
-    snapshot,
-  };
-}
-
 async function dropMissingIds(
   table: {
     where: (key: string) => { equals: (value: string) => { toArray: () => Promise<{ id: string }[]> } };
@@ -307,75 +304,15 @@ async function dropMissingIds(
   if (drop.length) await table.bulkDelete(drop);
 }
 
-async function replayOutboxToDexie(periodId: string): Promise<void> {
-  const pending = await db.outbox.where('periodId').equals(periodId).sortBy('createdAt');
-  for (const item of pending) {
-    const payload = item.payload as { id?: string } & Record<string, unknown>;
-    if (item.entity === 'period') {
-      await db.periods.update(periodId, payload);
-      continue;
-    }
-    if (!payload?.id) continue;
-    if (item.entity === 'expense') {
-      const e = payload as unknown as LocalExpense;
-      await db.expenses.put({
-        ...e,
-        periodId,
-        service: e.service || noneCharge(),
-        tip: e.tip || noneCharge(),
-        tax: e.tax || noneCharge(),
-        payers: e.payers || [],
-        occurredAt: e.occurredAt || e.createdAt,
-      });
-    } else if (item.entity === 'payment') {
-      await db.payments.put({ ...(payload as unknown as LocalPayment), periodId });
-    } else if (item.entity === 'member') {
-      const prev = await db.members.get(payload.id);
-      const m = payload as unknown as LocalMember;
-      await db.members.put({
-        id: m.id,
-        periodId,
-        displayName: m.displayName,
-        guestKey: m.guestKey ?? prev?.guestKey,
-        userId: m.userId ?? prev?.userId,
-        weightDefault: m.weightDefault ?? prev?.weightDefault ?? 1,
-        role: m.role || prev?.role || 'member',
-        phone: m.phone ?? prev?.phone,
-        email: m.email ?? prev?.email,
-        cardNumber: m.cardNumber ?? prev?.cardNumber,
-        sheba: m.sheba ?? prev?.sheba,
-        cardHolderName: m.cardHolderName ?? prev?.cardHolderName,
-        bankName: m.bankName ?? prev?.bankName,
-        excludeFromNew: m.excludeFromNew ?? prev?.excludeFromNew,
-        isPot: m.isPot ?? prev?.isPot,
-        unitLabel: m.unitLabel ?? prev?.unitLabel,
-      });
-    } else if (item.entity === 'chat') {
-      const msg = payload as unknown as LocalChat;
-      await db.chat.put({
-        id: msg.id,
-        periodId,
-        senderMemberId: msg.senderMemberId,
-        body: msg.body,
-        expenseId: msg.expenseId,
-        createdAt: msg.createdAt,
-        synced: false,
-      });
-    } else if (item.entity === 'activity') {
-      await db.activity.put({ ...(payload as unknown as LocalActivity), periodId });
-    } else if (item.entity === 'recurring') {
-      await db.recurring.put({ ...(payload as unknown as LocalRecurring), periodId });
-    }
-  }
-}
-
 export async function applyPeriodSnapshot(snap: PeriodSnapshot): Promise<void> {
   const currency = snap.period.currency || 'IRT';
+  const prevPeriod = await db.periods.get(snap.period.id);
   await db.periods.put({
     id: snap.period.id,
     title: snap.period.title,
     currency,
-    baseCurrency: currency,
+    baseCurrency:
+      prevPeriod && prevPeriod.currency === currency ? prevPeriod.baseCurrency || currency : currency,
     createdAt: snap.period.createdAt,
     updatedAt: snap.period.updatedAt,
     version: snap.period.version,
@@ -387,9 +324,11 @@ export async function applyPeriodSnapshot(snap: PeriodSnapshot): Promise<void> {
     buildingCharge: snap.period.buildingCharge,
     lunchTurnMemberId: snap.period.lunchTurnMemberId,
     encrypted: snap.period.encrypted,
-    ownerGuestKey: snap.period.ownerGuestKey,
+    // The server never stores the guest owner key; keep the local one so the owner UI survives logout.
+    ownerGuestKey: snap.period.ownerGuestKey ?? prevPeriod?.ownerGuestKey,
     ownerId: snap.period.ownerId,
     visibility: snap.period.visibility || 'private',
+    ...periodMediaFields(snap.period),
   });
   const pid = snap.period.id;
   for (const m of snap.members || []) {
@@ -473,30 +412,57 @@ export async function applyPeriodSnapshot(snap: PeriodSnapshot): Promise<void> {
   }
 }
 
+const PENDING_READS_META = 'pendingNotificationReads';
+
+async function pendingNotificationReads(): Promise<Set<string>> {
+  const row = await db.meta.get(PENDING_READS_META);
+  try {
+    const parsed = row?.value ? (JSON.parse(row.value) as unknown) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : []);
+  } catch {
+    return new Set();
+  }
+}
+
+async function savePendingNotificationReads(ids: Set<string>): Promise<void> {
+  await db.meta.put({ key: PENDING_READS_META, value: JSON.stringify([...ids]) });
+}
+
+/** Send queued «read» marks; the next pull must not flip them back to unread. */
+export async function flushNotificationReads(): Promise<void> {
+  const pending = await pendingNotificationReads();
+  if (!pending.size) return;
+  const profile = await ensureProfile();
+  if (!profile.token || !isOnline()) return;
+  for (const id of [...pending]) {
+    try {
+      await api(`/notifications/${id}/read`, { method: 'POST' });
+      pending.delete(id);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) pending.delete(id);
+      else break;
+    }
+  }
+  await savePendingNotificationReads(pending);
+}
+
 export async function markNotificationRead(id: string): Promise<void> {
   const row = await db.notifications.get(id);
   if (!row || row.read) return;
   await db.notifications.update(id, { read: true });
   const profile = await ensureProfile();
-  if (!profile.token || (typeof navigator !== 'undefined' && !navigator.onLine)) return;
-  try {
-    await api(`/notifications/${id}/read`, { method: 'POST' });
-  } catch {
-    /* offline ok */
-  }
-}
-
-function asPeriodSnapshot(value: unknown): PeriodSnapshot | undefined {
-  if (!value || typeof value !== 'object') return undefined;
-  const snap = value as PeriodSnapshot;
-  if (!snap.period?.id) return undefined;
-  return snap;
+  if (!profile.token) return;
+  const pending = await pendingNotificationReads();
+  pending.add(id);
+  await savePendingNotificationReads(pending);
+  await flushNotificationReads();
 }
 
 export async function createPeriodLocal(input: {
   title: string;
   currency?: string;
   memberNames?: string[];
+  memberPicks?: MemberPick[];
   kind?: PeriodKind;
   template?: PeriodTemplate;
   roundTo?: RoundTo;
@@ -504,6 +470,8 @@ export async function createPeriodLocal(input: {
   buildingCharge?: number;
   lunchTurnMemberId?: string;
   visibility?: PeriodVisibility;
+  coverPreset?: string;
+  coverDataUrl?: string;
 }): Promise<string> {
   const profile = await ensureProfile();
   const taken = (await db.periods.toArray()).map((p) => p.id);
@@ -511,6 +479,7 @@ export async function createPeriodLocal(input: {
   const now = new Date().toISOString();
   const kind = input.kind || 'split';
   const template = input.template || 'custom';
+  const mediaPreset = input.coverPreset || presetFromTemplate(template);
   const period: LocalPeriod = {
     id,
     title: input.title,
@@ -528,13 +497,15 @@ export async function createPeriodLocal(input: {
     buildingCharge: input.buildingCharge,
     lunchTurnMemberId: input.lunchTurnMemberId,
     visibility: input.visibility || 'private',
+    coverPreset: mediaPreset,
+    coverDataUrl: input.coverDataUrl,
   };
   await db.periods.put(period);
   const selfMemberId = nanoid();
   await db.members.put({
     id: selfMemberId,
     periodId: id,
-    displayName: profile.displayName,
+    displayName: needsDisplayName(profile.displayName) ? 'کاربر' : profile.displayName,
     guestKey: profile.guestKey,
     userId: profile.userId,
     phone: profile.phone,
@@ -565,14 +536,31 @@ export async function createPeriodLocal(input: {
   }
 
   const friends = await db.friends.toArray();
-  for (const name of input.memberNames || []) {
-    if (!name.trim() || name.trim() === profile.displayName) continue;
-    const friend = friends.find((f) => f.displayName === name.trim());
+  const picks: MemberPick[] =
+    input.memberPicks ||
+    (input.memberNames || []).map((displayName) => ({ kind: 'name' as const, displayName }));
+  for (const pick of picks) {
+    if (pick.kind === 'user') {
+      if (pick.userId && pick.userId === profile.userId) continue;
+      const mid = nanoid();
+      await db.members.put({
+        id: mid,
+        periodId: id,
+        displayName: pick.displayName,
+        userId: pick.userId,
+        weightDefault: 1,
+        role: 'member',
+      });
+      continue;
+    }
+    const name = pick.displayName.trim();
+    if (!name || name === profile.displayName) continue;
+    const friend = friends.find((f) => f.displayName === name);
     const mid = nanoid();
     await db.members.put({
       id: mid,
       periodId: id,
-      displayName: name.trim(),
+      displayName: name,
       phone: friend?.phone,
       email: friend?.email,
       weightDefault: 1,
@@ -614,12 +602,35 @@ export async function createPeriodLocal(input: {
     buildingCharge: period.buildingCharge,
     lunchTurnMemberId: period.lunchTurnMemberId,
     visibility: period.visibility,
+    ...periodMediaSyncPayload(period),
   });
+  const usernameByUserId = new Map(
+    picks.filter((p): p is Extract<MemberPick, { kind: 'user' }> => p.kind === 'user').map((p) => [p.userId, p.username]),
+  );
   for (const member of await db.members.where('periodId').equals(id).toArray()) {
-    await queueOp(id, 'member', 'upsert', member);
+    const username = member.userId ? usernameByUserId.get(member.userId) : undefined;
+    await queueOp(id, 'member', 'upsert', username ? { ...member, username } : member);
   }
   await logActivity(id, profile.displayName, 'period.create', `دوره «${period.title}» ساخته شد`);
   return id;
+}
+
+export async function savePeriodMedia(
+  periodId: string,
+  media: {
+    coverPreset?: string;
+    coverDataUrl?: string;
+  },
+): Promise<void> {
+  const period = await db.periods.get(periodId);
+  if (!period) return;
+  const next: LocalPeriod = { ...period, updatedAt: new Date().toISOString() };
+  if (media.coverPreset) next.coverPreset = media.coverPreset;
+  else delete next.coverPreset;
+  if (media.coverDataUrl) next.coverDataUrl = media.coverDataUrl;
+  else delete next.coverDataUrl;
+  await db.periods.put(next);
+  await queueOp(periodId, 'period', 'upsert', periodMediaSyncPayload(next));
 }
 
 export async function upsertExpense(expense: LocalExpense) {
@@ -683,20 +694,21 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
       /* optional */
     }
     const { periods } = await api<{ periods: { id: string; version?: number; updatedAt?: string }[] }>('/periods');
-    const localPeriods = await db.periods.toArray();
-    const serverAhead = localPeriods.some((local) => {
-      const remote = periods.find((p) => p.id === local.id);
-      return remote && typeof remote.version === 'number' && remote.version > local.version;
-    });
-    useUiStore.getState().setServerAhead(serverAhead);
+    let serverAhead = false;
     for (const p of periods) {
-      const pending = await db.outbox.where('periodId').equals(p.id).count();
-      if (pending > 0) continue;
       const local = await db.periods.get(p.id);
-      if (local && typeof p.version === 'number' && local.version >= p.version) continue;
+      const upToDate = Boolean(local && typeof p.version === 'number' && local.version >= p.version);
+      // Periods with queued local writes are pulled only after those flush (last write wins).
+      const pending = await db.outbox.where('periodId').equals(p.id).count();
+      if (pending > 0) {
+        if (local && !upToDate) serverAhead = true;
+        continue;
+      }
+      if (upToDate) continue;
       const snap = await api<PeriodSnapshot>(`/periods/${p.id}/snapshot`);
       await applyPeriodSnapshot(snap);
     }
+    useUiStore.getState().setServerAhead(serverAhead);
     try {
       const { friends } = await api<{ friends: (LocalFriend & { userId?: string })[] }>('/friends');
       for (const f of friends) {
@@ -712,8 +724,12 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
       /* optional */
     }
     try {
+      await flushNotificationReads();
+      const stillPending = await pendingNotificationReads();
       const { notifications } = await api<{ notifications: LocalNotification[] }>('/notifications');
-      for (const n of notifications) await db.notifications.put(n);
+      for (const n of notifications) {
+        await db.notifications.put({ ...n, read: n.read || stillPending.has(n.id) });
+      }
     } catch {
       /* optional */
     }
@@ -721,6 +737,20 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+/** Send one (possibly coalesced) op; on success drop its outbox rows, on failure count the try and rethrow. */
+async function flushRow(periodId: string, op: SyncOp, rows: { id?: number; tries: number }[]): Promise<void> {
+  try {
+    await flushOneOp(periodId, op);
+  } catch (e) {
+    for (const row of rows) {
+      if (row.id != null) await db.outbox.update(row.id, { tries: (row.tries || 0) + 1 });
+    }
+    throw e;
+  }
+  const ids = rows.map((row) => row.id).filter((id): id is number => id != null);
+  if (ids.length) await db.outbox.bulkDelete(ids);
 }
 
 export async function flushOutbox(periodId?: string): Promise<{ ok: boolean; error?: string }> {
@@ -742,11 +772,11 @@ export async function flushOutbox(periodId?: string): Promise<{ ok: boolean; err
   try {
     for (const [pid, rawPending] of byPeriod) {
       const period = await db.periods.get(pid);
-      if (!period) continue;
-
-      const pending = coalesceSyncOps(
-        rawPending.map((item) => ({ entity: item.entity, action: item.action, payload: item.payload })),
-      );
+      if (!period) {
+        // The period is gone locally; its queued ops can never be applied.
+        await db.outbox.where('periodId').equals(pid).delete();
+        continue;
+      }
 
       try {
         await api<PeriodSnapshot>(`/periods/${pid}/snapshot`);
@@ -758,62 +788,51 @@ export async function flushOutbox(periodId?: string): Promise<{ ok: boolean; err
         }
       }
 
-      for (const item of pending) {
-        await flushOneOp(pid, item);
+      // Every op is removed right after its own success, so a later failure never replays
+      // already-applied rows (chat/activity ids would otherwise collide on retry).
+      const periodRows = rawPending.filter((item) => item.entity === 'period' && item.action === 'upsert');
+      const otherRows = rawPending.filter((item) => !(item.entity === 'period' && item.action === 'upsert'));
+      if (periodRows.length) {
+        const [merged] = coalesceSyncOps(
+          periodRows.map((item) => ({ entity: item.entity, action: item.action, payload: item.payload })),
+        );
+        await flushRow(pid, merged, periodRows);
       }
-      for (const item of rawPending) {
-        if (item.id != null) await db.outbox.delete(item.id);
+      for (const item of otherRows) {
+        await flushRow(pid, { entity: item.entity, action: item.action, payload: item.payload }, [item]);
       }
 
       const latest = await api<PeriodSnapshot>(`/periods/${pid}/snapshot`);
       await applyPeriodSnapshot(latest);
       await db.periods.update(pid, { synced: true, version: latest.version ?? latest.period.version });
       await db.outbox.where('periodId').equals(pid).delete();
-      const resolved = useUiStore.getState().syncConflict;
-      if (resolved?.periodId === pid) useUiStore.getState().setSyncConflict(null);
     }
     return { ok: true };
   } catch (e) {
-    if (e instanceof ApiError && e.status === 409) {
-      const message = e.message || 'نسخهٔ سرور با این دستگاه یکی نیست';
-      return { ok: false, error: message };
-    }
+    // Server is last-write-wins; any error here is the server's own message (auth, validation, duplicate).
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
-export async function resolveSyncConflict(
-  choice: SyncConflictChoice,
-): Promise<{ ok: boolean; error?: string }> {
-  const conflict = useUiStore.getState().syncConflict;
-  if (!conflict) return { ok: true };
-  try {
-    const snap =
-      asPeriodSnapshot(conflict.snapshot) ||
-      (await api<PeriodSnapshot>(`/periods/${conflict.periodId}/snapshot`));
-    if (choice === 'take-server') {
-      await applyPeriodSnapshot(snap);
-      await db.outbox.where('periodId').equals(conflict.periodId).delete();
-      useUiStore.getState().setSyncConflict(null);
-      useUiStore.getState().setServerAhead(false);
-      return { ok: true };
-    }
-    await applyPeriodSnapshot(snap);
-    await replayOutboxToDexie(conflict.periodId);
-    await db.periods.update(conflict.periodId, {
-      version: conflict.serverVersion || snap.period.version,
-      synced: false,
-    });
-    useUiStore.getState().setSyncConflict(null);
-    return flushOutbox(conflict.periodId);
-  } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) };
-  }
+/**
+ * Drop queued ops the server has refused for good (4xx other than auth), so one bad row
+ * does not block the rest of the period's queue forever. Returns the dropped count.
+ */
+export async function discardRejectedOps(periodId: string): Promise<number> {
+  const rows = await db.outbox.where('periodId').equals(periodId).toArray();
+  const stuck = rows.filter((row) => (row.tries || 0) >= 3).map((row) => row.id).filter((id): id is number => id != null);
+  if (stuck.length) await db.outbox.bulkDelete(stuck);
+  return stuck.length;
 }
 
 export function startSyncLoop() {
   const tick = () => {
-    void flushOutbox().then(() => pullCloud());
+    void (async () => {
+      const profile = await ensureProfile();
+      if (!shouldImmediateSync(profile, isOnline())) return;
+      await flushOutbox();
+      await pullCloud();
+    })();
   };
   window.addEventListener('online', tick);
   void tick();

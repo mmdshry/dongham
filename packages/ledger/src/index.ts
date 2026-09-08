@@ -1,10 +1,37 @@
 import { computeBalances, suggestSettlements, memberNet, roundSettlementEdges } from './balance.js';
-import { computeShares, validateShares, splitEqual, splitByWeight, splitExact, splitPercent } from './split.js';
-import { applyTax, expenseTotal, roundMoney, roundToStep, toBaseCurrency } from './money.js';
+import {
+  computeShares,
+  validateShares,
+  describeSplitError,
+  splitEqual,
+  splitByWeight,
+  splitExact,
+  splitPercent,
+  evenPercentShares,
+} from './split.js';
+export type { SplitErrorCode } from './split.js';
+import { applyTax, expenseTotal, rateToPeriod, rebaseFxRate, roundMoney, roundToStep, toBaseCurrency } from './money.js';
 
 export type * from './types.js';
 export type { CloudPayoutMethod, CloudProfile } from './cloud-profile.js';
-export { isPeriodOwner, syncedMemberRole } from './ownership.js';
+export {
+  isPeriodOwner,
+  syncedMemberRole,
+  canWritePeriod,
+  canManagePeriod,
+  canAssignMemberRole,
+} from './ownership.js';
+export { memberBelongsToActor, actorMemberIdsOf } from './member-match.js';
+export type { MemberMatchFields } from './member-match.js';
+export {
+  SETTLEMENT_DENIAL_MESSAGE,
+  canConfirmPayment,
+  canMarkPaid,
+  canRecordWithoutConfirm,
+  hasPendingForEdge,
+  settlementWriteDenial,
+} from './settlement.js';
+export type { PendingPaymentEdge, SettlementActor, SettlementDenial, SettlementWrite } from './settlement.js';
 export { INVITE_TTL_MS, inviteExpiresAt, isInviteExpired } from './invite.js';
 export {
   DONGHAM_EXPORT_FORMAT,
@@ -25,12 +52,16 @@ export {
   memberNet,
   computeShares,
   validateShares,
+  describeSplitError,
+  evenPercentShares,
   splitEqual,
   splitByWeight,
   splitExact,
   splitPercent,
   applyTax,
   expenseTotal,
+  rateToPeriod,
+  rebaseFxRate,
   roundMoney,
   roundToStep,
   toBaseCurrency,
@@ -77,11 +108,21 @@ export {
 export type { IranBank } from './iran-banks.js';
 
 export {
-  parseExpenseText,
   toLatinDigits,
   indexedAmountNow,
   normalizeIranMobile,
   normalizeOtpCode,
   normalizeEmail,
-} from './telegram-parse.js';
-export type { ParsedExpenseText } from './telegram-parse.js';
+} from './normalize.js';
+export {
+  USERNAME_MIN,
+  USERNAME_MAX,
+  USERNAME_PATTERN,
+  RESERVED_USERNAMES,
+  USERNAME_ERROR_FA,
+  normalizeUsernameInput,
+  parseUsername,
+  usernameFromPath,
+  isPublicProfilePath,
+} from './username.js';
+export type { UsernameFailReason, ParseUsernameResult } from './username.js';

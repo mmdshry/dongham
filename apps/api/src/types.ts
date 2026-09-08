@@ -46,9 +46,17 @@ export interface UserRecord {
   usePersianDigits?: boolean;
   debtReminders?: boolean;
   calendarMode?: 'jalali' | 'gregorian';
+  autoSync?: boolean;
   fxWatchlist?: string[];
   payoutMethods?: UserPayoutMethod[];
   prefsUpdatedAt?: string;
+  avatarDataUrl?: string;
+  avatarPreset?: string;
+  avatarUpdatedAt?: string;
+  hasAvatar?: boolean;
+  username?: string;
+  profileCoverPreset?: string;
+  profileCoverDataUrl?: string;
 }
 
 export interface DeviceSession {
@@ -77,6 +85,8 @@ export interface PeriodRecord {
   lunchTurnMemberId?: string;
   encrypted?: boolean;
   visibility?: 'private' | 'public';
+  coverPreset?: string;
+  coverDataUrl?: string;
 }
 
 export interface MemberRecord {
@@ -289,7 +299,6 @@ export interface DbShape {
     amount: number;
     createdAt: string;
   }[];
-  telegramLinks?: { chatId: string; periodId: string; payerMemberId?: string }[];
   shebaLookups?: ShebaLookupDay[];
   adminAudit?: AdminAuditRecord[];
   impersonationTickets?: ImpersonationTicket[];

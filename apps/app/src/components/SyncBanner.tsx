@@ -1,91 +1,108 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../lib/db';
-import { flushOutbox, pullCloud, resolveSyncConflict } from '../lib/sync';
+import { discardRejectedOps, flushOutbox, pullCloud } from '../lib/sync';
+import { useConnectionMode } from '../lib/useConnectionMode';
 import { useUiStore } from '../store/ui';
 
+const SYNC_TOAST = 'sync';
+let syncBusy = false;
+
+/**
+ * Sync is REST + outbox with last-write-wins on the server; there is no version conflict
+ * to resolve. Queued writes surface as a sticky warning toast with a manual flush.
+ */
 export function SyncBanner({ periodId }: { periodId?: string }) {
-  const online = useUiStore((s) => s.online);
-  const syncConflict = useUiStore((s) => s.syncConflict);
+  const { online, signedIn, autoSync } = useConnectionMode();
   const serverAhead = useUiStore((s) => s.serverAhead);
   const setToast = useUiStore((s) => s.setToast);
-  const profile = useLiveQuery(() => db.profile.get('self'));
-  const outboxCount =
+  const outboxRows =
     useLiveQuery(
-      () => (periodId ? db.outbox.where('periodId').equals(periodId).count() : db.outbox.count()),
+      () => (periodId ? db.outbox.where('periodId').equals(periodId).toArray() : db.outbox.toArray()),
       [periodId],
-    ) || 0;
-  const [busy, setBusy] = useState(false);
+    ) || [];
+  const [lastError, setLastError] = useState<string | null>(null);
+  const shownKey = useRef('');
 
-  if (!profile?.token) return null;
-
-  const conflictVisible = syncConflict && (!periodId || syncConflict.periodId === periodId);
-
-  const resolve = async (choice: 'keep-local' | 'take-server') => {
-    setBusy(true);
-    try {
-      const res = await resolveSyncConflict(choice);
-      if (res.ok) await pullCloud();
-      setToast(
-        res.ok ? (choice === 'take-server' ? 'دادهٔ سرور اعمال شد' : 'همگام شد') : res.error || 'خطا',
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  if (conflictVisible && syncConflict) {
-    return (
-      <div className="mb-4 rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-950">
-        <p>{syncConflict.message}</p>
-        <p className="mt-1 text-amber-900/80">تغییرات این دستگاه و سرور با هم فرق دارند. کدام را نگه می‌دارید؟</p>
-        {online ? (
-          <div className="mt-2 flex flex-wrap gap-2">
-            <button
-              type="button"
-              className="btn-ghost !py-1 !text-xs"
-              disabled={busy}
-              onClick={() => void resolve('keep-local')}
-            >
-              نگه‌داشتن لوکال
-            </button>
-            <button
-              type="button"
-              className="btn-ghost !py-1 !text-xs"
-              disabled={busy}
-              onClick={() => void resolve('take-server')}
-            >
-              گرفتن سرور
-            </button>
-          </div>
-        ) : null}
-      </div>
-    );
-  }
+  const outboxCount = outboxRows.length;
+  const stuck = outboxRows.some((row) => (row.tries || 0) >= 3);
+  const periodIds = useMemo(() => [...new Set(outboxRows.map((row) => row.periodId))], [outboxRows]);
 
   let message = '';
-  if (!online && outboxCount > 0) message = 'آفلاین هستید؛ تغییرات بعد از اتصال ارسال می‌شود.';
-  else if (online && serverAhead) message = 'نسخهٔ سرور با این دستگاه یکی نیست.';
-  else if (online && outboxCount > 0) message = 'تغییرات این دستگاه هنوز روی سرور نیست.';
+  if (signedIn && !(autoSync && online && !stuck)) {
+    if (!online && outboxCount > 0) message = 'آفلاین هستید؛ تغییرات بعد از اتصال ارسال می‌شود.';
+    else if (stuck) message = lastError || 'سرور بعضی از تغییرات این دستگاه را نمی‌پذیرد.';
+    else if (online && outboxCount > 0) message = 'تغییرات این دستگاه هنوز روی سرور نیست.';
+    else if (online && serverAhead) message = 'دادهٔ جدیدتری روی سرور است؛ بعد از ارسال تغییرات این دستگاه دریافت می‌شود.';
+  }
 
-  if (!message) return null;
+  const key = `${message}|${online}|${stuck}|${periodId || ''}`;
 
-  return (
-    <div className="mb-4 rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-950">
-      <p>{message}</p>
-      {online ? (
-        <button
-          type="button"
-          className="btn-ghost mt-2 !py-1 !text-xs"
-          onClick={async () => {
-            const res = await flushOutbox(periodId);
-            if (res.ok) await pullCloud();
-            setToast(res.ok ? 'همگام شد' : res.error || 'خطا');
-          }}
-        >
-          همگام‌سازی
-        </button>
-      ) : null}
-    </div>
-  );
+  useEffect(() => {
+    if (!message) {
+      shownKey.current = '';
+      const current = useUiStore.getState().toast;
+      if (current?.source === SYNC_TOAST) setToast(null);
+      return;
+    }
+    if (shownKey.current === key) return;
+    shownKey.current = key;
+    setToast(message, 'warn', {
+      sticky: true,
+      source: SYNC_TOAST,
+      actions: online
+        ? [
+            {
+              label: 'همگام‌سازی',
+              onClick: () => {
+                void (async () => {
+                  if (syncBusy) return;
+                  syncBusy = true;
+                  try {
+                    const res = await flushOutbox(periodId);
+                    if (res.ok) {
+                      setLastError(null);
+                      await pullCloud();
+                      setToast('همگام شد', 'success');
+                    } else {
+                      setLastError(res.error || null);
+                      setToast(res.error || 'خطا', 'error');
+                    }
+                  } finally {
+                    syncBusy = false;
+                  }
+                })();
+              },
+            },
+            ...(stuck
+              ? [
+                  {
+                    label: 'کنار گذاشتن تغییرات ردشده',
+                    onClick: () => {
+                      void (async () => {
+                        if (syncBusy) return;
+                        syncBusy = true;
+                        try {
+                          let dropped = 0;
+                          for (const pid of periodIds) dropped += await discardRejectedOps(pid);
+                          setLastError(null);
+                          setToast(
+                            dropped ? 'تغییرات ردشده کنار گذاشته شد' : 'چیزی برای حذف نبود',
+                            dropped ? 'success' : 'info',
+                          );
+                          if (dropped) await pullCloud();
+                        } finally {
+                          syncBusy = false;
+                        }
+                      })();
+                    },
+                  },
+                ]
+              : []),
+          ]
+        : undefined,
+    });
+  }, [key, message, online, stuck, periodId, periodIds, setToast]);
+
+  return null;
 }

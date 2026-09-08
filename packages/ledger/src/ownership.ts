@@ -21,5 +21,30 @@ export function syncedMemberRole(
 ): MemberRole {
   if (memberUserId && memberUserId === ownerId) return 'owner';
   if (requested === 'viewer') return 'viewer';
+  if (requested === 'manager') return 'manager';
   return 'member';
+}
+
+export function canWritePeriod(role: MemberRole | null | undefined): boolean {
+  return role === 'owner' || role === 'manager' || role === 'member';
+}
+
+export function canManagePeriod(role: MemberRole | null | undefined): boolean {
+  return role === 'owner' || role === 'manager';
+}
+
+export function canAssignMemberRole(
+  actor: MemberRole | null | undefined,
+  target: { role: MemberRole; isOwner?: boolean },
+  next: MemberRole,
+): boolean {
+  if (!actor) return false;
+  if (next === 'owner') return false;
+  if (target.isOwner || target.role === 'owner') return false;
+  if (actor === 'owner') return next === 'manager' || next === 'member' || next === 'viewer';
+  if (actor === 'manager') {
+    if (target.role === 'manager' || next === 'manager') return false;
+    return next === 'member' || next === 'viewer';
+  }
+  return false;
 }

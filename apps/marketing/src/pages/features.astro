@@ -1,31 +1,76 @@
 ﻿---
 import Base from '../layouts/Base.astro';
+import Cta from '../components/Cta.astro';
+import {
+  Calendar,
+  CloudOff,
+  Coins,
+  CreditCard,
+  FileDown,
+  FileImage,
+  Repeat,
+  Scale,
+  Share2,
+  Shield,
+  Smartphone,
+  TrendingUp,
+  Wallet,
+} from '@lucide/astro';
+
+const items = [
+  { Icon: CloudOff, text: 'آفلاین‌اول با همگام‌سازی ابری گروهی؛ هزینه را بدون اینترنت ثبت می‌کنید و بعداً هم‌خوان می‌شود.' },
+  { Icon: Scale, text: 'تقسیم مساوی، ضریب، مبلغ ثابت و درصد. چند پرداخت‌کننده، حق سرویس و انعام جداگانه.' },
+  { Icon: CreditCard, text: 'تسویه کارت‌به‌کارت: تصویر کارت، تشخیص بانک از BIN یا شبا، چند کارت، یادآوری بدهی و تأیید فیش.' },
+  { Icon: Share2, text: 'ارسال خلاصه حساب در بله و واتساپ اگر شماره عضو ثبت شده باشد.' },
+  { Icon: Repeat, text: 'تکرار روی ماه شمسی برای اجاره و شارژ، با قالب خوابگاه، زیارت، جشن و شارژ ساختمان.' },
+  { Icon: Coins, text: 'قرض با شاخص طلا یا دلار، نوبت ناهار محل کار، همگام‌سازی QR آفلاین بین دستگاه‌ها.' },
+  { Icon: Smartphone, text: 'وب‌اپ (PWA) با اشتراک ریالی زرین‌پال؛ نصب روی صفحه اصلی گوشی ممکن است.' },
+  { Icon: Wallet, text: 'بدهی سراسری، قالب سفر و خانه و کار و خانواده، گنجه‌بان و صندوق مشترک.' },
+  { Icon: Calendar, text: 'تقویم شمسی و میلادی روی هزینه، ورودی مبلغ با هزارگان، گرد کردن تسویه.' },
+  { Icon: TrendingUp, text: 'نرخ ارز آزاد، تاریخچه تغییرات، نقش بیننده، پشتیبان JSON روی دستگاه.' },
+  { Icon: FileImage, text: 'حدس مبلغ از نام فایل رسید؛ تشخیص متن داخل عکس (OCR) نیست.' },
+  { Icon: FileDown, text: 'خروجی PDF فارسی، Excel و تصویر حساب برای اشتراک‌گذاری.' },
+  { Icon: Shield, text: 'رمز AES-GCM روی کارت و شبا در دستگاه. اگر رمز دوره روشن باشد، یادداشت، رسید، پیوست، چت و کارت روی سرور هم AES-256-GCM می‌شوند. ورود با موبایل، گوگل یا ایمیل.' },
+];
 ---
-<Base title="ویژگی‌های دونگ‌هام" description="آفلاین‌اول، تقسیم نابرابر، قرض، QR، چت، خروجی و تسویه هوشمند در دونگ‌هام.">
+<Base
+  schema="software"
+  title="امکانات دونگ‌هام | آفلاین، تقسیم نابرابر و تسویه"
+  description="امکانات دونگ‌هام برای تقسیم هزینه گروهی: آفلاین، ضریب و درصد، تسویه کارت‌به‌کارت، دعوت QR، رمز دوره و خروجی PDF."
+  crumbs={[{ name: 'ویژگی‌ها', href: '/features/' }]}
+>
   <article class="page features">
-    <h1>ویژگی‌ها</h1>
+    <img class="page-photo" src="/theme/cover-travel.webp" width="720" height="480" loading="lazy" decoding="async" alt="نمای سفر گروهی؛ هزینه مشترک با دونگ‌هام ثبت می‌شود" />
+    <h1>امکانات تقسیم هزینه در دونگ‌هام</h1>
+    <p>دونگ‌هام دفتر حساب است، نه کیف پول. پول بین افراد با کارت‌به‌کارت جابه‌جا می‌شود؛ اپ سهم و بدهی را نگه می‌دارد.</p>
     <ul>
-      <li>آفلاین‌اول کامل با همگام‌سازی ابری گروهی</li>
-      <li>تقسیم مساوی، ضریب، مبلغ ثابت و درصد — چند پرداخت‌کننده، حق سرویس و انعام</li>
-      <li>تسویه کارت‌به‌کارت: تصویر کارت، تشخیص بانک از BIN/شبا، چند کارت، یادآوری بدهی و تأیید فیش</li>
-      <li>اشتراک حساب در تلگرام، بله و واتساپ (اگر شماره عضو ثبت شده باشد)</li>
-      <li>ربات تلگرام برای دعوت، حساب و ثبت سریع هزینه؛ مینی‌اپ در صورت پیکربندی ربات</li>
-      <li>تکرار روی ماه شمسی (اجاره و شارژ)، قالب خوابگاه، زیارت، جشن و شارژ ساختمان</li>
-      <li>قرض با شاخص طلا یا دلار، نوبت ناهار محل کار، همگام QR آفلاین بین دستگاه‌ها</li>
-      <li>اشتراک ریالی وب با زرین‌پال؛ اندروید بازار و مایکت</li>
-      <li>بدهی سراسری، قالب سفر/خانه/کار/خانواده، گنجه‌بان و صندوق مشترک</li>
-      <li>تقویم شمسی و میلادی روی هزینه، ورودی مبلغ با هزارگان، گرد کردن تسویه</li>
-      <li>نرخ ارز آزاد، تاریخچه تغییرات، نقش بیننده، پشتیبان JSON</li>
-      <li>حدس مبلغ از نام فایل رسید (OCR واقعی نیست)</li>
-      <li>خروجی PDF فارسی، Excel و تصویر حساب</li>
-      <li>رمز AES-GCM روی کارت/شبا در دستگاه؛ اگر دوره قفل باشد همان فیلدها روی سرور هم AES-256-GCM می‌شوند. ورود با موبایل یا گوگل یا ایمیل، نسخه رایگان با تبلیغ در اندروید و اشتراک زرین‌پال</li>
+      {items.map(({ Icon, text }) => (
+        <li>
+          <Icon size={22} stroke-width={1.8} class="feature-icon" />
+          <span>{text}</span>
+        </li>
+      ))}
     </ul>
+    <Cta ghostHref="/guide/" ghostLabel="ببینید چطور کار می‌کند" />
   </article>
 </Base>
 <style>
   .features { max-width: none; }
   ul { padding: 0; list-style: none; display: grid; gap: .75rem; }
-  li { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 1rem 1.1rem; }
+  li {
+    display: flex;
+    align-items: flex-start;
+    gap: .85rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 1rem 1.1rem;
+  }
+  .feature-icon {
+    flex-shrink: 0;
+    margin-top: .15rem;
+    color: var(--brand-fill);
+  }
   @media (min-width: 768px) {
     ul { grid-template-columns: 1fr 1fr; }
   }

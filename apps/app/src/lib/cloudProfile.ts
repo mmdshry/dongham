@@ -5,7 +5,9 @@ import type { CloudPayoutMethod, CloudProfile } from '@dongham/ledger';
 import { encryptText } from './crypto';
 import { db, type LocalProfile, type PayoutMethod } from './db';
 import { parseWatchlist } from './fx';
-import { listPayouts, syncSelfPayoutToMembers } from './payout';
+import { listPayouts, syncSelfNameToMembers, syncSelfPayoutToMembers } from './payout';
+import { cacheAvatar, pushAvatar, pushAvatarPreset } from './avatarCache';
+import { userAvatarSrc } from './userAvatarPresets';
 import {
   shouldApplyServerPayouts,
   shouldPushLocalPayouts,
@@ -22,6 +24,7 @@ export type AuthUser = {
   email?: string;
   plan?: 'free' | 'premium';
   premiumUntil?: string;
+  username?: string;
 };
 
 export { shouldApplyServerPayouts, shouldPushLocalPayouts, shouldPushPrefs, shouldResetLocalAccount } from './accountSync';
@@ -74,7 +77,13 @@ async function applyPrefs(cloud: CloudProfile) {
     usePersianDigits: cloud.usePersianDigits,
     debtReminders: cloud.debtReminders,
     calendarMode,
+    autoSync: cloud.autoSync !== false,
     prefsUpdatedAt: cloud.prefsUpdatedAt,
+    avatarDataUrl: cloud.avatarDataUrl,
+    avatarPreset: cloud.avatarPreset,
+    username: cloud.username,
+    profileCoverPreset: cloud.profileCoverPreset,
+    profileCoverDataUrl: cloud.profileCoverDataUrl,
   });
 }
 
@@ -95,6 +104,7 @@ export async function resetLocalAccountData(): Promise<void> {
       db.recurring,
       db.notifications,
       db.activity,
+      db.avatars,
       db.meta,
     ],
     async () => {
@@ -109,6 +119,7 @@ export async function resetLocalAccountData(): Promise<void> {
       await db.recurring.clear();
       await db.notifications.clear();
       await db.activity.clear();
+      await db.avatars.clear();
       const meta = await db.meta.toArray();
       for (const row of meta) {
         if (!keepMeta.has(row.key)) await db.meta.delete(row.key);
@@ -116,20 +127,16 @@ export async function resetLocalAccountData(): Promise<void> {
       await db.profile.put({
         id: 'self',
         guestKey: nanoid(),
-        displayName: 'من',
+        displayName: '',
         usePersianDigits: true,
         plan: 'free',
         payoutMethods: [],
         debtReminders: true,
         calendarMode: 'jalali',
+        autoSync: true,
       });
     },
   );
-  try {
-    localStorage.removeItem('dongham_widget');
-  } catch {
-    /* ignore */
-  }
 }
 
 export async function rememberUserId(userId?: string): Promise<void> {
@@ -152,6 +159,7 @@ export async function pushCloudProfile(opts?: { includePayouts?: boolean }): Pro
     usePersianDigits: profile.usePersianDigits !== false,
     debtReminders: profile.debtReminders !== false,
     calendarMode: profile.calendarMode || readCalendarMode(),
+    autoSync: profile.autoSync !== false,
     fxWatchlist: await loadLocalWatchlist(),
   };
   if (opts?.includePayouts) {
@@ -199,6 +207,11 @@ export async function syncCloudProfile(seed?: CloudProfile): Promise<void> {
     return;
   }
   await applyPrefs(cloud);
+  await syncSelfNameToMembers();
+  const src = userAvatarSrc(cloud);
+  if (src && profile.userId) {
+    await cacheAvatar(profile.userId, src, cloud.avatarUpdatedAt);
+  }
   if (shouldApplyServerPayouts(Boolean(profile.payoutDirty), cloud.payoutMethods)) {
     await applyEncryptedPayouts(cloud.payoutMethods || []);
   }
@@ -212,6 +225,9 @@ export async function updateAccountPrefs(patch: Partial<LocalProfile>): Promise<
     ...patch,
     prefsUpdatedAt: new Date().toISOString(),
   });
+  if (typeof patch.displayName === 'string') {
+    await syncSelfNameToMembers();
+  }
   void pushCloudProfile({ includePayouts: Boolean(patch.payoutDirty) }).catch(() => undefined);
   return next;
 }
@@ -223,7 +239,10 @@ export async function applyAuthSession(res: {
 }): Promise<void> {
   const current = await ensureProfile();
   const last = await previousUserId(current);
-  if (shouldResetLocalAccount(last, res.user.id)) {
+  const switching = shouldResetLocalAccount(last, res.user.id);
+  const pendingPreset = switching ? undefined : current.avatarPreset;
+  const pendingAvatar = switching ? undefined : current.avatarDataUrl;
+  if (switching) {
     await resetLocalAccountData();
   }
   await rememberUserId(res.user.id);
@@ -235,7 +254,31 @@ export async function applyAuthSession(res: {
     email: res.user.email,
     plan: res.user.plan || 'free',
     premiumUntil: res.user.premiumUntil,
+    autoSync: res.profile?.autoSync !== false,
+    username: res.user.username || res.profile?.username,
   });
   await syncCloudProfile(res.profile);
+  const cloudHasAvatar = Boolean(res.profile?.avatarDataUrl || res.profile?.avatarPreset);
+  if (pendingPreset && !cloudHasAvatar) {
+    try {
+      await pushAvatarPreset(pendingPreset);
+    } catch {
+      await updateProfile({ avatarPreset: pendingPreset, avatarDataUrl: undefined });
+    }
+  } else if (pendingAvatar && !cloudHasAvatar) {
+    try {
+      await pushAvatar(pendingAvatar);
+    } catch {
+      await updateProfile({ avatarDataUrl: pendingAvatar, avatarPreset: undefined });
+    }
+  } else if (res.profile?.avatarDataUrl || res.profile?.avatarPreset) {
+    await updateProfile({
+      avatarDataUrl: res.profile.avatarDataUrl,
+      avatarPreset: res.profile.avatarPreset,
+    });
+    const src = userAvatarSrc(res.profile);
+    if (src) await cacheAvatar(res.user.id, src, res.profile.avatarUpdatedAt);
+  }
   await syncSelfPayoutToMembers();
+  await syncSelfNameToMembers();
 }

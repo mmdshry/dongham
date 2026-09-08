@@ -7,7 +7,7 @@
   },
   "plugins": {
     "LocalNotifications": {
-      "iconColor": "#4A6B5C"
+      "iconColor": "#5E7262"
     }
   }
 }

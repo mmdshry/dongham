@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ConfirmDialog } from '../components/ui';
+import { ChevronRight } from 'lucide-react';
+import { ConfirmDialog, Modal, PageLoading } from '../components/ui';
+import { Icon } from '../components/Icon';
 import { api, faDate, faNum } from '../lib/api';
 import { useSession } from '../lib/session';
 import type {
@@ -106,10 +108,10 @@ export function PeriodDetailPage() {
   };
 
   useEffect(() => {
-    void load().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'));
+    void load().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'));
   }, [id]);
 
-  if (!data) return <p className="text-sm text-ink-700/70">در حال بارگذاری…</p>;
+  if (!data) return <PageLoading />;
   const p = data.period;
   const memberName = (mid: string) => data.members.find((m) => m.id === mid)?.displayName || mid;
 
@@ -119,7 +121,7 @@ export function PeriodDetailPage() {
       body: JSON.stringify({ title, currency, visibility, kind, template, encrypted, ownerId }),
     });
     await load();
-    setToast('دوره ذخیره شد');
+    setToast('دوره ذخیره شد', 'success');
   };
 
   const saveExpense = async () => {
@@ -130,7 +132,7 @@ export function PeriodDetailPage() {
     });
     setEditingExpense(null);
     await load();
-    setToast('هزینه ذخیره شد');
+    setToast('هزینه ذخیره شد', 'success');
   };
 
   const deletePath = (target: DeleteTarget) => {
@@ -151,18 +153,19 @@ export function PeriodDetailPage() {
     await api(deletePath(deleteTarget), { method: 'DELETE' });
     setDeleteTarget(null);
     if (wasPeriod) {
-      setToast('دوره حذف شد');
+      setToast('دوره حذف شد', 'success');
       navigate('/periods');
       return;
     }
     await load();
-    setToast('حذف شد');
+    setToast('حذف شد', 'success');
   };
 
   return (
     <div className="animate-rise space-y-5">
-      <Link to="/periods" className="text-sm text-brand-800">
-        ← دوره‌ها
+      <Link to="/periods" className="inline-flex items-center gap-1 text-sm text-brand-800">
+        <Icon icon={ChevronRight} size={16} />
+        دوره‌ها
       </Link>
       <h1 className="text-2xl font-extrabold">{p.title}</h1>
       <p className="text-xs text-ink-700/60">
@@ -214,7 +217,7 @@ export function PeriodDetailPage() {
           رمز ستون‌های حساس روی سرور (یادداشت، رسید، چت، کارت/شبا)
         </label>
         <div className="sm:col-span-3 flex flex-wrap gap-2">
-          <button type="button" className="btn-primary" onClick={() => void savePeriod().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'))}>
+          <button type="button" className="btn-primary" onClick={() => void savePeriod().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))}>
             ذخیره مشخصات
           </button>
           <button type="button" className="btn-danger" onClick={() => setDeleteTarget({ type: 'period', id: p.id })}>
@@ -249,17 +252,18 @@ export function PeriodDetailPage() {
                           body: JSON.stringify({ role: e.target.value }),
                         })
                           .then(() => load())
-                          .catch((err) => setToast(err instanceof Error ? err.message : 'خطا'))
+                          .catch((err) => setToast(err instanceof Error ? err.message : 'خطا', 'error'))
                       }
                     >
                       <option value="owner">صاحب</option>
+                      <option value="manager">مدیر</option>
                       <option value="member">عضو</option>
                       <option value="viewer">بیننده</option>
                     </select>
                   </td>
                   <td dir="ltr">{m.phone || '—'}</td>
                   <td>
-                    <button type="button" className="btn-ghost text-rose-700" onClick={() => setDeleteTarget({ type: 'member', id: m.id })}>
+                    <button type="button" className="btn-ghost text-danger" onClick={() => setDeleteTarget({ type: 'member', id: m.id })}>
                       حذف
                     </button>
                   </td>
@@ -318,7 +322,7 @@ export function PeriodDetailPage() {
                             حذف رسید
                           </button>
                         ) : null}
-                        <button type="button" className="btn-ghost text-rose-700" onClick={() => setDeleteTarget({ type: 'expense', id: e.id })}>
+                        <button type="button" className="btn-ghost text-danger" onClick={() => setDeleteTarget({ type: 'expense', id: e.id })}>
                           حذف
                         </button>
                       </>
@@ -366,7 +370,7 @@ export function PeriodDetailPage() {
                             body: JSON.stringify({ status: e.target.value }),
                           })
                             .then(() => load())
-                            .catch((err) => setToast(err instanceof Error ? err.message : 'خطا'))
+                            .catch((err) => setToast(err instanceof Error ? err.message : 'خطا', 'error'))
                         }
                       >
                         <option value="sent">ارسال‌شده</option>
@@ -379,7 +383,7 @@ export function PeriodDetailPage() {
                   </td>
                   <td>
                     {!pay.deletedAt ? (
-                      <button type="button" className="btn-ghost text-rose-700" onClick={() => setDeleteTarget({ type: 'payment', id: pay.id })}>
+                      <button type="button" className="btn-ghost text-danger" onClick={() => setDeleteTarget({ type: 'payment', id: pay.id })}>
                         حذف
                       </button>
                     ) : null}
@@ -410,7 +414,7 @@ export function PeriodDetailPage() {
                   <td className="max-w-xs truncate">{m.body}</td>
                   <td>{faDate(m.createdAt)}</td>
                   <td>
-                    <button type="button" className="btn-ghost text-rose-700" onClick={() => setDeleteTarget({ type: 'chat', id: m.id })}>
+                    <button type="button" className="btn-ghost text-danger" onClick={() => setDeleteTarget({ type: 'chat', id: m.id })}>
                       حذف
                     </button>
                   </td>
@@ -460,8 +464,8 @@ export function PeriodDetailPage() {
                           body: JSON.stringify({ active: !r.active }),
                         })
                           .then(() => load())
-                          .then(() => setToast(r.active ? 'خاموش شد' : 'فعال شد'))
-                          .catch((err) => setToast(err instanceof Error ? err.message : 'خطا'))
+                          .then(() => setToast(r.active ? 'خاموش شد' : 'فعال شد', 'success'))
+                          .catch((err) => setToast(err instanceof Error ? err.message : 'خطا', 'error'))
                       }
                     >
                       {r.active ? 'خاموش' : 'فعال'}
@@ -472,13 +476,13 @@ export function PeriodDetailPage() {
                       onClick={() =>
                         void api(`/admin/periods/${p.id}/recurring/${r.id}/run`, { method: 'POST' })
                           .then(() => load())
-                          .then(() => setToast('اجرا شد'))
-                          .catch((err) => setToast(err instanceof Error ? err.message : 'خطا'))
+                          .then(() => setToast('اجرا شد', 'success'))
+                          .catch((err) => setToast(err instanceof Error ? err.message : 'خطا', 'error'))
                       }
                     >
                       اجرا
                     </button>
-                    <button type="button" className="btn-ghost text-rose-700" onClick={() => setDeleteTarget({ type: 'recurring', id: r.id })}>
+                    <button type="button" className="btn-ghost text-danger" onClick={() => setDeleteTarget({ type: 'recurring', id: r.id })}>
                       حذف
                     </button>
                   </td>
@@ -513,7 +517,7 @@ export function PeriodDetailPage() {
                   <td dir="ltr">{inv.token}</td>
                   <td>{faDate(inv.createdAt)}</td>
                   <td>
-                    <button type="button" className="btn-ghost text-rose-700" onClick={() => setDeleteTarget({ type: 'invite', id: inv.token })}>
+                    <button type="button" className="btn-ghost text-danger" onClick={() => setDeleteTarget({ type: 'invite', id: inv.token })}>
                       ابطال
                     </button>
                   </td>
@@ -552,7 +556,7 @@ export function PeriodDetailPage() {
                   <td>{faNum(a.bytes)}</td>
                   <td>{faDate(a.createdAt)}</td>
                   <td>
-                    <button type="button" className="btn-ghost text-rose-700" onClick={() => setDeleteTarget({ type: 'attachment', id: a.id })}>
+                    <button type="button" className="btn-ghost text-danger" onClick={() => setDeleteTarget({ type: 'attachment', id: a.id })}>
                       حذف
                     </button>
                   </td>
@@ -584,23 +588,26 @@ export function PeriodDetailPage() {
         </ul>
       </section>
 
-      {editingExpense ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/40 p-4">
-          <div className="w-full max-w-md space-y-3 rounded-2xl bg-surface p-5">
-            <h2 className="font-bold">ویرایش هزینه</h2>
-            <input className="input" value={expTitle} onChange={(e) => setExpTitle(e.target.value)} />
-            <input className="input" dir="ltr" value={expAmount} onChange={(e) => setExpAmount(e.target.value)} />
-            <div className="flex justify-end gap-2">
-              <button type="button" className="btn-ghost" onClick={() => setEditingExpense(null)}>
-                انصراف
-              </button>
-              <button type="button" className="btn-primary" onClick={() => void saveExpense().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'))}>
-                ذخیره
-              </button>
-            </div>
+      <Modal open={Boolean(editingExpense)} onClose={() => setEditingExpense(null)} title="ویرایش هزینه">
+        <div className="mt-3 space-y-3">
+          <div>
+            <label className="label" htmlFor="admin-exp-title">عنوان</label>
+            <input id="admin-exp-title" className="input" value={expTitle} onChange={(e) => setExpTitle(e.target.value)} />
+          </div>
+          <div>
+            <label className="label" htmlFor="admin-exp-amount">مبلغ</label>
+            <input id="admin-exp-amount" className="input" dir="ltr" value={expAmount} onChange={(e) => setExpAmount(e.target.value)} />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" className="btn-ghost" onClick={() => setEditingExpense(null)}>
+              انصراف
+            </button>
+            <button type="button" className="btn-primary" onClick={() => void saveExpense().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))}>
+              ذخیره
+            </button>
           </div>
         </div>
-      ) : null}
+      </Modal>
 
       <ConfirmDialog
         open={Boolean(deleteTarget)}
@@ -613,7 +620,7 @@ export function PeriodDetailPage() {
         confirmLabel="حذف"
         danger
         onClose={() => setDeleteTarget(null)}
-        onConfirm={() => void runDelete().catch((e) => setToast(e instanceof Error ? e.message : 'خطا'))}
+        onConfirm={() => void runDelete().catch((e) => setToast(e instanceof Error ? e.message : 'خطا', 'error'))}
       />
     </div>
   );

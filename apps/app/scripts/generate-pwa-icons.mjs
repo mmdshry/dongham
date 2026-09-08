@@ -1,7 +1,10 @@
 import { deflateSync } from 'node:zlib';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { faviconSvg, sampleWhite } from './brand-mark.mjs';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 function crc32(buf) {
   let c = ~0;
@@ -19,10 +22,6 @@ function chunk(type, data) {
   const crc = Buffer.alloc(4);
   crc.writeUInt32BE(crc32(td));
   return Buffer.concat([len, td, crc]);
-}
-
-function mix(a, b, t) {
-  return Math.round(a + (b - a) * t);
 }
 
 function encodePng(size, paint) {
@@ -52,54 +51,63 @@ function encodePng(size, paint) {
   ]);
 }
 
-function paintIcon(x, y, size) {
-  const s = size;
-  const nx = x / s;
-  const ny = y / s;
-  const radius = 0.22;
-  const inRoundRect = (() => {
-    const r = 0.18;
-    const px = Math.min(Math.max(nx, r), 1 - r);
-    const py = Math.min(Math.max(ny, r), 1 - r);
-    const dx = (nx - px) / r;
-    const dy = (ny - py) / r;
-    return dx * dx + dy * dy <= 1;
-  })();
-  if (!inRoundRect) return [0, 0, 0, 0];
-
-  const bg = [74, 107, 92, 255];
-  const left = { cx: 0.34, cy: 0.44, r: 0.125, c: [197, 209, 200] };
-  const right = { cx: 0.66, cy: 0.44, r: 0.125, c: [238, 243, 239] };
-  const d2 = (c) => {
-    const dx = nx - c.cx;
-    const dy = ny - c.cy;
-    return Math.sqrt(dx * dx + dy * dy);
-  };
-  let r = bg[0];
-  let g = bg[1];
-  let b = bg[2];
-  for (const circle of [left, right]) {
-    const d = d2(circle);
-    if (d < circle.r) {
-      const t = 1 - d / circle.r;
-      const edge = Math.min(1, t * 8);
-      r = mix(r, circle.c[0], edge);
-      g = mix(g, circle.c[1], edge);
-      b = mix(b, circle.c[2], edge);
+function paintAa(size, sample) {
+  const aa = 2;
+  return encodePng(size, (x, y) => {
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let a = 0;
+    for (let oy = 0; oy < aa; oy++) {
+      for (let ox = 0; ox < aa; ox++) {
+        const nx = (x + (ox + 0.5) / aa) / size;
+        const ny = (y + (oy + 0.5) / aa) / size;
+        const c = sample(nx, ny);
+        r += c[0];
+        g += c[1];
+        b += c[2];
+        a += c[3];
+      }
     }
-  }
-  const smileY = 0.68 + Math.pow((nx - 0.5) / 0.28, 2) * 0.08;
-  const smile = Math.abs(ny - smileY) < 0.035 && nx > 0.28 && nx < 0.72;
-  if (smile) {
-    r = mix(r, 255, 0.95);
-    g = mix(g, 250, 0.95);
-    b = mix(b, 245, 0.95);
-  }
-  return [r, g, b, 255];
+    const n = aa * aa;
+    return [Math.round(r / n), Math.round(g / n), Math.round(b / n), Math.round(a / n)];
+  });
 }
 
-const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'public', 'icons');
-mkdirSync(dir, { recursive: true });
-writeFileSync(join(dir, 'icon-192.png'), encodePng(192, paintIcon));
-writeFileSync(join(dir, 'icon-512.png'), encodePng(512, paintIcon));
-console.log('wrote', dir);
+function writePng(path, size, sample) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, paintAa(size, sample));
+}
+
+const sampleIcon = (nx, ny) => sampleWhite(nx, ny, 0.08);
+const sampleMaskable = (nx, ny) => sampleWhite(nx, ny, 0.2);
+
+const webIcons = join(ROOT, 'public', 'icons');
+writePng(join(webIcons, 'icon-192.png'), 192, sampleIcon);
+writePng(join(webIcons, 'icon-512.png'), 512, sampleIcon);
+writePng(join(webIcons, 'icon-512-maskable.png'), 512, sampleMaskable);
+writePng(join(webIcons, 'apple-touch-icon.png'), 180, sampleIcon);
+
+const favicon = join(ROOT, 'public', 'favicon.svg');
+writeFileSync(favicon, faviconSvg());
+for (const dest of [
+  join(ROOT, '..', 'admin', 'public', 'favicon.svg'),
+  join(ROOT, '..', 'marketing', 'public', 'favicon.svg'),
+]) {
+  mkdirSync(dirname(dest), { recursive: true });
+  copyFileSync(favicon, dest);
+}
+
+const apple = join(webIcons, 'apple-touch-icon.png');
+for (const dest of [
+  join(ROOT, '..', 'admin', 'public', 'icons', 'apple-touch-icon.png'),
+  join(ROOT, '..', 'marketing', 'public', 'icons', 'apple-touch-icon.png'),
+]) {
+  mkdirSync(dirname(dest), { recursive: true });
+  copyFileSync(apple, dest);
+}
+
+const emailLogo = join(ROOT, '..', 'api', 'src', 'assets', 'email-logo.png');
+writePng(emailLogo, 192, sampleIcon);
+
+console.log('wrote web icons, favicons, and email logo');

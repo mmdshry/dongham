@@ -1,93 +1,200 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@source inline("ring-line/20 border-line/20 text-on-brand");
+
+@theme inline {
+  --color-brand-50: rgb(var(--brand-50));
+  --color-brand-100: rgb(var(--brand-100));
+  --color-brand-200: rgb(var(--brand-200));
+  --color-brand-500: rgb(var(--brand-500));
+  --color-brand-600: rgb(var(--brand-600));
+  --color-brand-700: rgb(var(--brand-700));
+  --color-brand-800: rgb(var(--brand-800));
+  --color-brand-900: rgb(var(--brand-900));
+  --color-ink-700: rgb(var(--ink-700));
+  --color-ink-800: rgb(var(--ink-800));
+  --color-ink-900: rgb(var(--ink-900));
+  --color-nav: rgb(var(--nav));
+  --color-surface: rgb(var(--surface));
+  --color-clay: rgb(var(--clay));
+  --color-clay-50: rgb(var(--clay-50));
+  --color-clay-800: rgb(var(--clay-800));
+  --color-scrim: rgb(var(--scrim));
+  --color-line: rgb(var(--line));
+  --color-on-brand: rgb(var(--on-brand));
+  --color-danger: rgb(var(--danger));
+  --color-danger-muted: rgb(var(--danger-muted));
+  --color-warn: rgb(var(--warn));
+  --color-warn-muted: rgb(var(--warn-muted));
+  --color-warn-fg: rgb(var(--warn-fg));
+  --color-success: rgb(var(--success));
+  --color-success-muted: rgb(var(--success-muted));
+  --color-ring: rgb(var(--line));
+  --font-sans: "Vazirmatn Variable", Vazirmatn, Tahoma, sans-serif;
+  --shadow-soft: var(--shadow);
+  --animate-rise: rise 0.45s ease-out both;
+  --animate-pop: pop 0.28s ease-out both;
+}
+
+@keyframes rise {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
 
 :root {
-  --ink: 28 25 23;
-  --ink-700: 63 58 52;
-  --ink-800: 28 25 23;
-  --ink-900: 20 18 16;
-  --brand: 74 107 92;
-  --brand-50: 238 243 239;
-  --brand-100: 221 230 223;
-  --brand-200: 184 203 190;
-  --brand-500: 107 143 124;
-  --brand-600: 88 120 102;
-  --brand-700: 74 107 92;
-  --brand-800: 58 85 72;
-  --brand-900: 42 62 52;
-  --surface: 255 250 245;
-  --bg: 244 241 234;
-  --bg-accent: 238 243 239;
+  --ink: 36 32 28;
+  --ink-700: 90 82 74;
+  --ink-800: 36 32 28;
+  --ink-900: 28 24 20;
+  --brand: 94 114 98;
+  --brand-50: 243 245 242;
+  --brand-100: 228 234 230;
+  --brand-200: 197 209 200;
+  --brand-500: 122 143 128;
+  --brand-600: 107 128 112;
+  --brand-700: 94 114 98;
+  --brand-800: 74 92 80;
+  --brand-900: 58 72 62;
+  --nav: 83 103 88;
+  --surface: 255 252 248;
+  --bg: 246 240 232;
   --clay: 212 165 116;
   --clay-50: 244 232 214;
   --clay-800: 122 78 40;
-  --scrim: 20 18 16;
+  --scrim: 28 24 20;
+  --line: 94 114 98;
+  --on-brand: 255 255 255;
+  --danger: 190 18 60;
+  --danger-muted: 255 228 230;
+  --warn: 146 64 14;
+  --warn-muted: 255 251 235;
+  --warn-fg: 120 53 15;
+  --success: 74 92 80;
+  --success-muted: 228 234 230;
+  --shadow: 0 10px 40px -20px rgb(94 114 98 / 0.35);
   color-scheme: light;
 }
 
 html[data-theme='dark'] {
-  --ink: 232 238 242;
-  --ink-700: 168 174 178;
-  --ink-800: 232 238 242;
-  --ink-900: 248 250 252;
-  --brand: 74 107 92;
-  --brand-50: 26 36 32;
-  --brand-100: 36 51 44;
-  --brand-200: 58 85 72;
-  --brand-500: 107 143 124;
-  --brand-600: 122 157 136;
-  --brand-700: 74 107 92;
-  --brand-800: 168 197 181;
-  --brand-900: 197 209 200;
-  --surface: 20 26 34;
-  --bg: 11 15 20;
-  --bg-accent: 26 36 32;
-  --clay: 212 165 116;
-  --clay-50: 58 46 32;
-  --clay-800: 232 212 184;
-  --scrim: 11 15 20;
+  --ink: 236 240 236;
+  --ink-700: 176 186 178;
+  --ink-800: 236 240 236;
+  --ink-900: 248 250 248;
+  --brand: 110 138 118;
+  --brand-50: 38 46 42;
+  --brand-100: 52 64 56;
+  --brand-200: 64 80 70;
+  --brand-500: 138 162 146;
+  --brand-600: 125 154 134;
+  --brand-700: 110 138 118;
+  --brand-800: 176 196 180;
+  --brand-900: 214 224 216;
+  --nav: 48 60 54;
+  --surface: 42 52 46;
+  --bg: 28 34 31;
+  --clay: 224 180 132;
+  --clay-50: 52 42 30;
+  --clay-800: 236 216 188;
+  --scrim: 14 18 16;
+  --line: 154 176 160;
+  --on-brand: 248 250 248;
+  --danger: 252 165 165;
+  --danger-muted: 56 32 34;
+  --warn: 252 211 148;
+  --warn-muted: 52 42 28;
+  --warn-fg: 252 232 200;
+  --success: 176 196 180;
+  --success-muted: 38 46 42;
+  --shadow: 0 16px 40px -14px rgb(20 28 24 / 0.45);
   color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  --tw-ring-color: rgb(var(--line) / 0.28);
 }
 
 body {
   margin: 0;
   min-height: 100dvh;
-  font-family: Vazirmatn, Tahoma, sans-serif;
+  font-family: 'Vazirmatn Variable', Vazirmatn, Tahoma, sans-serif;
   color: rgb(var(--ink));
-  background:
-    radial-gradient(1200px 600px at 100% -10%, rgb(var(--brand-500) / 0.14), transparent 55%),
-    linear-gradient(180deg, rgb(var(--bg)) 0%, rgb(var(--bg-accent)) 50%, rgb(var(--bg)) 100%);
+  background: rgb(var(--bg));
 }
 
 #root {
   min-height: 100dvh;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@utility btn {
+  @apply inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold duration-150 ease-out focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-700 disabled:pointer-events-none disabled:opacity-50;
+}
+
+@utility btn-primary {
+  @apply btn bg-brand-700 shadow-soft hover:bg-brand-600 active:bg-brand-800;
+  color: rgb(var(--on-brand));
+}
+
+@utility btn-ghost {
+  @apply btn bg-surface text-ink-800 ring-1 hover:bg-brand-50 active:bg-brand-100;
+  --tw-ring-color: rgb(var(--line) / 0.28);
+}
+
+@utility btn-danger {
+  @apply btn hover:opacity-90 active:opacity-80;
+  background: rgb(var(--danger));
+  color: #fff;
+}
+
 @layer components {
-  .btn {
-    @apply inline-flex min-h-10 items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold transition disabled:opacity-50;
+  html[data-theme='dark'] .btn-danger {
+    color: rgb(28 34 31);
   }
-  .btn-primary {
-    @apply btn bg-brand-700 text-white shadow-soft hover:bg-brand-600;
-  }
-  .btn-ghost {
-    @apply btn bg-surface text-ink-800 ring-1 ring-brand-700/10 hover:bg-brand-50;
-  }
-  .btn-danger {
-    @apply btn bg-rose-600 text-white hover:bg-rose-700;
+  .text-on-brand {
+    color: rgb(var(--on-brand));
   }
   .input {
-    @apply w-full rounded-xl border border-brand-700/10 bg-surface px-3 py-2 text-sm outline-none ring-brand-600 focus:ring-2;
+    @apply w-full rounded-xl border border-brand-800/20 bg-surface px-3 py-2 text-sm outline-none ring-brand-600 focus:ring-2;
   }
   .label {
     @apply mb-1 block text-xs font-medium text-ink-700/70;
   }
   .card {
-    @apply rounded-2xl bg-surface/80 p-4 shadow-soft ring-1 ring-brand-700/10 backdrop-blur;
+    @apply rounded-2xl bg-surface/80 p-4 shadow-soft ring-1 ring-brand-800/20 backdrop-blur;
   }
   .table-wrap {
-    @apply overflow-x-auto rounded-2xl bg-surface/80 ring-1 ring-brand-700/10;
+    @apply overflow-x-auto rounded-2xl bg-surface/80 ring-1 ring-brand-800/20;
   }
   .data-table {
     @apply w-full min-w-[640px] text-right text-sm;
@@ -96,18 +203,28 @@ body {
     @apply bg-brand-50/80 px-3 py-2 font-semibold text-brand-900;
   }
   .data-table td {
-    @apply border-t border-brand-700/10 px-3 py-2;
+    @apply border-t border-brand-800/20 px-3 py-2;
   }
   .data-table tr:hover td {
     @apply bg-brand-50/40;
   }
   .toast-bar {
-    @apply rounded-2xl px-4 py-3 text-sm shadow-soft;
-    background: rgb(var(--scrim));
-    color: #fff;
+    @apply flex items-start gap-2 rounded-2xl px-4 py-3 text-sm font-sans shadow-soft;
   }
-  html[data-theme='dark'] .toast-bar {
-    background: rgb(var(--surface));
-    color: rgb(var(--ink-900));
+  .toast-bar-error {
+    background: rgb(var(--danger-muted));
+    color: rgb(var(--danger));
+  }
+  .toast-bar-success {
+    background: rgb(var(--success-muted));
+    color: rgb(var(--success));
+  }
+  .toast-bar-warn {
+    background: rgb(var(--warn-muted));
+    color: rgb(var(--warn-fg));
+  }
+  .toast-bar-info {
+    background: rgb(var(--brand-100));
+    color: rgb(var(--brand-800));
   }
 }

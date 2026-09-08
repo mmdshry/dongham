@@ -38,6 +38,11 @@ export function skuDays(sku: string) {
   return sku.includes('year') ? 365 : 30;
 }
 
+/** Public price list: Zarinpal bills in rial, the ledger/UI speak toman — expose both. */
+export function skuPrices(): { sku: string; rial: number; toman: number; days: number }[] {
+  return Object.entries(SKU_RIAL).map(([sku, rial]) => ({ sku, rial, toman: Math.round(rial / 10), days: skuDays(sku) }));
+}
+
 export async function zarinpalRequest(input: {
   userId: string;
   sku: string;

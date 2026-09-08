@@ -3,6 +3,7 @@ import QRCode from 'qrcode';
 import { parseDonghamExport, wrapDonghamExport } from '@dongham/ledger';
 import { db, noneCharge, type LocalExpense, type LocalMember, type LocalPayment, type LocalPeriod, type LocalRecurring } from './db';
 import { queueOp } from './sync';
+import { periodMediaSyncPayload } from './periodCover';
 
 export interface ExportSnapshot {
   v: 1;
@@ -80,6 +81,7 @@ export async function importPeriodSnapshot(snap: ExportSnapshot): Promise<string
     lunchTurnMemberId: period.lunchTurnMemberId,
     encrypted: period.encrypted,
     visibility: period.visibility,
+    ...periodMediaSyncPayload(period),
   });
   for (const m of snap.members) {
     const member = { ...m, periodId: id };

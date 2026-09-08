@@ -123,7 +123,7 @@ export function roundSettlementEdges(edges: SettlementEdge[], step: number): Set
   rounded[idx] = { ...rounded[idx], amount: Math.max(0, rounded[idx].amount + adjust) };
   return rounded.filter((e) => e.amount > 0);
 }
-
 export function memberNet(balances: BalanceMap, memberId: string): number {
   return balances[memberId] ?? 0;
 }
+

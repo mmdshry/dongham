@@ -1,6 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { ChevronDown } from 'lucide-react';
 import { CurrencyMark } from './Flag';
+import { Icon } from './Icon';
 import { currencyInfo, displayTomanRate, searchCurrencies } from '../lib/currencyCatalog';
 import { formatGrouped } from '../lib/format';
 import { usePersianDigits } from '../lib/usePersianDigits';
@@ -24,6 +26,7 @@ export function CurrencySelect({
   const wrapRef = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const listId = useId();
   const persian = usePersianDigits();
   const extra = Object.keys(rates || {});
   const options = useMemo(() => searchCurrencies(q, extra), [q, extra]);
@@ -75,7 +78,7 @@ export function CurrencySelect({
       ? createPortal(
           <div
             ref={menuRef}
-            className="fixed z-[60] max-h-72 overflow-hidden rounded-2xl bg-surface shadow-soft ring-1 ring-brand-700/10"
+            className="fixed z-[60] max-h-72 overflow-hidden rounded-2xl bg-surface shadow-soft ring-1 ring-brand-800/20"
             style={{ top: box.top, left: box.left, width: box.width }}
           >
             <input
@@ -85,15 +88,18 @@ export function CurrencySelect({
               onChange={(e) => setQ(e.target.value)}
               autoFocus
             />
-            <ul className="max-h-56 overflow-y-auto">
+            <ul id={listId} role="listbox" aria-label="ارز" className="max-h-56 overflow-y-auto">
               {options.map((c) => {
                 const rate = displayTomanRate(c.code, rates?.[c.code]);
+                const selected = c.code === value;
                 return (
-                  <li key={c.code}>
+                  <li key={c.code} role="presentation">
                     <button
                       type="button"
-                      className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-sm ${
-                        c.code === value ? 'bg-brand-50 font-semibold' : ''
+                      role="option"
+                      aria-selected={selected}
+                      className={`flex w-full items-center justify-between gap-2 px-3 py-2.5 text-sm duration-150 active:bg-brand-100 ${
+                        selected ? 'bg-brand-50 font-semibold' : ''
                       }`}
                       onClick={() => {
                         onChange(c.code);
@@ -130,9 +136,10 @@ export function CurrencySelect({
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
         aria-haspopup="listbox"
+        aria-controls={listId}
       >
         <CurrencyMark info={selected} />
-        <span className="text-xs text-ink-700/60">▼</span>
+        <Icon icon={ChevronDown} size={16} className="text-ink-700/60" />
       </button>
       {menu}
     </div>

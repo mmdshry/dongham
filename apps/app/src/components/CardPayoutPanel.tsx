@@ -31,7 +31,7 @@ function CopyableNumber({ label, display, copyValue }: { label: string; display:
   const setToast = useUiStore((s) => s.setToast);
   const copy = async () => {
     const ok = await copyText(copyValue);
-    setToast(ok ? 'کپی شد' : 'کپی نشد');
+    setToast(ok ? 'کپی شد' : 'کپی نشد', ok ? 'success' : 'error');
   };
   return (
     <div className="mt-2">
@@ -45,7 +45,7 @@ function CopyableNumber({ label, display, copyValue }: { label: string; display:
         >
           {display}
         </button>
-        <button type="button" className="btn-ghost shrink-0 !px-2 !py-1 !text-[11px]" onClick={() => void copy()}>
+        <button type="button" className="btn-ghost btn-sm shrink-0" onClick={() => void copy()}>
           کپی
         </button>
       </div>
@@ -73,7 +73,6 @@ export function CardPayoutPanel() {
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<InquiryDraft | null>(null);
-  const [formError, setFormError] = useState('');
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -100,16 +99,15 @@ export function CardPayoutPanel() {
   const closeModal = () => {
     setOpen(false);
     setDraft(null);
-    setFormError('');
   };
 
   const inquire = async () => {
     if (cardError || !iranCardOk(card)) {
-      setToast(cardError || 'شماره کارت نامعتبر است');
+      setToast(cardError || 'شماره کارت نامعتبر است', 'error');
       return;
     }
     if (payouts.some((p) => normalizeCard(p.card) === cardDigits)) {
-      setToast('این کارت قبلاً ذخیره شده');
+      setToast('این کارت قبلاً ذخیره شده', 'warn');
       return;
     }
     setBusy(true);
@@ -148,7 +146,7 @@ export function CardPayoutPanel() {
         bankCode: binBank?.code || '',
         manual: true,
       });
-      setFormError(e instanceof Error ? e.message : 'استعلام شبا ناموفق بود');
+      setToast(e instanceof Error ? e.message : 'استعلام شبا ناموفق بود', 'error');
       setOpen(true);
     } finally {
       setBusy(false);
@@ -158,15 +156,15 @@ export function CardPayoutPanel() {
   const confirm = async () => {
     if (!draft) return;
     if (!iranCardOk(draft.card)) {
-      setFormError('شماره کارت نامعتبر است');
+      setToast('شماره کارت نامعتبر است', 'error');
       return;
     }
     if (!draft.holder.trim()) {
-      setFormError('نام صاحب حساب لازم است');
+      setToast('نام صاحب حساب لازم است', 'error');
       return;
     }
     if (draft.sheba.trim() && !shebaOk(draft.sheba)) {
-      setFormError('شبا نامعتبر است');
+      setToast('شبا نامعتبر است', 'error');
       return;
     }
     const res = await savePayoutMethod({
@@ -178,10 +176,10 @@ export function CardPayoutPanel() {
       isDefault: payouts.length === 0,
     });
     if (!res.ok) {
-      setFormError(res.error || 'ذخیره نشد');
+      setToast(res.error || 'ذخیره نشد', 'error');
       return;
     }
-    setToast('کارت ذخیره شد');
+    setToast('کارت ذخیره شد', 'success');
     setCard('');
     closeModal();
     setPayouts(await listPayouts());
@@ -194,12 +192,13 @@ export function CardPayoutPanel() {
         [def.card && `کارت: ${formatCardGrouped(def.card)}`, def.sheba && `شبا: ${formatShebaGrouped(def.sheba)}`]
           .filter(Boolean)
           .join(' · ') || 'چیزی ذخیره نشده',
+        'info',
       );
       return;
     }
     const c = await decryptMaybe(profile?.cardNumber);
     const s = await decryptMaybe(profile?.sheba);
-    setToast([c && `کارت: ${c}`, s && `شبا: ${s}`].filter(Boolean).join(' · ') || 'چیزی ذخیره نشده');
+    setToast([c && `کارت: ${c}`, s && `شبا: ${s}`].filter(Boolean).join(' · ') || 'چیزی ذخیره نشده', 'info');
   };
 
   const draftBank = draft ? bankByCode(draft.bankCode) || detectBankFromCard(draft.card) || listIranBanks().find((b) => b.name === draft.bankName) : undefined;
@@ -218,7 +217,7 @@ export function CardPayoutPanel() {
         {payouts.map((p) => {
           const bank = detectBankFromCard(p.card) || listIranBanks().find((b) => b.name === p.bank);
           return (
-            <li key={p.id} className="rounded-2xl bg-surface p-3 shadow-soft ring-1 ring-brand-700/10">
+            <li key={p.id} className="rounded-2xl bg-surface p-3 shadow-soft ring-1 ring-brand-800/20">
               <div className="flex gap-3">
                 <BankIcon bank={bank} size={40} />
                 <div className="min-w-0 flex-1">
@@ -253,7 +252,7 @@ export function CardPayoutPanel() {
                 </div>
                 <button
                   type="button"
-                  className="btn-ghost h-fit shrink-0 !px-3 !py-1 !text-xs text-rose-700"
+                  className="btn-ghost btn-sm shrink-0 text-danger"
                   onClick={() => setDeleteId(p.id)}
                 >
                   حذف
@@ -273,9 +272,12 @@ export function CardPayoutPanel() {
           inputMode="numeric"
           value={card}
           onChange={(e) => setCard(formatCardGrouped(normalizeCard(e.target.value).slice(0, 16)))}
+          onBlur={() => {
+            if (cardError) setToast(cardError, 'error');
+          }}
         />
       </div>
-      {cardError ? <p className="text-xs text-amber-800">{cardError}</p> : null}
+      {binBank ? <p className="text-xs text-brand-800">بانک {binBank.name}</p> : null}
       {binBank ? <p className="text-xs text-brand-800">بانک {binBank.name}</p> : null}
 
       <button type="button" className="btn-primary w-full" onClick={() => void inquire()} disabled={busy || !!cardError || !cardDigits}>
@@ -287,9 +289,8 @@ export function CardPayoutPanel() {
 
       <Modal open={open} onClose={closeModal} title={draft?.manual ? 'ورود دستی کارت' : 'نتیجه استعلام'}>
         {draft?.manual ? (
-          <p className="mb-3 text-xs text-amber-800">{formError || 'استعلام ممکن نشد. مشخصات را دستی وارد کنید.'}</p>
+          <p className="mb-3 text-xs text-ink-700/70">استعلام ممکن نشد. مشخصات را دستی وارد کنید.</p>
         ) : null}
-        {draft && !draft.manual && formError ? <p className="mb-3 text-xs text-amber-800">{formError}</p> : null}
         {draft ? (
           <div className="space-y-3">
             <div className="flex items-center gap-3 rounded-2xl bg-brand-50 p-3">
@@ -386,7 +387,7 @@ export function CardPayoutPanel() {
             await removePayoutMethod(deleteId);
             setPayouts(await listPayouts());
             setDeleteId(null);
-            setToast('کارت حذف شد');
+            setToast('کارت حذف شد', 'success');
           })();
         }}
       />

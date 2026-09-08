@@ -3,6 +3,11 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { nanoid } from 'nanoid';
 import {
+  canAssignMemberRole,
+  canManagePeriod,
+  canWritePeriod,
+  describeSplitError,
+  expenseTotal,
   inferCadence,
   isPeriodId,
   migratePeriodIds,
@@ -11,34 +16,44 @@ import {
   normalizeEmail,
   normalizeIranMobile,
   normalizeOtpCode,
+  parseUsername,
+  SETTLEMENT_DENIAL_MESSAGE,
+  settlementWriteDenial,
   syncedMemberRole,
+  USERNAME_ERROR_FA,
+  validateShares,
 } from '@dongham/ledger';
-import { canAccessPeriod, periodRole } from './access.js';
+import { actorMemberIds, canAccessPeriod, periodRole } from './access.js';
 import { adminApp, consumeImpersonation } from './admin.js';
-import { applyUserProfilePatch, authSession, cloudProfile, persistPremiumExpiry, publicUser } from './profile.js';
+import { parseAvatarIds, parseAvatarWrite } from './avatar.js';
+import { applyPeriodMedia, parseCoverWrite } from './periodMedia.js';
+import { applyUserProfilePatch, authSession, cloudProfile, parseRequiredDisplayName, persistPremiumExpiry, publicUser, wipePublicProfile } from './profile.js';
 import {
   claimListedMemberships,
   createUser,
+  EmailOtpRateLimitError,
   findUserByEmail,
   findUserByPhone,
   hashPassword,
+  isEmailOtpMock,
   isOtpMock,
   isUserBanned,
   issueToken,
   loginWithGoogle,
+  sendEmailOtp,
   sendOtp,
+  verifyEmailOtp,
   verifyOtp,
   verifyPassword,
   verifyToken,
   revokeSession,
 } from './auth.js';
-import { premiumUntilFromNow, recordBillingEvent, verifyBazaarPurchase, verifyMyketPurchase } from './billing.js';
 import { lookupCardSheba, lookupIdentity, quotaFor } from './drapi.js';
-import { getFxRates } from './fx.js';
-import { handleTelegramUpdate, telegramSend } from './telegram.js';
-import type { ExpenseRecord, MemberRecord, MemberRole, PaymentRecord, PeriodKind, PeriodRecord, PeriodTemplate, RecurringCadence, RoundTo } from './types.js';
-import { zarinpalRequest, zarinpalVerify } from './zarinpal.js';
+import { getFxRates, recurringFxRate } from './fx.js';
+import type { ExpenseRecord, MemberRecord, MemberRole, PaymentRecord, PeriodKind, PeriodRecord, PeriodTemplate, RecurringCadence, RoundTo, UserRecord } from './types.js';
+import { skuPrices, zarinpalRequest, zarinpalVerify } from './zarinpal.js';
 import { appPublicUrl, inviteExpiresAt, isInviteExpired } from './publicUrl.js';
+import { deleteSubscription, getVapidPublicKey, upsertSubscription } from './push.js';
 import {
   bumpPeriodVersion,
   deleteFriend,
@@ -50,11 +65,13 @@ import {
   getPayment,
   getPeriod,
   getUserById,
+  findUserByUsername,
   hasPendingPayment,
   insertActivity,
   insertAttachment,
   insertChat,
   insertInvite,
+  insertNotification,
   insertPeriod,
   listChat,
   listDueRecurring,
@@ -63,9 +80,11 @@ import {
   listNotifications,
   listPeriodIds,
   listPeriodsForUser,
+  listVisibleAvatars,
   loadPeriodSnapshot,
   markNotificationRead,
   notifyPeriodMembers,
+  publicProfileStats,
   updatePeriod,
   updateUser,
   upsertExpense,
@@ -93,10 +112,6 @@ const defaultCorsOrigins = [
   'https://admin.dongham.ir',
   'https://dongham.ir',
   'https://www.dongham.ir',
-  'https://localhost',
-  'http://localhost',
-  'capacitor://localhost',
-  'ionic://localhost',
 ];
 
 app.use(
@@ -153,18 +168,48 @@ async function requireWrite(c: Context<{ Variables: Variables }>, periodId: stri
     return { error: c.json({ error: 'اجازه ندارید' }, 403) };
   }
   const role = await periodRole(userId, periodId);
-  if (!role || role === 'viewer') return { error: c.json({ error: 'نقش بیننده اجازهٔ تغییر ندارد' }, 403) };
+  if (!role || !canWritePeriod(role)) return { error: c.json({ error: 'نقش بیننده اجازهٔ تغییر ندارد' }, 403) };
   return { userId, role };
 }
 
-function snapshotJson(snap: NonNullable<Awaited<ReturnType<typeof loadPeriodSnapshot>>>) {
+async function requireManage(c: Context<{ Variables: Variables }>, periodId: string) {
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate;
+  if (!canManagePeriod(gate.role)) {
+    return { error: c.json({ error: 'فقط مالک یا مدیر اجازهٔ این کار را دارد' }, 403) };
+  }
+  return gate;
+}
+
+function assignedMemberRole(input: {
+  actorRole: MemberRole;
+  ownerId: string;
+  memberUserId?: string;
+  requested?: MemberRole;
+  current?: MemberRole;
+}): MemberRole {
+  const next = syncedMemberRole(input.requested, input.memberUserId, input.ownerId);
+  if (next === 'owner') return 'owner';
+  const current = input.current && input.current !== 'owner' ? input.current : 'member';
+  if (next === current) return next;
+  if (canAssignMemberRole(input.actorRole, { role: current, isOwner: false }, next)) return next;
+  return current;
+}
+
+/** Invite tokens are join credentials: only members who may write (owner/manager/member) receive them. */
+async function canSeeInvites(userId: string | null, periodId: string): Promise<boolean> {
+  if (!userId) return false;
+  return canWritePeriod(await periodRole(userId, periodId));
+}
+
+function snapshotJson(snap: NonNullable<Awaited<ReturnType<typeof loadPeriodSnapshot>>>, includeInvites: boolean) {
   return {
     period: snap.period,
     members: snap.members,
     expenses: snap.expenses,
     payments: snap.payments,
     chat: snap.chat,
-    invites: snap.invites,
+    invites: includeInvites ? snap.invites : [],
     recurring: snap.recurring,
     activity: snap.activity,
     version: snap.version,
@@ -220,10 +265,13 @@ app.post('/auth/otp/verify', async (c) => {
   }>();
   const local = normalizeIranMobile(phone);
   const otp = normalizeOtpCode(code);
-  if (!local || !otp || !(await verifyOtp(local, otp))) return c.json({ error: 'کد نامعتبر است' }, 400);
+  if (!local || !otp) return c.json({ error: 'کد نامعتبر است' }, 400);
   let user = await findUserByPhone(local);
+  const newName = user ? undefined : parseRequiredDisplayName(displayName);
+  if (!user && !newName) return c.json({ error: 'نام نمایشی لازم است' }, 400);
+  if (!(await verifyOtp(local, otp))) return c.json({ error: 'کد نامعتبر است' }, 400);
   if (!user) {
-    user = await createUser({ phone: local, displayName: displayName || `کاربر ${local.slice(-4)}` });
+    user = await createUser({ phone: local, displayName: newName! });
   }
   if (isUserBanned(user)) return c.json({ error: 'این حساب مسدود است' }, 403);
   await claimListedMemberships(user);
@@ -243,9 +291,11 @@ app.post('/auth/register', async (c) => {
     return c.json({ error: 'ایمیل یا رمز نامعتبر است' }, 400);
   }
   if (await findUserByEmail(normalizedEmail)) return c.json({ error: 'این ایمیل قبلاً ثبت شده' }, 409);
+  const name = parseRequiredDisplayName(displayName);
+  if (!name) return c.json({ error: 'نام نمایشی لازم است' }, 400);
   const user = await createUser({
     email: normalizedEmail,
-    displayName: displayName || normalizedEmail.split('@')[0],
+    displayName: name,
     passwordHash: await hashPassword(password),
   });
   await claimListedMemberships(user);
@@ -287,6 +337,144 @@ app.post('/auth/google', async (c) => {
   }
 });
 
+app.post('/auth/email-otp/request', async (c) => {
+  let email: string | undefined;
+  try {
+    email = (await c.req.json<{ email?: string }>()).email;
+  } catch {
+    email = undefined;
+  }
+  const normalized = normalizeEmail(email);
+  if (!normalized) return c.json({ error: 'ایمیل نامعتبر است' }, 400);
+  try {
+    const code = await sendEmailOtp(normalized, 'login');
+    const body: Record<string, unknown> = { ok: true };
+    if (isEmailOtpMock()) body.devCode = code;
+    return c.json(body);
+  } catch (e) {
+    if (e instanceof EmailOtpRateLimitError) return c.json({ error: e.message }, 429);
+    return c.json({ error: e instanceof Error ? e.message : 'ارسال ایمیل ناموفق بود' }, 502);
+  }
+});
+
+app.post('/auth/email-otp/verify', async (c) => {
+  const { email, code, displayName, deviceId } = await c.req.json<{
+    email: string;
+    code: string;
+    displayName?: string;
+    deviceId: string;
+  }>();
+  const normalized = normalizeEmail(email);
+  const otp = normalizeOtpCode(code);
+  if (!normalized || !otp) return c.json({ error: 'کد نامعتبر است' }, 400);
+  let user = await findUserByEmail(normalized);
+  const newName = user ? undefined : parseRequiredDisplayName(displayName);
+  if (!user && !newName) return c.json({ error: 'نام نمایشی لازم است' }, 400);
+  if (!(await verifyEmailOtp(normalized, otp, 'login'))) return c.json({ error: 'کد نامعتبر است' }, 400);
+  if (!user) {
+    user = await createUser({ email: normalized, displayName: newName! });
+  }
+  if (isUserBanned(user)) return c.json({ error: 'این حساب مسدود است' }, 403);
+  await claimListedMemberships(user);
+  const token = await issueToken(user.id, deviceId || nanoid());
+  return c.json(await authSession(token, user));
+});
+
+app.post('/auth/link/email/request', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  let email: string | undefined;
+  try {
+    email = (await c.req.json<{ email?: string }>()).email;
+  } catch {
+    email = undefined;
+  }
+  const normalized = normalizeEmail(email);
+  if (!normalized) return c.json({ error: 'ایمیل نامعتبر است' }, 400);
+  const user = await getUserById(userId);
+  if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
+  if (user.email) return c.json({ error: 'ایمیل این حساب قبلاً ثبت شده' }, 409);
+  const taken = await findUserByEmail(normalized);
+  if (taken && taken.id !== userId) return c.json({ error: 'این ایمیل قبلاً برای حساب دیگری ثبت شده' }, 409);
+  try {
+    const code = await sendEmailOtp(normalized, 'link', userId);
+    const body: Record<string, unknown> = { ok: true };
+    if (isEmailOtpMock()) body.devCode = code;
+    return c.json(body);
+  } catch (e) {
+    if (e instanceof EmailOtpRateLimitError) return c.json({ error: e.message }, 429);
+    return c.json({ error: e instanceof Error ? e.message : 'ارسال ایمیل ناموفق بود' }, 502);
+  }
+});
+
+app.post('/auth/link/email/verify', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const { email, code } = await c.req.json<{ email: string; code: string }>();
+  const normalized = normalizeEmail(email);
+  const otp = normalizeOtpCode(code);
+  if (!normalized || !otp) return c.json({ error: 'کد نامعتبر است' }, 400);
+  const user = await getUserById(userId);
+  if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
+  if (user.email) return c.json({ error: 'ایمیل این حساب قبلاً ثبت شده' }, 409);
+  const taken = await findUserByEmail(normalized);
+  if (taken && taken.id !== userId) return c.json({ error: 'این ایمیل قبلاً برای حساب دیگری ثبت شده' }, 409);
+  if (!(await verifyEmailOtp(normalized, otp, 'link', userId))) return c.json({ error: 'کد نامعتبر است' }, 400);
+  user.email = normalized;
+  await updateUser(user);
+  await claimListedMemberships(user);
+  await persistPremiumExpiry(user);
+  const next = (await getUserById(userId))!;
+  return c.json({ user: publicUser(next), profile: cloudProfile(next) });
+});
+
+app.post('/auth/link/phone/request', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  let phone: string | undefined;
+  try {
+    phone = (await c.req.json<{ phone?: string }>()).phone;
+  } catch {
+    phone = undefined;
+  }
+  const local = normalizeIranMobile(phone);
+  if (!local) return c.json({ error: 'شماره موبایل نامعتبر است' }, 400);
+  const user = await getUserById(userId);
+  if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
+  if (user.phone) return c.json({ error: 'شماره این حساب قبلاً ثبت شده' }, 409);
+  const taken = await findUserByPhone(local);
+  if (taken && taken.id !== userId) return c.json({ error: 'این شماره قبلاً برای حساب دیگری ثبت شده' }, 409);
+  try {
+    const code = await sendOtp(local);
+    const body: Record<string, unknown> = { ok: true };
+    if (isOtpMock()) body.devCode = code;
+    return c.json(body);
+  } catch (e) {
+    return c.json({ error: e instanceof Error ? e.message : 'ارسال پیامک ناموفق بود' }, 502);
+  }
+});
+
+app.post('/auth/link/phone/verify', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const { phone, code } = await c.req.json<{ phone: string; code: string }>();
+  const local = normalizeIranMobile(phone);
+  const otp = normalizeOtpCode(code);
+  if (!local || !otp) return c.json({ error: 'کد نامعتبر است' }, 400);
+  const user = await getUserById(userId);
+  if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
+  if (user.phone) return c.json({ error: 'شماره این حساب قبلاً ثبت شده' }, 409);
+  const taken = await findUserByPhone(local);
+  if (taken && taken.id !== userId) return c.json({ error: 'این شماره قبلاً برای حساب دیگری ثبت شده' }, 409);
+  if (!(await verifyOtp(local, otp))) return c.json({ error: 'کد نامعتبر است' }, 400);
+  user.phone = local;
+  await updateUser(user);
+  await claimListedMemberships(user);
+  await persistPremiumExpiry(user);
+  const next = (await getUserById(userId))!;
+  return c.json({ user: publicUser(next), profile: cloudProfile(next) });
+});
+
 app.get('/auth/me', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
@@ -312,6 +500,7 @@ app.put('/auth/me', async (c) => {
     usePersianDigits?: boolean;
     debtReminders?: boolean;
     calendarMode?: 'jalali' | 'gregorian';
+    autoSync?: boolean;
     fxWatchlist?: string[];
     payoutMethods?: unknown;
   };
@@ -325,11 +514,175 @@ app.put('/auth/me', async (c) => {
     usePersianDigits: body.usePersianDigits,
     debtReminders: body.debtReminders,
     calendarMode: body.calendarMode,
+    autoSync: body.autoSync,
     fxWatchlist: body.fxWatchlist,
     payoutMethods: Array.isArray(body.payoutMethods) ? body.payoutMethods : undefined,
   });
   if (!next) return c.json({ error: 'پیدا نشد' }, 404);
   return c.json({ user: publicUser(next), profile: cloudProfile(next) });
+});
+
+app.post('/auth/me/avatar', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  let body: { mime?: unknown; dataBase64?: unknown; avatarPreset?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'بدنه نامعتبر است' }, 400);
+  }
+  const parsed = parseAvatarWrite(body);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const user = await getUserById(userId);
+  if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
+  if (parsed.kind === 'preset') {
+    user.avatarPreset = parsed.preset;
+    user.avatarDataUrl = undefined;
+  } else {
+    user.avatarDataUrl = parsed.dataUrl;
+    user.avatarPreset = undefined;
+  }
+  user.avatarUpdatedAt = new Date().toISOString();
+  await updateUser(user);
+  const next = (await getUserById(userId))!;
+  return c.json({ user: publicUser(next), profile: cloudProfile(next) });
+});
+
+app.delete('/auth/me/avatar', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const user = await getUserById(userId);
+  if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
+  user.avatarDataUrl = undefined;
+  user.avatarPreset = undefined;
+  user.avatarUpdatedAt = undefined;
+  await updateUser(user);
+  const next = (await getUserById(userId))!;
+  return c.json({ user: publicUser(next), profile: cloudProfile(next) });
+});
+
+app.get('/auth/username/available', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const parsed = parseUsername(c.req.query('u'));
+  if (!parsed.ok) {
+    return c.json({ available: false, reason: parsed.reason, error: USERNAME_ERROR_FA[parsed.reason] });
+  }
+  const taken = await findUserByUsername(parsed.username);
+  const available = !taken || taken.id === userId;
+  return c.json({
+    available,
+    username: parsed.username,
+    reason: available ? undefined : 'taken',
+    error: available ? undefined : 'این یوزرنیم قبلاً گرفته شده',
+  });
+});
+
+app.put('/auth/me/username', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  let body: { username?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'بدنه نامعتبر است' }, 400);
+  }
+  const user = await getUserById(userId);
+  if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
+  const raw = typeof body.username === 'string' ? body.username : '';
+  if (!raw.trim()) {
+    user.username = undefined;
+    await updateUser(user);
+    const next = (await getUserById(userId))!;
+    return c.json({ user: publicUser(next), profile: cloudProfile(next) });
+  }
+  const parsed = parseUsername(raw);
+  if (!parsed.ok) return c.json({ error: USERNAME_ERROR_FA[parsed.reason] }, 400);
+  const taken = await findUserByUsername(parsed.username);
+  if (taken && taken.id !== userId) return c.json({ error: 'این یوزرنیم قبلاً گرفته شده' }, 409);
+  user.username = parsed.username;
+  await updateUser(user);
+  const next = (await getUserById(userId))!;
+  return c.json({ user: publicUser(next), profile: cloudProfile(next) });
+});
+
+app.put('/auth/me/cover', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  let body: { mime?: unknown; dataBase64?: unknown; coverPreset?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'بدنه نامعتبر است' }, 400);
+  }
+  const parsed = parseCoverWrite(body);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const user = await getUserById(userId);
+  if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
+  if (parsed.kind === 'preset') {
+    user.profileCoverPreset = parsed.preset;
+    user.profileCoverDataUrl = undefined;
+  } else {
+    user.profileCoverDataUrl = parsed.dataUrl;
+    user.profileCoverPreset = undefined;
+  }
+  await updateUser(user);
+  const next = (await getUserById(userId))!;
+  return c.json({ user: publicUser(next), profile: cloudProfile(next) });
+});
+
+app.delete('/auth/me/cover', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const user = await getUserById(userId);
+  if (!user || user.deletedAt) return c.json({ error: 'پیدا نشد' }, 404);
+  user.profileCoverPreset = undefined;
+  user.profileCoverDataUrl = undefined;
+  await updateUser(user);
+  const next = (await getUserById(userId))!;
+  return c.json({ user: publicUser(next), profile: cloudProfile(next) });
+});
+
+app.get('/u/:username', async (c) => {
+  const parsed = parseUsername(c.req.param('username'));
+  if (!parsed.ok) return c.json({ error: 'پیدا نشد' }, 404);
+  const user = await findUserByUsername(parsed.username);
+  if (!user || user.deletedAt || isUserBanned(user)) return c.json({ error: 'پیدا نشد' }, 404);
+  const stats = await publicProfileStats(user.id);
+  return c.json({
+    username: parsed.username,
+    displayName: user.displayName,
+    avatarPreset: user.avatarPreset || null,
+    avatarDataUrl: user.avatarDataUrl || null,
+    coverPreset: user.profileCoverPreset || null,
+    coverDataUrl: user.profileCoverDataUrl || null,
+    periodCount: stats.periodCount,
+    comemberCount: stats.comemberCount,
+  });
+});
+
+app.get('/users/lookup', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const parsed = parseUsername(c.req.query('username'));
+  if (!parsed.ok) return c.json({ error: USERNAME_ERROR_FA[parsed.reason] }, 400);
+  const user = await findUserByUsername(parsed.username);
+  if (!user || user.deletedAt || isUserBanned(user)) return c.json({ error: 'پیدا نشد' }, 404);
+  return c.json({
+    userId: user.id,
+    displayName: user.displayName,
+    username: user.username,
+    hasAvatar: Boolean(user.hasAvatar || user.avatarDataUrl || user.avatarPreset),
+    avatarPreset: user.avatarPreset || undefined,
+  });
+});
+
+app.get('/avatars', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const ids = parseAvatarIds(c.req.query('ids'));
+  const avatars = await listVisibleAvatars(userId, ids);
+  return c.json({ avatars });
 });
 
 app.post('/auth/delete-account', async (c) => {
@@ -346,6 +699,7 @@ app.post('/auth/delete-account', async (c) => {
     u.payoutMethods = undefined;
     u.fxWatchlist = undefined;
     u.prefsUpdatedAt = undefined;
+    wipePublicProfile(u);
     await updateUser(u);
   }
   await deleteSessionsForUser(userId);
@@ -401,6 +755,8 @@ app.post('/periods', async (c) => {
     lunchTurnMemberId?: string;
     encrypted?: boolean;
     visibility?: 'private' | 'public';
+    coverPreset?: string | null;
+    coverDataUrl?: string | null;
   }>();
   const taken = await listPeriodIds();
   let id = body.id;
@@ -412,7 +768,8 @@ app.post('/periods', async (c) => {
   const now = new Date().toISOString();
   const existing = await getPeriod(id);
   if (existing) {
-    if (existing.ownerId !== userId) return c.json({ error: 'اجازه ندارید' }, 403);
+    const actorRole = await periodRole(userId, id);
+    if (!actorRole || !canManagePeriod(actorRole)) return c.json({ error: 'اجازه ندارید' }, 403);
     if (body.title) existing.title = body.title;
     if (body.currency) existing.currency = body.currency;
     if (body.kind) existing.kind = body.kind;
@@ -423,11 +780,15 @@ app.post('/periods', async (c) => {
     if (body.lunchTurnMemberId) existing.lunchTurnMemberId = body.lunchTurnMemberId;
     if (body.encrypted !== undefined) existing.encrypted = body.encrypted;
     if (body.visibility === 'public' || body.visibility === 'private') existing.visibility = body.visibility;
+    const mediaError = applyPeriodMedia(existing, body);
+    if (mediaError) return c.json({ error: mediaError }, 400);
     existing.updatedAt = now;
     await updatePeriod(existing);
     if (body.members?.length) {
+      const existingMembers = await listMembers(id);
       for (const m of body.members) {
         if (!m.id || !m.displayName) continue;
+        const prev = existingMembers.find((row) => row.id === m.id);
         await upsertMember({
           id: m.id,
           periodId: id,
@@ -435,7 +796,13 @@ app.post('/periods', async (c) => {
           userId: m.userId,
           displayName: m.displayName,
           weightDefault: m.weightDefault ?? 1,
-          role: syncedMemberRole(m.role, m.userId, userId),
+          role: assignedMemberRole({
+            actorRole,
+            ownerId: existing.ownerId,
+            memberUserId: m.userId,
+            requested: m.role,
+            current: prev?.role,
+          }),
           phone: normalizeIranMobile(m.phone) || m.phone,
           email: normalizeEmail(m.email) || m.email,
           isPot: m.isPot,
@@ -468,6 +835,8 @@ app.post('/periods', async (c) => {
     encrypted: body.encrypted,
     visibility: body.visibility === 'public' ? 'public' : 'private',
   };
+  const mediaError = applyPeriodMedia(period, body);
+  if (mediaError) return c.json({ error: mediaError }, 400);
   await insertPeriod(period);
   if (body.members?.length) {
     let ownerAssigned = false;
@@ -479,6 +848,7 @@ app.post('/periods', async (c) => {
       } else if (memberUserId === userId) {
         ownerAssigned = true;
       }
+      // Same field set as the update branch: the first cloud push must not drop cards/SHEBA/units.
       await upsertMember({
         id: m.id || nanoid(),
         periodId: id,
@@ -490,6 +860,12 @@ app.post('/periods', async (c) => {
         phone: normalizeIranMobile(m.phone) || m.phone,
         email: normalizeEmail(m.email) || m.email,
         isPot: m.isPot,
+        excludeFromNew: m.excludeFromNew,
+        cardNumber: m.cardNumber,
+        sheba: m.sheba,
+        cardHolderName: m.cardHolderName,
+        bankName: m.bankName,
+        unitLabel: m.unitLabel,
       });
     }
   } else {
@@ -498,7 +874,7 @@ app.post('/periods', async (c) => {
       id: `own-${id}`,
       periodId: id,
       userId,
-      displayName: user?.displayName || 'من',
+      displayName: user?.displayName || 'کاربر',
       weightDefault: 1,
       role: 'owner',
     });
@@ -512,7 +888,8 @@ app.get('/periods/:id/snapshot', async (c) => {
   const period = await getPeriod(periodId);
   if (!period || !(await canAccessPeriod(userId, periodId, 'read'))) return c.json({ error: 'پیدا نشد' }, 404);
   const snap = await loadPeriodSnapshot(periodId);
-  return c.json(snap ? snapshotJson(snap) : { error: 'پیدا نشد' });
+  if (!snap) return c.json({ error: 'پیدا نشد' }, 404);
+  return c.json(snapshotJson(snap, await canSeeInvites(userId, periodId)));
 });
 
 app.post('/periods/:id/sync', async (c) => {
@@ -534,17 +911,7 @@ app.post('/periods/:id/sync', async (c) => {
 
   const snap = await loadPeriodSnapshot(periodId);
   if (!snap) return c.json({ error: 'پیدا نشد' }, 404);
-  return c.json({
-    version: snap.version,
-    expenses: snap.expenses,
-    payments: snap.payments,
-    members: snap.members,
-    chat: snap.chat,
-    activity: snap.activity,
-    recurring: snap.recurring,
-    period: snap.period,
-    invites: snap.invites,
-  });
+  return c.json(snapshotJson(snap, await canSeeInvites(userId, periodId)));
 });
 
 async function writeExpenseFromBody(periodId: string, body: Partial<ExpenseRecord> & { id?: string }) {
@@ -575,8 +942,13 @@ async function writeExpenseFromBody(periodId: string, body: Partial<ExpenseRecor
     clientId: body.clientId || prev?.clientId,
     version: (prev?.version || body.version || 0) + 1,
   };
+  // Same check the app runs before save; a stored mismatch would make computeShares throw on every read.
+  if (!expense.deletedAt) {
+    const check = validateShares(expense.splitMode, expenseTotal(expense), expense.shares);
+    if (!check.ok) return { error: describeSplitError(check.error) };
+  }
   await upsertExpense(expense);
-  return expense;
+  return { expense };
 }
 
 app.post('/periods/:id/expenses', async (c) => {
@@ -584,7 +956,10 @@ app.post('/periods/:id/expenses', async (c) => {
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
   const body = await c.req.json<Partial<ExpenseRecord>>();
-  const expense = await writeExpenseFromBody(periodId, body);
+  const isNew = !(body.id && (await getExpense(body.id)));
+  const written = await writeExpenseFromBody(periodId, body);
+  if ('error' in written) return c.json({ error: written.error }, 400);
+  const { expense } = written;
   await insertActivity({
     id: nanoid(),
     periodId,
@@ -594,6 +969,9 @@ app.post('/periods/:id/expenses', async (c) => {
     createdAt: expense.updatedAt,
     entityId: expense.id,
   });
+  if (isNew) {
+    await notifyPeriodMembers(periodId, gate.userId, 'هزینه جدید', `ثبت هزینه «${expense.title}»`);
+  }
   const period = await getPeriod(periodId);
   return c.json({ expense, version: period?.version ?? 0 });
 });
@@ -605,9 +983,10 @@ app.patch('/periods/:id/expenses/:expenseId', async (c) => {
   const prev = await getExpense(c.req.param('expenseId'));
   if (!prev || prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
   const body = await c.req.json<Partial<ExpenseRecord>>();
-  const expense = await writeExpenseFromBody(periodId, { ...prev, ...body, id: prev.id });
+  const written = await writeExpenseFromBody(periodId, { ...prev, ...body, id: prev.id });
+  if ('error' in written) return c.json({ error: written.error }, 400);
   const period = await getPeriod(periodId);
-  return c.json({ expense, version: period?.version ?? 0 });
+  return c.json({ expense: written.expense, version: period?.version ?? 0 });
 });
 
 app.delete('/periods/:id/expenses/:expenseId', async (c) => {
@@ -658,22 +1037,53 @@ async function writePaymentFromBody(periodId: string, body: Partial<PaymentRecor
   return { payment };
 }
 
+/** Same debtor/creditor/manager rules the app enforces locally (`@dongham/ledger` settlement). */
+async function settlementDenied(
+  c: Context<{ Variables: Variables }>,
+  gate: { userId: string; role: MemberRole },
+  periodId: string,
+  next: Partial<PaymentRecord>,
+  prev?: PaymentRecord | null,
+) {
+  const actor = { memberIds: await actorMemberIds(gate.userId, periodId), role: gate.role };
+  const denial = settlementWriteDenial(
+    actor,
+    {
+      kind: next.kind || prev?.kind,
+      status: next.status || prev?.status,
+      fromMemberId: next.fromMemberId || prev?.fromMemberId || '',
+      toMemberId: next.toMemberId || prev?.toMemberId || '',
+    },
+    prev ? { kind: prev.kind, status: prev.status, fromMemberId: prev.fromMemberId, toMemberId: prev.toMemberId } : null,
+  );
+  return denial ? c.json({ error: SETTLEMENT_DENIAL_MESSAGE[denial], code: denial }, 403) : null;
+}
+
 app.post('/periods/:id/payments', async (c) => {
   const periodId = c.req.param('id');
   const gate = await requireWrite(c, periodId);
   if ('error' in gate) return gate.error;
   const body = await c.req.json<Partial<PaymentRecord>>();
+  const prev = body.id ? await getPayment(body.id) : undefined;
+  const isNew = !prev;
+  if (prev && prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
+  const denied = await settlementDenied(c, gate, periodId, body, prev);
+  if (denied) return denied;
   const result = await writePaymentFromBody(periodId, body);
   if ('duplicate' in result) return c.json({ error: 'پرداخت در انتظار تأیید از قبل وجود دارد' }, 409);
+  const summary = result.payment.kind === 'loan' ? 'ثبت قرض' : 'ثبت تسویه';
   await insertActivity({
     id: nanoid(),
     periodId,
     actorName: (await getUserById(gate.userId))?.displayName || 'کاربر',
     action: 'payment.upsert',
-    summary: result.payment.kind === 'loan' ? 'ثبت قرض' : 'ثبت تسویه',
+    summary,
     createdAt: result.payment.updatedAt,
     entityId: result.payment.id,
   });
+  if (isNew) {
+    await notifyPeriodMembers(periodId, gate.userId, summary, summary);
+  }
   const period = await getPeriod(periodId);
   return c.json({ ...result, version: period?.version ?? 0 });
 });
@@ -685,6 +1095,8 @@ app.patch('/periods/:id/payments/:paymentId', async (c) => {
   const prev = await getPayment(c.req.param('paymentId'));
   if (!prev || prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
   const body = await c.req.json<Partial<PaymentRecord>>();
+  const denied = await settlementDenied(c, gate, periodId, body, prev);
+  if (denied) return denied;
   const result = await writePaymentFromBody(periodId, { ...prev, ...body, id: prev.id });
   if ('duplicate' in result) return c.json({ error: 'پرداخت در انتظار تأیید از قبل وجود دارد' }, 409);
   const period = await getPeriod(periodId);
@@ -697,6 +1109,8 @@ app.delete('/periods/:id/payments/:paymentId', async (c) => {
   if ('error' in gate) return gate.error;
   const prev = await getPayment(c.req.param('paymentId'));
   if (!prev || prev.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
+  const denied = await settlementDenied(c, gate, periodId, {}, prev);
+  if (denied) return denied;
   const now = new Date().toISOString();
   prev.deletedAt = now;
   prev.updatedAt = now;
@@ -708,21 +1122,40 @@ app.delete('/periods/:id/payments/:paymentId', async (c) => {
 
 app.post('/periods/:id/members', async (c) => {
   const periodId = c.req.param('id');
-  const gate = await requireWrite(c, periodId);
+  const gate = await requireManage(c, periodId);
   if ('error' in gate) return gate.error;
   const period = await getPeriod(periodId);
   if (!period) return c.json({ error: 'پیدا نشد' }, 404);
-  const body = await c.req.json<Partial<MemberRecord>>();
+  const body = await c.req.json<Partial<MemberRecord> & { username?: string }>();
+  let linked: UserRecord | undefined;
+  if (body.username) {
+    const parsed = parseUsername(body.username);
+    if (!parsed.ok) return c.json({ error: USERNAME_ERROR_FA[parsed.reason] }, 400);
+    const found = await findUserByUsername(parsed.username);
+    if (!found || found.deletedAt || isUserBanned(found)) return c.json({ error: 'پیدا نشد' }, 404);
+    const existing = await listMembers(periodId);
+    if (existing.some((m) => m.userId === found.id)) {
+      return c.json({ error: 'این فرد از قبل در دوره است' }, 409);
+    }
+    linked = found;
+  }
+  const memberUserId = linked?.id || body.userId;
+  const role = assignedMemberRole({
+    actorRole: gate.role,
+    ownerId: period.ownerId,
+    memberUserId,
+    requested: body.role,
+  });
   const member: MemberRecord = {
     id: body.id || nanoid(),
     periodId,
-    displayName: body.displayName || 'عضو',
+    displayName: linked?.displayName || body.displayName || 'عضو',
     guestKey: body.guestKey,
-    userId: body.userId,
+    userId: memberUserId,
     weightDefault: body.weightDefault ?? 1,
-    role: syncedMemberRole(body.role, body.userId, period.ownerId),
-    phone: normalizeIranMobile(body.phone) || body.phone,
-    email: normalizeEmail(body.email) || body.email,
+    role,
+    phone: normalizeIranMobile(linked?.phone || body.phone) || linked?.phone || body.phone,
+    email: normalizeEmail(linked?.email || body.email) || linked?.email || body.email,
     excludeFromNew: body.excludeFromNew,
     isPot: body.isPot,
     cardNumber: body.cardNumber,
@@ -733,6 +1166,9 @@ app.post('/periods/:id/members', async (c) => {
   };
   await upsertMember(member);
   const version = await bumpPeriodVersion(periodId);
+  if (linked) {
+    await notifyPeriodMembers(periodId, gate.userId, 'عضو جدید', `${member.displayName} به دوره اضافه شد`);
+  }
   return c.json({ member, version });
 });
 
@@ -744,11 +1180,37 @@ app.patch('/periods/:id/members/:memberId', async (c) => {
   const existing = await getMember(c.req.param('memberId'));
   if (!period || !existing || existing.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
   const body = await c.req.json<Partial<MemberRecord>>();
+  const mine = await actorMemberIds(gate.userId, periodId);
+  const isSelf = mine.includes(existing.id);
+  const manage = canManagePeriod(gate.role);
+  if (!manage && !isSelf) {
+    return c.json({ error: 'اجازه ندارید' }, 403);
+  }
+  if (body.role && body.role !== existing.role) {
+    if (!manage) {
+      return c.json({ error: 'فقط مالک یا مدیر اجازهٔ این کار را دارد' }, 403);
+    }
+    const targetIsOwner = Boolean(existing.userId && existing.userId === period.ownerId) || existing.role === 'owner';
+    if (
+      body.role !== existing.role &&
+      !canAssignMemberRole(gate.role, { role: existing.role, isOwner: targetIsOwner }, body.role)
+    ) {
+      return c.json({ error: 'اجازه ندارید' }, 403);
+    }
+    existing.role = syncedMemberRole(body.role, existing.userId, period.ownerId);
+  }
+  if (!manage) {
+    if (body.isPot !== undefined && Boolean(body.isPot) !== Boolean(existing.isPot)) {
+      return c.json({ error: 'اجازه ندارید' }, 403);
+    }
+    if (body.userId && body.userId !== gate.userId) {
+      return c.json({ error: 'اجازه ندارید' }, 403);
+    }
+  }
   if (body.displayName) existing.displayName = body.displayName;
   if (body.userId) existing.userId = body.userId;
   if (body.phone !== undefined) existing.phone = normalizeIranMobile(body.phone) || body.phone;
   if (body.email !== undefined) existing.email = normalizeEmail(body.email) || body.email;
-  if (body.role) existing.role = syncedMemberRole(body.role, existing.userId, period.ownerId);
   if (body.excludeFromNew !== undefined) existing.excludeFromNew = body.excludeFromNew;
   if (body.isPot !== undefined) existing.isPot = body.isPot;
   if (body.cardNumber !== undefined) existing.cardNumber = body.cardNumber;
@@ -763,12 +1225,10 @@ app.patch('/periods/:id/members/:memberId', async (c) => {
 });
 
 app.post('/periods/:id/invites', async (c) => {
-  const userId = requireUser(c);
-  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const periodId = c.req.param('id');
-  if (!(await canAccessPeriod(userId, periodId, 'write')) || (await periodRole(userId, periodId)) === 'viewer') {
-    return c.json({ error: 'اجازه ندارید' }, 403);
-  }
+  const gate = await requireManage(c, periodId);
+  if ('error' in gate) return gate.error;
+  const userId = gate.userId;
   const token = nanoid(12);
   const expiresAt = inviteExpiresAt();
   await insertInvite({
@@ -805,12 +1265,18 @@ app.post('/invites/:token/join', async (c) => {
   const phone = normalizeIranMobile(user.phone);
   const email = normalizeEmail(user.email);
   const members = await listMembers(invite.periodId);
-  const existing = members.find((m) => {
-    if (m.userId === userId || (guestKey && m.guestKey === guestKey)) return true;
+  const matches = (m: MemberRecord) => {
+    if (guestKey && m.guestKey === guestKey) return true;
     if (phone && normalizeIranMobile(m.phone) === phone) return true;
     if (email && normalizeEmail(m.email) === email) return true;
     return false;
-  });
+  };
+  // Already linked to this account wins; otherwise only an unclaimed seat may be taken.
+  const existing = members.find((m) => m.userId === userId) || members.find((m) => !m.userId && matches(m));
+  if (!existing) {
+    const claimedByOther = members.find((m) => m.userId && m.userId !== userId && matches(m));
+    if (claimedByOther) return c.json({ error: 'این جایگاه قبلاً به حساب دیگری وصل شده است' }, 409);
+  }
   if (existing) {
     existing.userId = userId;
     if (guestKey) existing.guestKey = guestKey;
@@ -818,18 +1284,21 @@ app.post('/invites/:token/join', async (c) => {
     const version = await bumpPeriodVersion(invite.periodId);
     return c.json({ memberId: existing.id, periodId: invite.periodId, version });
   }
+  const memberName = parseRequiredDisplayName(displayName) || parseRequiredDisplayName(user.displayName);
+  if (!memberName) return c.json({ error: 'نام نمایشی لازم است' }, 400);
   const memberId = nanoid();
   await upsertMember({
     id: memberId,
     periodId: invite.periodId,
     userId,
     guestKey,
-    displayName: displayName || user.displayName || 'مهمان',
+    displayName: memberName,
     weightDefault: 1,
     role: 'member',
     phone: phone || undefined,
     email: email || undefined,
   });
+  await notifyPeriodMembers(invite.periodId, userId, 'عضو جدید', `${memberName} به دوره پیوست`);
   const version = await bumpPeriodVersion(invite.periodId);
   return c.json({ memberId, periodId: invite.periodId, version });
 });
@@ -919,14 +1388,15 @@ app.delete('/friends/:id', async (c) => {
 });
 
 app.post('/attachments', async (c) => {
-  const userId = requireUser(c);
-  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   const { periodId, mime, dataBase64 } = await c.req.json<{
     periodId: string;
     mime: string;
     dataBase64: string;
   }>();
-  if (!(await canAccessPeriod(userId, periodId, 'write'))) return periodAccessDenied(c, userId);
+  if (!periodId) return c.json({ error: 'دوره مشخص نیست' }, 400);
+  // Same gate as expenses/payments/chat: members write, viewers do not.
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
   if (!dataBase64 || dataBase64.length > 2_500_000) {
     return c.json({ error: 'فایل نامعتبر یا خیلی بزرگ است' }, 400);
   }
@@ -964,13 +1434,61 @@ app.post('/notifications/:id/read', async (c) => {
   return c.json({ ok: true });
 });
 
-app.post('/periods/:id/recurring', async (c) => {
+app.get('/push/vapid', (c) => {
+  const publicKey = getVapidPublicKey();
+  if (!publicKey) return c.json({ error: 'پوش فعال نیست' }, 503);
+  return c.json({ publicKey });
+});
+
+app.post('/push/subscribe', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  const periodId = c.req.param('id');
-  if (!(await canAccessPeriod(userId, periodId, 'write')) || (await periodRole(userId, periodId)) === 'viewer') {
-    return c.json({ error: 'اجازه ندارید' }, 403);
+  if (!getVapidPublicKey()) return c.json({ error: 'پوش فعال نیست' }, 503);
+  const body = await c.req.json<{ endpoint?: string; keys?: { p256dh?: string; auth?: string } }>();
+  const endpoint = (body.endpoint || '').trim();
+  const p256dh = (body.keys?.p256dh || '').trim();
+  const auth = (body.keys?.auth || '').trim();
+  if (!endpoint || !p256dh || !auth) return c.json({ error: 'سابسکریپشن نامعتبر است' }, 400);
+  if (endpoint.length > 768) return c.json({ error: 'سابسکریپشن نامعتبر است' }, 400);
+  await upsertSubscription({
+    userId,
+    endpoint,
+    p256dh,
+    auth,
+    userAgent: c.req.header('User-Agent')?.slice(0, 255),
+  });
+  return c.json({ ok: true });
+});
+
+app.delete('/push/subscribe', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const fromQuery = c.req.query('endpoint');
+  let endpoint = (fromQuery || '').trim();
+  if (!endpoint) {
+    const body = await c.req.json<{ endpoint?: string }>().catch(() => ({ endpoint: '' }));
+    endpoint = (body.endpoint || '').trim();
   }
+  if (!endpoint) return c.json({ error: 'سابسکریپشن نامعتبر است' }, 400);
+  await deleteSubscription(endpoint, userId);
+  return c.json({ ok: true });
+});
+
+app.post('/push/test', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  await insertNotification({
+    userId,
+    title: 'دونگ‌هام',
+    body: 'نوتیفیکیشن آزمایشی',
+  });
+  return c.json({ ok: true, push: Boolean(getVapidPublicKey()) });
+});
+
+app.post('/periods/:id/recurring', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
   const body = await c.req.json<{
     id?: string;
     title: string;
@@ -981,28 +1499,41 @@ app.post('/periods/:id/recurring', async (c) => {
     shares: ExpenseRecord['shares'];
     intervalDays: number;
     cadence?: RecurringCadence;
+    nextAt?: string;
+    active?: boolean;
   }>();
   const id = body.id || nanoid();
   const cadence = body.cadence || inferCadence(body.intervalDays);
-  const nextAt = nextRecurringAt(new Date().toISOString(), cadence, body.intervalDays);
+  // Last write wins for the client's own schedule: a rule that just ran (or was paused) must not be
+  // re-armed or re-activated by the sync upsert. Missing fields fall back to the old behaviour.
+  const clientNextAt = body.nextAt && !Number.isNaN(Date.parse(body.nextAt)) ? new Date(body.nextAt).toISOString() : undefined;
+  const nextAt = clientNextAt ?? nextRecurringAt(new Date().toISOString(), cadence, body.intervalDays);
+  const active = typeof body.active === 'boolean' ? body.active : true;
   await upsertRecurring({
     id,
     periodId,
-    ...body,
+    title: body.title,
+    amount: body.amount,
+    currency: body.currency,
+    payerId: body.payerId,
+    splitMode: body.splitMode,
+    shares: body.shares,
+    intervalDays: body.intervalDays,
     cadence,
     nextAt,
-    active: true,
+    active,
   });
   const period = await getPeriod(periodId);
-  return c.json({ id, nextAt, version: period?.version ?? 0 });
+  return c.json({ id, nextAt, active, version: period?.version ?? 0 });
 });
 
 app.post('/periods/:id/recurring/run', async (c) => {
-  const userId = requireUser(c);
   const periodId = c.req.param('id');
-  if (!(await canAccessPeriod(userId, periodId, 'write'))) return periodAccessDenied(c, userId);
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
   const created: string[] = [];
   const due = await listDueRecurring(periodId);
+  const period0 = due.length ? await getPeriod(periodId) : null;
   for (const rule of due) {
     const expenseId = nanoid();
     const now = new Date().toISOString();
@@ -1019,7 +1550,7 @@ app.post('/periods/:id/recurring/run', async (c) => {
       service: { type: 'none', value: 0 },
       tip: { type: 'none', value: 0 },
       tags: ['تکراری'],
-      fxRate: 1,
+      fxRate: await recurringFxRate(rule.currency, period0?.currency),
       createdAt: now,
       occurredAt: now,
       updatedAt: now,
@@ -1042,22 +1573,25 @@ app.get('/periods/:id/chat', async (c) => {
 });
 
 app.post('/periods/:id/chat', async (c) => {
-  const userId = requireUser(c);
   const periodId = c.req.param('id');
-  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  if (!(await canAccessPeriod(userId, periodId, 'write')) || (await periodRole(userId, periodId)) === 'viewer') {
-    return c.json({ error: 'اجازه ندارید' }, 403);
-  }
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
   const { id, senderMemberId, body, expenseId } = await c.req.json<{
     id?: string;
     senderMemberId: string;
     body: string;
     expenseId?: string;
   }>();
+  const allowed = await actorMemberIds(gate.userId, periodId);
+  if (senderMemberId && allowed.length && !allowed.includes(senderMemberId)) {
+    return c.json({ error: 'فرستنده نامعتبر است' }, 403);
+  }
+  const sender = (senderMemberId && allowed.includes(senderMemberId) ? senderMemberId : allowed[0]) || '';
+  if (!sender) return c.json({ error: 'جایگاه شما در این دوره پیدا نشد' }, 403);
   const msg = {
     id: id || nanoid(),
     periodId,
-    senderMemberId,
+    senderMemberId: sender,
     body,
     expenseId,
     createdAt: new Date().toISOString(),
@@ -1068,12 +1602,10 @@ app.post('/periods/:id/chat', async (c) => {
 });
 
 app.post('/periods/:id/activity', async (c) => {
-  const userId = requireUser(c);
   const periodId = c.req.param('id');
-  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  if (!(await canAccessPeriod(userId, periodId, 'write')) || (await periodRole(userId, periodId)) === 'viewer') {
-    return c.json({ error: 'اجازه ندارید' }, 403);
-  }
+  const gate = await requireWrite(c, periodId);
+  if ('error' in gate) return gate.error;
+  const userId = gate.userId;
   const body = await c.req.json<{
     id?: string;
     actorName?: string;
@@ -1126,43 +1658,7 @@ app.post('/payout/card-to-sheba', async (c) => {
   }
 });
 
-app.post('/billing/bazaar/verify', async (c) => {
-  const userId = requireUser(c);
-  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  const { sku, purchaseToken } = await c.req.json<{ sku?: string; purchaseToken?: string }>();
-  if (!sku || !purchaseToken) return c.json({ error: 'sku و توکن لازم است' }, 400);
-  const result = await verifyBazaarPurchase({ sku, purchaseToken });
-  if (!result.ok) return c.json({ error: result.error || 'تأیید نشد' }, 400);
-  const until = premiumUntilFromNow(sku.includes('year') ? 365 : 30);
-  const u = await getUserById(userId);
-  if (u) {
-    u.plan = 'premium';
-    u.premiumUntil = until;
-    await updateUser(u);
-  }
-  await recordBillingEvent({ userId, source: 'bazaar', sku, until });
-  const user = await getUserById(userId);
-  return c.json({ ok: true, user: user ? publicUser(user) : undefined });
-});
-
-app.post('/billing/myket/verify', async (c) => {
-  const userId = requireUser(c);
-  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
-  const { sku, purchaseToken } = await c.req.json<{ sku?: string; purchaseToken?: string }>();
-  if (!sku || !purchaseToken) return c.json({ error: 'sku و توکن لازم است' }, 400);
-  const result = await verifyMyketPurchase({ sku, purchaseToken });
-  if (!result.ok) return c.json({ error: result.error || 'تأیید نشد' }, 400);
-  const until = premiumUntilFromNow(sku.includes('year') ? 365 : 30);
-  const u = await getUserById(userId);
-  if (u) {
-    u.plan = 'premium';
-    u.premiumUntil = until;
-    await updateUser(u);
-  }
-  await recordBillingEvent({ userId, source: 'myket', sku, until });
-  const user = await getUserById(userId);
-  return c.json({ ok: true, user: user ? publicUser(user) : undefined });
-});
+app.get('/billing/plans', (c) => c.json({ plans: skuPrices() }));
 
 app.post('/billing/zarinpal/request', async (c) => {
   const userId = requireUser(c);
@@ -1192,19 +1688,6 @@ app.post('/billing/zarinpal/verify', async (c) => {
   if (result.userId && result.userId !== userId) return c.json({ error: 'تراکنش متعلق به این حساب نیست' }, 403);
   const user = await getUserById(userId);
   return c.json({ ok: true, user: user ? publicUser(user) : undefined });
-});
-
-app.post('/telegram/webhook', async (c) => {
-  const secret = process.env.TELEGRAM_WEBHOOK_SECRET;
-  if (secret && c.req.header('X-Telegram-Bot-Api-Secret-Token') !== secret) {
-    return c.json({ error: 'دسترسی ندارید' }, 403);
-  }
-  const update = await c.req.json();
-  const result = await handleTelegramUpdate(update);
-  if (result.reply && update?.message?.chat?.id) {
-    await telegramSend(update.message.chat.id, result.reply);
-  }
-  return c.json({ ok: true });
 });
 
 export default app;

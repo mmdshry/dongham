@@ -1,18 +1,14 @@
 export { inviteExpiresAt, isInviteExpired } from '@dongham/ledger';
 
+/** Path of the React home (period list). Apex `/` is the marketing site. */
+export const APP_HOME_PATH = '/app';
+
 export function appPublicUrl(): string {
   const raw = (process.env.APP_PUBLIC_URL || '').trim().replace(/\/$/, '');
   if (raw) return raw;
-  return process.env.NODE_ENV === 'production' ? 'https://app.dongham.ir' : 'http://localhost:5173';
+  return process.env.NODE_ENV === 'production' ? 'https://dongham.ir' : 'http://localhost:5173';
 }
 
-export function telegramBotUsername(): string {
-  return (process.env.TELEGRAM_BOT_USERNAME || '').replace(/^@/, '').trim();
+export function appHomeUrl(): string {
+  return `${appPublicUrl()}${APP_HOME_PATH}`;
 }
-
-export function telegramMiniAppInviteUrl(token: string): string | undefined {
-  const bot = telegramBotUsername();
-  if (!bot) return undefined;
-  return `https://t.me/${bot}/app?startapp=${encodeURIComponent(token)}`;
-}
-

@@ -9,6 +9,8 @@ export type AdminUser = {
   bannedAt?: string;
   plan: 'free' | 'premium';
   premiumUntil?: string;
+  hasAvatar?: boolean;
+  username?: string;
 };
 
 export type AdminStats = {
@@ -20,7 +22,6 @@ export type AdminStats = {
   payments: number;
   sessions: number;
   zarinpalPending: number;
-  telegramLinks: number;
   health: { ok: boolean; service: string };
 };
 
@@ -46,7 +47,7 @@ export type Member = {
   periodId: string;
   userId?: string;
   displayName: string;
-  role: 'owner' | 'member' | 'viewer';
+  role: 'owner' | 'manager' | 'member' | 'viewer';
   phone?: string;
   email?: string;
 };

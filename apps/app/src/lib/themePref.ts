@@ -4,8 +4,8 @@ export const THEME_STORAGE_KEY = 'dongham.theme';
 export type ThemePref = 'light' | 'dark' | 'system';
 export type ResolvedTheme = 'light' | 'dark';
 
-export const THEME_META_LIGHT = '#4A6B5C';
-export const THEME_META_DARK = '#0B0F14';
+export const THEME_META_LIGHT = '#5E7262';
+export const THEME_META_DARK = '#1C221F';
 
 export function readThemePref(): ThemePref {
   try {

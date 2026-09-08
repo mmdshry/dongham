@@ -1,6 +1,7 @@
 import Dexie, { type Table } from 'dexie';
 import type {
   IndexAsset,
+  MemberRole,
   PeriodKind,
   PeriodTemplate,
   RecurringCadence,
@@ -44,8 +45,14 @@ export interface LocalProfile {
   premiumUntil?: string;
   debtReminders?: boolean;
   calendarMode?: 'jalali' | 'gregorian';
+  autoSync?: boolean;
   prefsUpdatedAt?: string;
   payoutDirty?: boolean;
+  avatarDataUrl?: string;
+  avatarPreset?: string;
+  username?: string;
+  profileCoverPreset?: string;
+  profileCoverDataUrl?: string;
 }
 
 export interface LocalPeriod {
@@ -67,6 +74,8 @@ export interface LocalPeriod {
   lunchTurnMemberId?: string;
   visibility?: 'private' | 'public';
   ownerId?: string;
+  coverPreset?: string;
+  coverDataUrl?: string;
 }
 
 export interface LocalMember {
@@ -76,7 +85,7 @@ export interface LocalMember {
   guestKey?: string;
   userId?: string;
   weightDefault: number;
-  role: 'owner' | 'member' | 'viewer';
+  role: MemberRole;
   phone?: string;
   email?: string;
   cardNumber?: string;
@@ -201,6 +210,12 @@ export interface LocalActivity {
   entityId?: string;
 }
 
+export interface LocalAvatar {
+  userId: string;
+  dataUrl: string;
+  updatedAt: string;
+}
+
 class DonghamDB extends Dexie {
   profile!: Table<LocalProfile, string>;
   periods!: Table<LocalPeriod, string>;
@@ -214,6 +229,7 @@ class DonghamDB extends Dexie {
   recurring!: Table<LocalRecurring, string>;
   notifications!: Table<LocalNotification, string>;
   activity!: Table<LocalActivity, string>;
+  avatars!: Table<LocalAvatar, string>;
   meta!: Table<{ key: string; value: string }, string>;
 
   constructor() {
@@ -314,9 +330,20 @@ class DonghamDB extends Dexie {
           if (!p.calendarMode) p.calendarMode = 'jalali';
         });
     });
+    this.version(6).stores({
+      avatars: 'userId',
+    });
+    this.version(7).upgrade(async (tx) => {
+      await tx
+        .table('profile')
+        .toCollection()
+        .modify((p: LocalProfile) => {
+          if (p.autoSync === undefined && p.token) p.autoSync = true;
+        });
+    });
   }
 }
 
 export const db = new DonghamDB();
 
-export const POT_DISPLAY_NAME = 'صندوق';
+export const POT_DISPLAY_NAME = '?????';

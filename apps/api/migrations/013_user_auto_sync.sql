@@ -1,0 +1,2 @@
+ALTER TABLE users
+  ADD COLUMN auto_sync TINYINT(1) NULL;

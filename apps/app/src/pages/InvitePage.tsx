@@ -3,8 +3,11 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Shell } from '../components/ui';
 import { api, ensureProfile } from '../lib/api';
+import { updateAccountPrefs } from '../lib/cloudProfile';
+import { currencyLabel } from '../lib/currencies';
 import { db } from '../lib/db';
 import { isInviteExpired } from '@dongham/ledger';
+import { DISPLAY_NAME_MAX, needsDisplayName, normalizeDisplayName } from '../lib/memberLabel';
 import { applyPeriodSnapshot, type PeriodSnapshot } from '../lib/sync';
 import { useUiStore } from '../store/ui';
 
@@ -55,7 +58,14 @@ export function InvitePage() {
 
   const join = async () => {
     const profile = await ensureProfile();
-    const displayName = name.trim() || profile.displayName;
+    const displayName = normalizeDisplayName(name) || normalizeDisplayName(profile.displayName);
+    if (needsDisplayName(displayName)) {
+      setToast('نام لازم است', 'error');
+      return;
+    }
+    if (needsDisplayName(profile.displayName)) {
+      await updateAccountPrefs({ displayName });
+    }
     if (localOnly && info?.period) {
       const already = (await db.members.where('periodId').equals(info.period.id).toArray()).find(
         (m) => m.guestKey === profile.guestKey || (profile.userId && m.userId === profile.userId),
@@ -71,12 +81,12 @@ export function InvitePage() {
           role: 'member',
         });
       }
-      setToast('به دوره محلی پیوستید');
+      setToast('به دوره محلی پیوستید', 'success');
       navigate(`/periods/${info.period.id}`);
       return;
     }
     if (!profile.token) {
-      setToast('برای پیوستن از گوشی دیگر ابتدا وارد شوید');
+      setToast('برای پیوستن از گوشی دیگر ابتدا وارد شوید', 'warn');
       navigate(`/auth?next=/i/${token}`);
       return;
     }
@@ -90,10 +100,10 @@ export function InvitePage() {
       });
       const snap = await api<PeriodSnapshot>(`/periods/${res.periodId}/snapshot`);
       await applyPeriodSnapshot(snap);
-      setToast('به گروه پیوستید');
+      setToast('به دوره پیوستید', 'success');
       navigate(`/periods/${res.periodId}`);
     } catch (e) {
-      setToast(e instanceof Error ? e.message : 'خطا در پیوستن');
+      setToast(e instanceof Error ? e.message : 'خطا در پیوستن', 'error');
     }
   };
 
@@ -107,12 +117,18 @@ export function InvitePage() {
             <div>
               <p className="text-xs text-brand-700">دونگ‌هام</p>
               <h2 className="text-2xl font-extrabold">{info.period.title}</h2>
-              <p className="mt-1 text-sm text-ink-700/70">ارز: {info.period.currency}</p>
+              <p className="mt-1 text-sm text-ink-700/70">ارز: {currencyLabel(info.period.currency)}</p>
               <p className="mt-2 text-sm">اعضا: {(info.members || []).map((m) => m.displayName).join('، ')}</p>
             </div>
             <div>
               <label className="label">نام شما</label>
-              <input className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="مهمان" />
+              <input
+                className="input"
+                value={name}
+                maxLength={DISPLAY_NAME_MAX}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="مثلاً محمد"
+              />
             </div>
             <button type="button" className="btn-primary w-full" onClick={() => void join()}>
               پیوستن و شروع ثبت هزینه

@@ -47,7 +47,7 @@ export function TagPicker({
     const tag = draft.trim();
     if (!tag) return;
     if (/[,،]/.test(tag)) {
-      setToast('تگ را بدون ویرگول وارد کنید و با تیک انتخاب کنید');
+      setToast('تگ را بدون ویرگول وارد کنید و با تیک انتخاب کنید', 'error');
       return;
     }
     setExtra((prev) => uniqueTags([...prev, tag]));

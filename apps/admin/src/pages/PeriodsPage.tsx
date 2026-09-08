@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { SearchBox } from '../components/ui';
+import { EmptyRow, PageLoading, SearchBox } from '../components/ui';
 import { api, faDate, faNum, type Page } from '../lib/api';
 import { useSession } from '../lib/session';
 import type { PeriodListItem } from '../lib/types';
@@ -18,7 +18,7 @@ export function PeriodsPage() {
           const params = new URLSearchParams({ q, limit: '50', offset: '0' });
           setData(await api<Page<PeriodListItem>>(`/admin/periods?${params}`));
         } catch (e) {
-          setToast(e instanceof Error ? e.message : 'خطا');
+          setToast(e instanceof Error ? e.message : 'خطا', 'error');
         }
       })();
     }, 250);
@@ -33,7 +33,7 @@ export function PeriodsPage() {
       const next = await api<Page<PeriodListItem>>(`/admin/periods?${params}`);
       setData({ ...next, items: [...data.items, ...next.items] });
     } catch (e) {
-      setToast(e instanceof Error ? e.message : 'خطا');
+      setToast(e instanceof Error ? e.message : 'خطا', 'error');
     } finally {
       setLoadingMore(false);
     }
@@ -46,6 +46,9 @@ export function PeriodsPage() {
         <SearchBox value={q} onChange={setQ} placeholder="جستجو عنوان یا صاحب…" />
       </div>
       <p className="text-xs text-ink-700/60">{data ? `${faNum(data.items.length)} از ${faNum(data.total)} دوره` : ''}</p>
+      {!data ? (
+        <PageLoading />
+      ) : (
       <div className="table-wrap">
         <table className="data-table">
           <thead>
@@ -59,7 +62,8 @@ export function PeriodsPage() {
             </tr>
           </thead>
           <tbody>
-            {(data?.items || []).map((p) => (
+            {data.items.length ? (
+              data.items.map((p) => (
               <tr key={p.id}>
                 <td>
                   <Link className="font-semibold text-brand-800" to={`/periods/${p.id}`}>
@@ -72,10 +76,14 @@ export function PeriodsPage() {
                 <td>{faNum(p.expenseCount)}</td>
                 <td>{faDate(p.updatedAt)}</td>
               </tr>
-            ))}
+              ))
+            ) : (
+              <EmptyRow colSpan={6} />
+            )}
           </tbody>
         </table>
       </div>
+      )}
       {data && data.items.length < data.total ? (
         <button type="button" className="btn-ghost" disabled={loadingMore} onClick={() => void loadMore()}>
           {loadingMore ? '…' : 'بیشتر'}

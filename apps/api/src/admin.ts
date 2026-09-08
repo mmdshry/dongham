@@ -1,7 +1,16 @@
 import type { Context, Next } from 'hono';
 import { Hono } from 'hono';
 import { nanoid } from 'nanoid';
-import { isPremium as isPremiumEntitlement, nextRecurringAt, normalizeEmail, normalizeIranMobile, wrapDonghamExport } from '@dongham/ledger';
+import {
+  describeSplitError,
+  expenseTotal,
+  isPremium as isPremiumEntitlement,
+  nextRecurringAt,
+  normalizeEmail,
+  normalizeIranMobile,
+  validateShares,
+  wrapDonghamExport,
+} from '@dongham/ledger';
 import {
   adminPhones,
   createUser,
@@ -16,8 +25,8 @@ import {
 } from './auth.js';
 import { premiumUntilFromNow, recordBillingEvent } from './billing.js';
 import { getDb } from './db.js';
-import { getFxRates } from './fx.js';
-import { persistPremiumExpiry, publicUser } from './profile.js';
+import { getFxRates, recurringFxRate } from './fx.js';
+import { persistPremiumExpiry, publicUser, wipePublicProfile } from './profile.js';
 import { appPublicUrl } from './publicUrl.js';
 import {
   adminCounts,
@@ -34,7 +43,6 @@ import {
   deleteSessionByToken,
   deleteSessionsForUser,
   deleteSessionsForUserExcept,
-  deleteTelegramLink,
   deleteZarinpalPending,
   getAttachment,
   getExpense,
@@ -52,14 +60,12 @@ import {
   listActiveUserIds,
   listAdminAudit,
   listAdminPeriods,
-  listAllPeriods,
   listBillingEvents,
   listFriends,
   listNotifications,
   listPeriodsForUser,
   listSessionsForUser,
   listShebaLookups,
-  listTelegramLinks,
   listUsers,
   listZarinpalPending,
   loadPeriodSnapshot,
@@ -366,7 +372,16 @@ adminApp.get('/users/:id', async (c) => {
     createdAt: s.createdAt,
   }));
   const friends = await listFriends(user.id);
-  return c.json({ user: publicUser(user), periods, sessions, friends });
+  return c.json({
+    user: publicUser(user),
+    avatarDataUrl: user.avatarDataUrl,
+    avatarPreset: user.avatarPreset,
+    profileCoverPreset: user.profileCoverPreset,
+    profileCoverDataUrl: user.profileCoverDataUrl,
+    periods,
+    sessions,
+    friends,
+  });
 });
 
 adminApp.get('/users/:id/notifications', async (c) => {
@@ -401,6 +416,35 @@ adminApp.patch('/users/:id', async (c) => {
   await writeAudit(actor, 'user_rename', 'user', id, `تغییر نام به «${displayName}»`);
   const next = (await getUserById(id))!;
   return c.json({ user: publicUser(next) });
+});
+
+adminApp.delete('/users/:id/avatar', async (c) => {
+  const actor = (await actorFrom(c))!;
+  const id = c.req.param('id');
+  const user = await getUserById(id);
+  if (!user) return c.json({ error: 'پیدا نشد' }, 404);
+  if (!user.avatarDataUrl && !user.avatarPreset) return c.json({ error: 'آواتاری ثبت نشده' }, 404);
+  user.avatarDataUrl = undefined;
+  user.avatarPreset = undefined;
+  user.avatarUpdatedAt = undefined;
+  await updateUser(user);
+  await writeAudit(actor, 'user_avatar_delete', 'user', id, `حذف آواتار «${user.displayName}»`);
+  const next = (await getUserById(id))!;
+  return c.json({ user: publicUser(next), avatarDataUrl: next.avatarDataUrl, avatarPreset: next.avatarPreset });
+});
+
+adminApp.delete('/users/:id/cover', async (c) => {
+  const actor = (await actorFrom(c))!;
+  const id = c.req.param('id');
+  const user = await getUserById(id);
+  if (!user) return c.json({ error: 'پیدا نشد' }, 404);
+  if (!user.profileCoverDataUrl && !user.profileCoverPreset) return c.json({ error: 'بک‌گراندی ثبت نشده' }, 404);
+  user.profileCoverDataUrl = undefined;
+  user.profileCoverPreset = undefined;
+  await updateUser(user);
+  await writeAudit(actor, 'user_cover_delete', 'user', id, `حذف بک‌گراند «${user.displayName}»`);
+  const next = (await getUserById(id))!;
+  return c.json({ user: publicUser(next), profileCoverPreset: next.profileCoverPreset, profileCoverDataUrl: next.profileCoverDataUrl });
 });
 
 adminApp.post('/users/:id/premium', async (c) => {
@@ -456,6 +500,7 @@ adminApp.post('/users/:id/delete', async (c) => {
   user.googleId = undefined;
   user.passwordHash = undefined;
   user.displayName = 'حساب حذف‌شده';
+  wipePublicProfile(user);
   await updateUser(user);
   await deleteSessionsForUser(id);
   await writeAudit(actor, 'user_delete', 'user', id, 'حذف نرم حساب');
@@ -533,7 +578,6 @@ adminApp.get('/periods/:id', async (c) => {
   const snap = await loadPeriodSnapshot(id);
   if (!snap) return c.json({ error: 'پیدا نشد' }, 404);
   const owner = await getUserById(snap.period.ownerId);
-  const telegramLinks = (await listTelegramLinks()).filter((l) => l.periodId === id);
   return c.json({
     period: snap.period,
     owner: owner ? publicUser(owner) : null,
@@ -545,7 +589,6 @@ adminApp.get('/periods/:id', async (c) => {
     activity: snap.activity,
     invites: snap.invites,
     attachments: snap.attachments.map(publicAttachment),
-    telegramLinks,
   });
 });
 
@@ -634,7 +677,7 @@ adminApp.patch('/periods/:id/members/:memberId', async (c) => {
     return c.json({ error: 'صاحب دوره باید حساب کاربری داشته باشد' }, 400);
   }
   if (
-    (body.role === 'member' || body.role === 'viewer') &&
+    (body.role === 'member' || body.role === 'viewer' || body.role === 'manager') &&
     period &&
     member.userId &&
     period.ownerId === member.userId
@@ -647,7 +690,7 @@ adminApp.patch('/periods/:id/members/:memberId', async (c) => {
   if (body.role === 'owner' && member.userId) {
     await transferPeriodOwner(periodId, member.userId);
     member.role = 'owner';
-  } else if (body.role === 'member' || body.role === 'viewer') {
+  } else if (body.role === 'member' || body.role === 'viewer' || body.role === 'manager') {
     member.role = body.role;
   }
   await upsertMember(member);
@@ -689,6 +732,9 @@ adminApp.patch('/periods/:id/expenses/:expenseId', async (c) => {
   if (typeof body.amount === 'number' && Number.isFinite(body.amount)) expense.amount = body.amount;
   if (body.note !== undefined) expense.note = body.note;
   if (body.currency?.trim()) expense.currency = body.currency.trim();
+  // A changed amount must still agree with fixed/percent shares, or every balance read would throw.
+  const check = validateShares(expense.splitMode, expenseTotal(expense), expense.shares);
+  if (!check.ok) return c.json({ error: describeSplitError(check.error) }, 400);
   expense.updatedAt = new Date().toISOString();
   expense.version = (expense.version || 0) + 1;
   await upsertExpense(expense);
@@ -805,6 +851,7 @@ adminApp.post('/periods/:id/recurring/:rid/run', async (c) => {
   const rid = c.req.param('rid');
   const rule = await getRecurring(rid);
   if (!rule || rule.periodId !== periodId) return c.json({ error: 'پیدا نشد' }, 404);
+  const period = await getPeriod(periodId);
   const now = new Date().toISOString();
   const expenseId = nanoid();
   await upsertExpense({
@@ -820,7 +867,7 @@ adminApp.post('/periods/:id/recurring/:rid/run', async (c) => {
     service: { type: 'none', value: 0 },
     tip: { type: 'none', value: 0 },
     tags: ['تکراری'],
-    fxRate: 1,
+    fxRate: await recurringFxRate(rule.currency, period?.currency),
     createdAt: now,
     occurredAt: now,
     updatedAt: now,
@@ -929,32 +976,6 @@ adminApp.get('/billing/sheba-lookups', async (c) => {
   const { offset, limit } = parsePage(c);
   const rows = await listShebaLookups();
   return c.json(paginate(rows, offset, limit));
-});
-
-adminApp.get('/telegram-links', async (c) => {
-  const { offset, limit, q } = parsePage(c);
-  const [links, periods] = await Promise.all([listTelegramLinks(), listAllPeriods()]);
-  const titleById = new Map(periods.map((p) => [p.id, p.title]));
-  const rows = links
-    .filter((l) => {
-      if (!q) return true;
-      return `${l.chatId} ${l.periodId} ${l.payerMemberId || ''}`.toLowerCase().includes(q);
-    })
-    .map((l) => ({
-      ...l,
-      periodTitle: titleById.get(l.periodId),
-    }));
-  return c.json(paginate(rows, offset, limit));
-});
-
-adminApp.delete('/telegram-links/:chatId', async (c) => {
-  const actor = (await actorFrom(c))!;
-  const chatId = decodeURIComponent(c.req.param('chatId'));
-  const exists = (await listTelegramLinks()).some((l) => l.chatId === chatId);
-  if (!exists) return c.json({ error: 'پیدا نشد' }, 404);
-  await deleteTelegramLink(chatId);
-  await writeAudit(actor, 'telegram_unlink', 'telegram', chatId, 'قطع اتصال تلگرام');
-  return c.json({ ok: true });
 });
 
 adminApp.get('/audit', async (c) => {

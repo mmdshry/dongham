@@ -2,37 +2,46 @@
 import { nanoid } from 'nanoid';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Capacitor } from '@capacitor/core';
-import { LocalNotifications } from '@capacitor/local-notifications';
 import { CardPayoutPanel } from '../components/CardPayoutPanel';
 import { FxRatesPanel } from '../components/FxRatesPanel';
 import { ConfirmDialog, PromptDialog } from '../components/Dialog';
 import { SyncBanner } from '../components/SyncBanner';
 import { ThemeToggle } from '../components/ThemeToggle';
+import { ConnectionModeBadge } from '../components/ConnectionModeBadge';
 import { Shell } from '../components/ui';
 import { updateAccountPrefs } from '../lib/cloudProfile';
+import { isAutoSyncOn } from '../lib/connectionMode';
 import { useCalendarMode } from '../lib/calendarPref';
 import {
-  buyPremiumBazaar,
-  buyPremiumMyket,
   buyPremiumWeb,
+  fetchPremiumPlans,
   isPremium,
   verifyZarinpalReturn,
+  type PremiumPlan,
 } from '../lib/billing';
 import { downloadJson, exportBackup, importBackup } from '../lib/backup';
+import { api } from '../lib/api';
 import { db } from '../lib/db';
-import { toPersianDigits } from '../lib/format';
+import { formatMoney, toPersianDigits } from '../lib/format';
+import { DISPLAY_NAME_MAX, needsDisplayName, normalizeDisplayName } from '../lib/memberLabel';
 import { importPeriodSnapshot, parseSnapshot } from '../lib/snapshot';
 import { flushOutbox, markNotificationRead, pullCloud } from '../lib/sync';
 import { useUiStore } from '../store/ui';
+import {
+  disableWebPush,
+  enableWebPush,
+  isPushSupported,
+  isWebPushEnabled,
+  pushEnableError,
+} from '../lib/webPush';
 
-const SUPPORT_TG = import.meta.env.VITE_SUPPORT_TELEGRAM || 'https://t.me/dongham';
 const SUPPORT_BALE = import.meta.env.VITE_SUPPORT_BALE || 'https://ble.ir/dongham';
 const SUPPORT_WA = import.meta.env.VITE_SUPPORT_WHATSAPP || '';
 
 export function MorePage() {
   const navigate = useNavigate();
   const setToast = useUiStore((s) => s.setToast);
+  const online = useUiStore((s) => s.online);
   const [params, setParams] = useSearchParams();
   const profile = useLiveQuery(() => db.profile.get('self'));
   const calendarMode = useCalendarMode();
@@ -43,6 +52,20 @@ export function MorePage() {
   const [importPass, setImportPass] = useState<string | undefined>();
   const [importPassOpen, setImportPassOpen] = useState(false);
   const [overwriteOpen, setOverwriteOpen] = useState(false);
+  const [pushOn, setPushOn] = useState(false);
+  const pushSupported = isPushSupported();
+  const [nameDraft, setNameDraft] = useState('');
+  const [plans, setPlans] = useState<PremiumPlan[]>([]);
+  const persian = profile?.usePersianDigits !== false;
+  const planLabel = (sku: string, fallback: string) => {
+    const plan = plans.find((p) => p.sku === sku);
+    return plan ? `${fallback} — ${formatMoney(plan.toman, 'IRT', persian)}` : fallback;
+  };
+
+  useEffect(() => {
+    if (!online || isPremium(profile)) return;
+    void fetchPremiumPlans().then(setPlans);
+  }, [online, profile]);
 
   useEffect(() => {
     const authority = params.get('Authority') || params.get('authority');
@@ -50,27 +73,88 @@ export function MorePage() {
     if (!authority || !status) return;
     void (async () => {
       const res = await verifyZarinpalReturn(authority, status);
-      setToast(res.ok ? 'اشتراک وب فعال شد' : res.error || 'پرداخت تأیید نشد');
+      setToast(res.ok ? 'اشتراک وب فعال شد' : res.error || 'پرداخت تأیید نشد', res.ok ? 'success' : 'error');
       setParams({}, { replace: true });
     })();
   }, [params, setParams, setToast]);
 
   useEffect(() => {
-    if (window.location.hash === '#fx') {
-      document.getElementById('fx')?.scrollIntoView({ behavior: 'smooth' });
-    }
+    setNameDraft(profile?.displayName || '');
+  }, [profile?.displayName]);
+
+  useEffect(() => {
+    void isWebPushEnabled().then(setPushOn);
+  }, [profile?.token]);
+
+  useEffect(() => {
+    const id = window.location.hash === '#theme' ? 'theme' : window.location.hash === '#fx' ? 'fx' : '';
+    if (!id) return;
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
   const saveName = async (displayName: string) => {
-    await updateAccountPrefs({ displayName });
-    setToast('ذخیره شد');
+    const name = normalizeDisplayName(displayName);
+    if (needsDisplayName(name)) {
+      setNameDraft(profile?.displayName || '');
+      setToast('نام لازم است', 'error');
+      return;
+    }
+    await updateAccountPrefs({ displayName: name });
+    setToast('ذخیره شد', 'success');
   };
 
   const toggleDigits = async () => {
     await updateAccountPrefs({ usePersianDigits: !profile?.usePersianDigits });
   };
 
+  const toggleAutoSync = async () => {
+    if (!profile?.token) {
+      navigate('/auth?next=/more');
+      return;
+    }
+    const next = !isAutoSyncOn(profile);
+    await updateAccountPrefs({ autoSync: next });
+    if (next && online) {
+      const res = await flushOutbox();
+      if (res.ok) await pullCloud();
+      setToast(res.ok ? 'همگام‌سازی خودکار روشن شد' : res.error || 'خطا', res.ok ? 'success' : 'error');
+      return;
+    }
+    setToast(next ? 'همگام‌سازی خودکار روشن شد' : 'همگام‌سازی خودکار خاموش شد', 'info');
+  };
+
+  const togglePush = async () => {
+    if (!profile?.token) {
+      navigate('/auth?next=/more');
+      return;
+    }
+    if (pushOn) {
+      await disableWebPush();
+      setPushOn(false);
+      setToast('اعلان‌های مرورگر خاموش شد', 'info');
+      return;
+    }
+    try {
+      await enableWebPush();
+      setPushOn(true);
+      setToast('اعلان‌های مرورگر روشن شد', 'success');
+    } catch (e) {
+      setPushOn(false);
+      setToast(pushEnableError(e), 'error');
+    }
+  };
+
   const testNotif = async () => {
+    if (profile?.token && Notification.permission === 'granted') {
+      try {
+        await api('/push/test', { method: 'POST' });
+        await pullCloud();
+        setToast('نوتیفیکیشن ثبت شد', 'success');
+        return;
+      } catch {
+        /* fall through to local */
+      }
+    }
     const n = {
       id: nanoid(),
       title: 'دونگ‌هام',
@@ -79,23 +163,11 @@ export function MorePage() {
       createdAt: new Date().toISOString(),
     };
     await db.notifications.put(n);
-    if (Capacitor.isNativePlatform()) {
-      await LocalNotifications.requestPermissions();
-      await LocalNotifications.schedule({
-        notifications: [
-          {
-            id: Date.now() % 100000,
-            title: n.title,
-            body: n.body,
-            schedule: { at: new Date(Date.now() + 1000) },
-          },
-        ],
-      });
-    } else if ('Notification' in window) {
+    if ('Notification' in window) {
       const perm = await Notification.requestPermission();
       if (perm === 'granted') new Notification(n.title, { body: n.body });
     }
-    setToast('نوتیفیکیشن ثبت شد');
+        setToast('نوتیفیکیشن ثبت شد', 'success');
   };
 
   const wipeLocal = async () => {
@@ -106,14 +178,14 @@ export function MorePage() {
   const doBackup = async () => {
     const data = await exportBackup();
     downloadJson(`dongham-backup-${new Date().toISOString().slice(0, 10)}.json`, data);
-    setToast('پشتیبان ذخیره شد');
+    setToast('پشتیبان ذخیره شد', 'success');
   };
 
   const doRestore = async (file: File) => {
     const text = await file.text();
     const json = JSON.parse(text);
     await importBackup(json);
-    setToast('بازیابی شد');
+    setToast('بازیابی شد', 'success');
   };
 
   const finishImport = async (raw: string, passphrase?: string, allowOverwrite = false) => {
@@ -126,7 +198,7 @@ export function MorePage() {
       return;
     }
     const id = await importPeriodSnapshot(snap);
-    setToast('دوره وارد شد');
+    setToast('دوره وارد شد', 'success');
     window.location.href = `/periods/${id}`;
   };
 
@@ -140,27 +212,30 @@ export function MorePage() {
       }
       await finishImport(raw);
     } catch (e) {
-      setToast(e instanceof Error ? e.message : 'ورود اسنپ‌شات ناموفق');
+      setToast(e instanceof Error ? e.message : 'ورود اسنپ‌شات ناموفق', 'error');
     }
   };
 
   return (
-    <Shell title="بیشتر">
+    <Shell title="بیشتر" back={() => navigate('/profile')}>
       <div className="mx-auto max-w-lg space-y-4 animate-rise">
         <SyncBanner />
         <div className="card-surface space-y-3">
           <h2 className="section-title">پروفایل</h2>
+          <label className="label" htmlFor="more-display-name">نام نمایشی</label>
           <input
+            id="more-display-name"
             className="input"
-            defaultValue={profile?.displayName}
+            value={nameDraft}
+            maxLength={DISPLAY_NAME_MAX}
+            onChange={(e) => setNameDraft(e.target.value)}
             onBlur={(e) => saveName(e.target.value)}
-            aria-label="نام نمایشی"
           />
-          <label className="flex items-center gap-2 text-sm">
+          <label className="flex min-h-11 items-center gap-2 text-sm">
             <input type="checkbox" checked={!!profile?.usePersianDigits} onChange={toggleDigits} />
             اعداد فارسی
           </label>
-          <label className="flex items-center gap-2 text-sm">
+          <label className="flex min-h-11 items-center gap-2 text-sm">
             <input
               type="checkbox"
               checked={profile?.debtReminders !== false}
@@ -168,7 +243,13 @@ export function MorePage() {
             />
             یادآوری بدهی
           </label>
-          <label className="flex items-center gap-2 text-sm">
+          {pushSupported ? (
+            <label className="flex min-h-11 items-center gap-2 text-sm">
+              <input type="checkbox" checked={pushOn} onChange={() => void togglePush()} />
+              اعلان‌های مرورگر
+            </label>
+          ) : null}
+          <label className="flex min-h-11 items-center gap-2 text-sm">
             <input
               type="checkbox"
               checked={calendarMode === 'gregorian'}
@@ -178,7 +259,9 @@ export function MorePage() {
             />
             تقویم میلادی (به‌جای شمسی)
           </label>
-          <ThemeToggle />
+          <div id="theme">
+            <ThemeToggle />
+          </div>
         </div>
 
         <FxRatesPanel />
@@ -186,32 +269,34 @@ export function MorePage() {
         <CardPayoutPanel />
 
         <div className="card-surface space-y-2">
-          <h2 className="font-bold">اشتراک</h2>
+          <h2 className="font-bold">اشتراک پریمیوم</h2>
           <p className="text-xs text-ink-700/70">
             {isPremium(profile)
-              ? Capacitor.isNativePlatform()
-                ? 'نسخه پرمیوم فعال است — بدون تبلیغ.'
-                : 'نسخه پرمیوم فعال است.'
-              : 'نسخه رایگان. وب‌اپ با زرین‌پال؛ اندروید با بازار یا مایکت.'}
+              ? 'اشتراک پریمیوم فعال است.'
+              : 'نسخه رایگان. پرداخت با درگاه زرین‌پال؛ مبالغ به تومان است (درگاه همان مبلغ را به ریال نشان می‌دهد).'}
           </p>
           {!isPremium(profile) ? (
             <>
-              <button type="button" className="btn-primary w-full" onClick={async () => setToast((await buyPremiumWeb('premium_monthly')).error || 'در حال انتقال به درگاه…')}>
-                اشتراک ماهانه وب (زرین‌پال)
+              <button
+                type="button"
+                className="btn-primary w-full"
+                onClick={async () => {
+                  const res = await buyPremiumWeb('premium_monthly');
+                  setToast(res.error || 'در حال انتقال به درگاه…', res.error ? 'error' : 'info');
+                }}
+              >
+                {planLabel('premium_monthly', 'اشتراک ماهانه')}
               </button>
-              <button type="button" className="btn-ghost w-full" onClick={async () => setToast((await buyPremiumWeb('premium_yearly')).error || 'در حال انتقال به درگاه…')}>
-                اشتراک سالانه وب
+              <button
+                type="button"
+                className="btn-ghost w-full"
+                onClick={async () => {
+                  const res = await buyPremiumWeb('premium_yearly');
+                  setToast(res.error || 'در حال انتقال به درگاه…', res.error ? 'error' : 'info');
+                }}
+              >
+                {planLabel('premium_yearly', 'اشتراک سالانه')}
               </button>
-              {Capacitor.isNativePlatform() ? (
-                <>
-                  <button type="button" className="btn-ghost w-full" onClick={async () => setToast((await buyPremiumBazaar()).ok ? 'فعال شد' : 'خطا')}>
-                    خرید از بازار
-                  </button>
-                  <button type="button" className="btn-ghost w-full" onClick={async () => setToast((await buyPremiumMyket()).ok ? 'فعال شد' : 'خطا')}>
-                    خرید از مایکت
-                  </button>
-                </>
-              ) : null}
             </>
           ) : null}
         </div>
@@ -223,9 +308,6 @@ export function MorePage() {
               واتساپ پشتیبانی
             </a>
           ) : null}
-          <a className="btn-ghost w-full" href={SUPPORT_TG} target="_blank" rel="noreferrer">
-            تلگرام پشتیبانی
-          </a>
           <a className="btn-ghost w-full" href={SUPPORT_BALE} target="_blank" rel="noreferrer">
             بله پشتیبانی
           </a>
@@ -233,11 +315,30 @@ export function MorePage() {
 
         <div className="card-surface space-y-2">
           <h2 className="font-bold">همگام‌سازی</h2>
+          <ConnectionModeBadge />
           <p className="text-xs text-ink-700/70">
             {profile?.token
               ? `${toPersianDigits(outboxCount, profile?.usePersianDigits ?? true)} عملیات در صف`
-              : 'حالت مهمان — برای همگام‌سازی ابری وارد شوید'}
+              : 'برای همگام‌سازی ابری وارد شوید'}
           </p>
+          <label className={`flex min-h-11 items-center gap-2 text-sm ${profile?.token ? '' : 'opacity-60'}`}>
+            <input
+              type="checkbox"
+              checked={Boolean(profile?.token) && isAutoSyncOn(profile)}
+              disabled={!profile?.token}
+              onChange={() => void toggleAutoSync()}
+            />
+            همگام‌سازی خودکار
+          </label>
+          {!profile?.token ? (
+            <p className="text-xs text-ink-700/60">پس از ورود فعال می‌شود</p>
+          ) : (
+            <p className="text-xs text-ink-700/60">
+              {isAutoSyncOn(profile)
+                ? 'در حالت ابری تغییرات بدون پرسش با سرور همگام می‌شود.'
+                : 'تغییرات در صف می‌ماند تا همگام‌سازی را بزنید.'}
+            </p>
+          )}
           <button
             type="button"
             className="btn-primary w-full"
@@ -246,23 +347,24 @@ export function MorePage() {
                 navigate('/auth?next=/more');
                 return;
               }
+              // api() already maps a rejected token to SESSION_EXPIRED_MESSAGE and clears it.
               const res = await flushOutbox();
               if (!res.ok) {
-                setToast(res.error === 'وارد نشده‌اید' ? 'نشست منقضی شده؛ دوباره وارد شوید' : res.error || 'خطا');
+                setToast(res.error || 'خطا', 'error');
                 return;
               }
               const pulled = await pullCloud();
               if (!pulled.ok) {
-                setToast(pulled.error === 'وارد نشده‌اید' ? 'نشست منقضی شده؛ دوباره وارد شوید' : pulled.error || 'خطا');
+                setToast(pulled.error || 'خطا', 'error');
                 return;
               }
-              setToast('همگام شد');
+              setToast('همگام شد', 'success');
             }}
           >
             همگام‌سازی همه دوره‌ها
           </button>
           <Link to="/auth" className="btn-ghost w-full">
-            {profile?.token ? 'حساب کاربری' : 'ورود / ارتقا مهمان'}
+            {profile?.token ? 'حساب کاربری' : 'ورود / ثبت‌نام'}
           </Link>
         </div>
 
@@ -317,7 +419,7 @@ export function MorePage() {
           <p className="text-xs text-ink-700/70">
             کارت و شبا روی این دستگاه با AES-GCM رمز می‌شود. پس از ورود، نسخهٔ خوانا برای همگام‌سازی ابری به سرور فرستاده می‌شود. اسنپ‌شات خروجی فقط در صورت وارد کردن عبارت عبور رمز می‌شود. اگر «رمز دوره» روشن باشد، سرور یادداشت، رسید، چت و کارت/شبا را در ستون‌های حساس با AES-256-GCM نگه می‌دارد. می‌توانید داده دستگاه را پاک کنید یا حساب ابری را حذف کنید.
           </p>
-          <button type="button" className="btn-ghost w-full text-rose-700" onClick={() => setConfirmWipe(true)}>
+          <button type="button" className="btn-ghost w-full text-danger" onClick={() => setConfirmWipe(true)}>
             پاک‌سازی داده محلی
           </button>
         </div>
@@ -348,7 +450,7 @@ export function MorePage() {
         onSubmit={(value) => {
           setImportPassOpen(false);
           void finishImport(importRaw, value).catch((e) => {
-            setToast(e instanceof Error ? e.message : 'ورود اسنپ‌شات ناموفق');
+            setToast(e instanceof Error ? e.message : 'ورود اسنپ‌شات ناموفق', 'error');
           });
         }}
       />
@@ -365,7 +467,7 @@ export function MorePage() {
         onConfirm={() => {
           setOverwriteOpen(false);
           void finishImport(importRaw, importPass, true).catch((e) => {
-            setToast(e instanceof Error ? e.message : 'ورود اسنپ‌شات ناموفق');
+            setToast(e instanceof Error ? e.message : 'ورود اسنپ‌شات ناموفق', 'error');
           });
         }}
       />

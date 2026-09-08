@@ -2,8 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseDonghamExport } from '@dongham/ledger';
-import { emptyDb, rewriteLegacyPeriodIds } from './db.js';
-import { asPeriodId, hydrateDb, initMysql, persistMysql, prepareDb } from './mysql.js';
+import { emptyDb, replaceStore, rewriteLegacyPeriodIds } from './db.js';
+import { asPeriodId, hydrateDb, initMysql, prepareDb } from './mysql.js';
 import type { DbShape } from './types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -89,7 +89,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  await persistMysql(prepared);
+  // Same seal path as replaceDb: plaintext fields of `encrypted` periods get AES before hitting MySQL.
+  await replaceStore(prepared);
   const loaded = await hydrateDb();
   counts('mysql', loaded);
 

@@ -1,0 +1,66 @@
+# Apex config when DocumentRoot is /home/dongham/public_html (repo root).
+# Copy to /home/dongham/public_html/.htaccess.
+# Pair with deploy/apache-dongham.ir.conf.
+#
+# Reserved SPA prefixes (do not add Astro pages with these names):
+#   app auth periods i transactions reports profile friends more api
+# Single-segment usernames (3–20 [A-Za-z][A-Za-z0-9]*) also go to the React shell.
+
+DirectorySlash Off
+DirectoryIndex index.html
+RewriteEngine On
+RewriteBase /
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Strict-Transport-Security "max-age=31536000"
+</IfModule>
+
+RewriteCond %{HTTPS} !=on
+RewriteCond %{HTTP:X-Forwarded-Proto} !https
+RewriteRule ^ https://dongham.ir%{REQUEST_URI} [L,R=301]
+
+RewriteCond %{HTTP_HOST} ^www\.dongham\.ir$ [NC]
+RewriteRule ^ https://dongham.ir%{REQUEST_URI} [L,R=301]
+
+# Proxy API before any static mapping (needs mod_proxy + mod_proxy_http)
+RewriteRule ^api/(.*)$ http://127.0.0.1:8787/$1 [P,L]
+
+# Recover already-indexed leaked build URLs (THE_REQUEST so internal rewrites do not loop)
+RewriteCond %{THE_REQUEST} \s/+apps/marketing/dist [NC]
+RewriteRule ^apps/marketing/dist/?$ / [L,R=301]
+RewriteCond %{THE_REQUEST} \s/+apps/marketing/dist/ [NC]
+RewriteRule ^apps/marketing/dist/(.*)$ /$1 [L,R=301]
+RewriteCond %{THE_REQUEST} \s/+apps/app/dist/?[\s?] [NC]
+RewriteRule ^apps/app/dist/?$ /app [L,R=301]
+RewriteCond %{THE_REQUEST} \s/+apps/app/dist/ [NC]
+RewriteRule ^apps/app/dist/(.*)$ /$1 [L,R=301]
+
+# Trailing slash for marketing directories only — never SPA / api prefixes
+RewriteCond %{REQUEST_URI} !/$
+RewriteCond %{REQUEST_URI} !^/apps/
+RewriteCond %{REQUEST_URI} !^/\.
+RewriteCond %{REQUEST_URI} !^/(app|auth|periods|i|transactions|reports|profile|friends|more|api)(/|$)
+RewriteCond %{DOCUMENT_ROOT}/apps/marketing/dist/$1 -d
+RewriteRule ^(.+)$ /$1/ [L,R=301]
+
+# Serve marketing dist internally; browser URL stays clean (`/` = landing)
+RewriteCond %{REQUEST_URI} !^/apps/
+RewriteCond %{REQUEST_URI} !^/\.
+RewriteCond %{DOCUMENT_ROOT}/apps/marketing/dist/$1 -f [OR]
+RewriteCond %{DOCUMENT_ROOT}/apps/marketing/dist/$1 -d
+RewriteRule ^(.*)$ /apps/marketing/dist/$1 [L]
+
+# App hashed assets, icons, SW, manifest — never the SPA index.html at `/`
+RewriteCond %{REQUEST_URI} !^/apps/
+RewriteCond %{REQUEST_URI} !^/\.
+RewriteCond %{REQUEST_URI} !^/$
+RewriteCond %{REQUEST_URI} !^/index\.html$
+RewriteCond %{DOCUMENT_ROOT}/apps/app/dist/$1 -f
+RewriteRule ^(.*)$ /apps/app/dist/$1 [L]
+
+# Known SPA routes → React shell (unknown URLs 404 as marketing, not swallowed)
+RewriteRule ^(app|auth|periods|i|transactions|reports|profile|friends|more)(/.*)?$ /apps/app/dist/index.html [L]
+# Public profile usernames: /mmdshry
+RewriteRule ^[A-Za-z][A-Za-z0-9]{2,19}/?$ /apps/app/dist/index.html [L]

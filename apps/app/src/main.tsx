@@ -1,16 +1,13 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './App';
-import { initTelegramMiniApp } from './lib/telegram';
+import { initPwa } from './lib/pwa';
 import { applyTheme } from './lib/themePref';
+import '@fontsource-variable/vazirmatn/index.css';
 import './index.css';
 
 applyTheme();
-
-const startParam = initTelegramMiniApp();
-if (startParam && window.location.pathname === '/') {
-  window.history.replaceState(null, '', `/i/${startParam}`);
-}
+initPwa();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

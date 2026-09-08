@@ -2,7 +2,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { nanoid } from 'nanoid';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { isPeriodOwner, type IndexAsset } from '@dongham/ledger';
+import { canManagePeriod, type IndexAsset } from '@dongham/ledger';
 import { MessengerShare } from '../components/MessengerShare';
 import { MoneyInput } from '../components/MoneyInput';
 import { Shell } from '../components/ui';
@@ -13,7 +13,8 @@ import { fetchFxRates } from '../lib/fx';
 import { indexRateFromFx, loanEquivalentNow } from '../lib/goldIndex';
 import { defaultPayout } from '../lib/payout';
 import { shareCardImage } from '../lib/share';
-import { canMarkPaid, canRecordWithoutConfirm } from '../lib/settlementGuard';
+import { isSelfMember } from '../lib/memberLabel';
+import { canMarkPaid, canRecordWithoutConfirm, settlementActorFrom, settlementLocksFromField } from '../lib/settlementGuard';
 import { upsertPayment } from '../lib/sync';
 import { compressImage } from '../lib/ocr';
 import { useUiStore } from '../store/ui';
@@ -46,9 +47,7 @@ export function PaymentFormPage() {
   useEffect(() => {
     void (async () => {
       const member = members.find((m) => m.id === toMemberId);
-      const isSelf =
-        !!member &&
-        (member.guestKey === profile?.guestKey || (!!profile?.userId && member.userId === profile.userId));
+      const isSelf = !!member && isSelfMember(member, profile);
       if (isSelf) {
         const d = await defaultPayout(profile);
         if (d) {
@@ -67,31 +66,25 @@ export function PaymentFormPage() {
     })();
   }, [toMemberId, members, profile]);
 
-  const meMember = members.find(
-    (m) => m.guestKey === profile?.guestKey || (profile?.userId && m.userId === profile.userId),
-  );
-  const isOwner = isPeriodOwner({
-    ownerId: period?.ownerId,
-    ownerGuestKey: period?.ownerGuestKey,
-    userId: profile?.userId,
-    guestKey: profile?.guestKey,
-    memberRole: meMember?.role,
-  });
-  const me = meMember
-    ? { id: meMember.id, role: meMember.role, userId: profile?.userId, ownerId: period?.ownerId }
-    : undefined;
-  const lockFrom = kind === 'settlement' && !isOwner;
+  const me = settlementActorFrom(members, profile, period);
+  const selfSeatCount = me?.memberIds?.length || (me?.id ? 1 : 0);
+  const lockFrom = settlementLocksFromField(kind, me?.role, selfSeatCount);
+  const fromChoices =
+    kind !== 'settlement' || canManagePeriod(me?.role)
+      ? members
+      : members.filter((m) => (me?.memberIds || (me?.id ? [me.id] : [])).includes(m.id));
 
   useEffect(() => {
-    if (kind === 'settlement' && me?.id && !isOwner) {
-      setFrom(me.id);
+    if (kind === 'settlement' && me?.id && !canManagePeriod(me.role)) {
+      const allowed = me.memberIds?.length ? me.memberIds : [me.id];
+      if (!allowed.includes(fromMemberId)) setFrom(me.id);
     } else if (members.length >= 2 && !fromMemberId) {
       setFrom(members[0].id);
     }
     if (members.length >= 2 && !toMemberId) {
       setTo(members[1].id);
     }
-  }, [members, fromMemberId, toMemberId, kind, me?.id, isOwner]);
+  }, [members, fromMemberId, toMemberId, kind, me?.id, me?.role, selfSeatCount]);
 
   const from = members.find((m) => m.id === fromMemberId);
   const to = members.find((m) => m.id === toMemberId);
@@ -99,20 +92,20 @@ export function PaymentFormPage() {
 
   const save = async (status: 'settled' | 'pending_confirm' = 'settled') => {
     if (isViewer) {
-      setToast('نقش بیننده اجازهٔ ذخیره ندارد');
+      setToast('نقش بیننده اجازهٔ ذخیره ندارد', 'error');
       return;
     }
     if (!fromMemberId || !toMemberId || amount <= 0) {
-      setToast('فیلدها ناقص است');
+      setToast('فیلدها ناقص است', 'error');
       return;
     }
     if (kind === 'settlement') {
       if (status === 'pending_confirm' && !canMarkPaid(me, fromMemberId)) {
-        setToast('فقط بدهکار می‌تواند این پرداخت را ثبت کند');
+        setToast('فقط بدهکار می‌تواند این پرداخت را ثبت کند', 'error');
         return;
       }
       if (status === 'settled' && !canRecordWithoutConfirm(me, fromMemberId)) {
-        setToast('فقط بدهکار می‌تواند این پرداخت را ثبت کند');
+        setToast('فقط بدهکار می‌تواند این پرداخت را ثبت کند', 'error');
         return;
       }
     }
@@ -136,7 +129,10 @@ export function PaymentFormPage() {
       indexAsset: kind === 'loan' ? indexAsset : 'none',
       indexRateAtCreate: kind === 'loan' ? rate : undefined,
     });
-    setToast(kind === 'loan' ? 'قرض ثبت شد' : status === 'pending_confirm' ? 'در انتظار تأیید' : 'پرداخت ثبت شد');
+    setToast(
+      kind === 'loan' ? 'قرض ثبت شد' : status === 'pending_confirm' ? 'در انتظار تأیید' : 'پرداخت ثبت شد',
+      status === 'pending_confirm' ? 'info' : 'success',
+    );
     navigate(`/periods/${periodId}`);
   };
 
@@ -144,11 +140,11 @@ export function PaymentFormPage() {
     const card = payout.card;
     const sheba = payout.sheba;
     if (!card && !sheba) {
-      setToast('شماره کارت یا شبا را در تنظیمات وارد کنید');
+      setToast('شماره کارت یا شبا را در تنظیمات وارد کنید', 'warn');
       return;
     }
-    if (card && !iranCardOk(card)) setToast('شماره کارت نامعتبر است');
-    if (sheba && !shebaOk(sheba)) setToast('شبا نامعتبر است');
+    if (card && !iranCardOk(card)) setToast('شماره کارت نامعتبر است', 'error');
+    if (sheba && !shebaOk(sheba)) setToast('شبا نامعتبر است', 'error');
     const text = [
       card && `کارت: ${card}`,
       sheba && `شبا: ${sheba}`,
@@ -159,7 +155,7 @@ export function PaymentFormPage() {
       .filter(Boolean)
       .join('\n');
     await copyText(text);
-    setToast('مبلغ و مشخصات تسویه کپی شد');
+    setToast('مبلغ و مشخصات تسویه کپی شد', 'success');
   };
 
   const eq =
@@ -174,14 +170,14 @@ export function PaymentFormPage() {
         <div className="flex gap-2">
           <button
             type="button"
-            className={`chip flex-1 ${kind === 'settlement' ? 'bg-brand-700 text-white' : 'bg-brand-50'}`}
+            className={`chip flex-1 ${kind === 'settlement' ? 'bg-brand-700 text-on-brand' : 'bg-brand-50'}`}
             onClick={() => setKind('settlement')}
           >
             تسویه
           </button>
           <button
             type="button"
-            className={`chip flex-1 ${kind === 'loan' ? 'bg-brand-700 text-white' : 'bg-brand-50'}`}
+            className={`chip flex-1 ${kind === 'loan' ? 'bg-brand-700 text-on-brand' : 'bg-brand-50'}`}
             onClick={() => setKind('loan')}
           >
             قرض
@@ -195,7 +191,7 @@ export function PaymentFormPage() {
             disabled={lockFrom}
             onChange={(e) => setFrom(e.target.value)}
           >
-            {members.map((m) => (
+            {fromChoices.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.displayName}
               </option>
@@ -236,7 +232,7 @@ export function PaymentFormPage() {
                 const file = e.target.files?.[0];
                 if (!file) return;
                 setReceipt(await compressImage(file));
-                setToast('فیش پیوست شد');
+                setToast('فیش پیوست شد', 'success');
               }}
             />
           </label>

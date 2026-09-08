@@ -37,7 +37,7 @@ export function MessengerShare({
     });
   const urls = phone && enabled ? messengerUrls(phone, text) : null;
 
-  const openChat = async (which: 'whatsapp' | 'telegram' | 'bale') => {
+  const openChat = async (which: 'whatsapp' | 'bale') => {
     if (!urls) return;
     if (which !== 'whatsapp') await copyText(text);
     openMessenger(urls[which]);
@@ -57,9 +57,6 @@ export function MessengerShare({
           onClick={() => void openChat('whatsapp')}
         >
           واتساپ
-        </button>
-        <button type="button" className="btn-ghost" disabled={!enabled} onClick={() => void openChat('telegram')}>
-          تلگرام
         </button>
         <button type="button" className="btn-ghost" disabled={!enabled} onClick={() => void openChat('bale')}>
           بله

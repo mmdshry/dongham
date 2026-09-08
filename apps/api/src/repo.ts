@@ -1,6 +1,8 @@
-import type { PoolConnection } from 'mysql2/promise';
+import type { PoolConnection, ResultSetHeader } from 'mysql2/promise';
 import { nanoid } from 'nanoid';
 import { openField, sealIf } from './at-rest.js';
+import { sendPushToUser } from './push.js';
+import { APP_HOME_PATH } from './publicUrl.js';
 import {
   all,
   getPool,
@@ -14,6 +16,8 @@ import {
   persistMysql,
   type Row,
 } from './mysql.js';
+import type { VisibleAvatar } from './avatar.js';
+import { applyPeriodMedia, periodMediaSql } from './periodMedia.js';
 import type {
   ActivityRecord,
   AttachmentRecord,
@@ -131,6 +135,59 @@ export async function getUserById(id: string): Promise<UserRecord | undefined> {
   return mapUser(users[0], payouts, watch);
 }
 
+export async function listVisibleAvatars(viewerId: string, ids: string[]): Promise<VisibleAvatar[]> {
+  if (!ids.length) return [];
+  const placeholders = ids.map(() => '?').join(',');
+  const allowed = new Set<string>([viewerId]);
+  const [periodRows, friendRows] = await Promise.all([
+    all(
+      getPool(),
+      `SELECT DISTINCT m2.user_id AS uid
+       FROM members m1
+       INNER JOIN members m2 ON m1.period_id = m2.period_id
+       WHERE m1.user_id = ? AND m2.user_id IN (${placeholders})`,
+      [viewerId, ...ids],
+    ),
+    all(
+      getPool(),
+      `SELECT friend_user_id AS uid FROM friends WHERE user_id = ? AND friend_user_id IN (${placeholders})
+       UNION
+       SELECT user_id AS uid FROM friends WHERE friend_user_id = ? AND user_id IN (${placeholders})`,
+      [viewerId, ...ids, viewerId, ...ids],
+    ),
+  ]);
+  for (const row of [...periodRows, ...friendRows]) {
+    const uid = row.uid ? String(row.uid) : '';
+    if (uid) allowed.add(uid);
+  }
+  const visible = ids.filter((id) => allowed.has(id));
+  if (!visible.length) return [];
+  const visiblePlace = visible.map(() => '?').join(',');
+  const rows = await all(
+    getPool(),
+    `SELECT id, avatar_data_url, avatar_preset, avatar_updated_at FROM users
+     WHERE deleted_at IS NULL AND id IN (${visiblePlace})
+       AND (
+         (avatar_data_url IS NOT NULL AND avatar_data_url <> '')
+         OR (avatar_preset IS NOT NULL AND avatar_preset <> '')
+       )`,
+    visible,
+  );
+  const out: VisibleAvatar[] = [];
+  for (const row of rows) {
+    const dataUrl = String(row.avatar_data_url || '').trim();
+    const preset = String(row.avatar_preset || '').trim();
+    const updated = row.avatar_updated_at
+      ? new Date(row.avatar_updated_at as Date).toISOString()
+      : new Date().toISOString();
+    const item: VisibleAvatar = { userId: String(row.id), updatedAt: updated };
+    if (dataUrl) item.dataUrl = dataUrl;
+    else if (preset) item.preset = preset;
+    if (item.dataUrl || item.preset) out.push(item);
+  }
+  return out;
+}
+
 export async function findUserByPhone(phone: string): Promise<UserRecord | undefined> {
   const rows = await all(getPool(), 'SELECT id FROM users WHERE phone = ? AND deleted_at IS NULL', [phone]);
   return rows[0] ? getUserById(String(rows[0].id)) : undefined;
@@ -146,11 +203,56 @@ export async function findUserByGoogleId(googleId: string): Promise<UserRecord |
   return rows[0] ? getUserById(String(rows[0].id)) : undefined;
 }
 
+export async function findUserByUsername(username: string): Promise<UserRecord | undefined> {
+  const rows = await all(getPool(), 'SELECT id FROM users WHERE username = ?', [username]);
+  return rows[0] ? getUserById(String(rows[0].id)) : undefined;
+}
+
+export async function publicProfileStats(userId: string): Promise<{ periodCount: number; comemberCount: number }> {
+  const [periodRows, comemberRows] = await Promise.all([
+    all(
+      getPool(),
+      `SELECT COUNT(*) AS n FROM (
+         SELECT id AS pid FROM periods WHERE owner_id = ?
+         UNION
+         SELECT period_id AS pid FROM members
+         WHERE user_id = ? AND (is_pot IS NULL OR is_pot = 0)
+       ) t`,
+      [userId, userId],
+    ),
+    all(
+      getPool(),
+      `SELECT COUNT(DISTINCT other.uid) AS n FROM (
+         SELECT m2.user_id AS uid
+         FROM members m1
+         INNER JOIN members m2 ON m1.period_id = m2.period_id
+         WHERE m1.user_id = ?
+           AND m2.user_id IS NOT NULL
+           AND m2.user_id <> ?
+           AND (m2.is_pot IS NULL OR m2.is_pot = 0)
+         UNION
+         SELECT m.user_id AS uid
+         FROM periods p
+         INNER JOIN members m ON m.period_id = p.id
+         WHERE p.owner_id = ?
+           AND m.user_id IS NOT NULL
+           AND m.user_id <> ?
+           AND (m.is_pot IS NULL OR m.is_pot = 0)
+       ) other`,
+      [userId, userId, userId, userId],
+    ),
+  ]);
+  return {
+    periodCount: Number(periodRows[0]?.n || 0),
+    comemberCount: Number(comemberRows[0]?.n || 0),
+  };
+}
+
 export async function insertUser(user: UserRecord): Promise<void> {
   await withTx(async (conn) => {
     await conn.query(
-      `INSERT INTO users (id, phone, email, password_hash, google_id, display_name, created_at, deleted_at, banned_at, plan, premium_until, use_persian_digits, debt_reminders, calendar_mode, prefs_updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO users (id, phone, email, password_hash, google_id, display_name, created_at, deleted_at, banned_at, plan, premium_until, use_persian_digits, debt_reminders, calendar_mode, auto_sync, prefs_updated_at, avatar_preset, avatar_data_url, avatar_updated_at, username, profile_cover_preset, profile_cover_data_url)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         user.id,
         user.phone || null,
@@ -166,7 +268,14 @@ export async function insertUser(user: UserRecord): Promise<void> {
         user.usePersianDigits == null ? null : user.usePersianDigits ? 1 : 0,
         user.debtReminders == null ? null : user.debtReminders ? 1 : 0,
         user.calendarMode || null,
+        user.autoSync == null ? null : user.autoSync ? 1 : 0,
         user.prefsUpdatedAt ? new Date(user.prefsUpdatedAt) : null,
+        user.avatarPreset || null,
+        user.avatarDataUrl || null,
+        user.avatarUpdatedAt ? new Date(user.avatarUpdatedAt) : null,
+        user.username || null,
+        user.profileCoverPreset || null,
+        user.profileCoverDataUrl || null,
       ],
     );
   });
@@ -175,7 +284,7 @@ export async function insertUser(user: UserRecord): Promise<void> {
 export async function updateUser(user: UserRecord): Promise<void> {
   await withTx(async (conn) => {
     await conn.query(
-      `UPDATE users SET phone=?, email=?, password_hash=?, google_id=?, display_name=?, deleted_at=?, banned_at=?, plan=?, premium_until=?, use_persian_digits=?, debt_reminders=?, calendar_mode=?, prefs_updated_at=? WHERE id=?`,
+      `UPDATE users SET phone=?, email=?, password_hash=?, google_id=?, display_name=?, deleted_at=?, banned_at=?, plan=?, premium_until=?, use_persian_digits=?, debt_reminders=?, calendar_mode=?, auto_sync=?, prefs_updated_at=?, avatar_preset=?, avatar_data_url=?, avatar_updated_at=?, username=?, profile_cover_preset=?, profile_cover_data_url=? WHERE id=?`,
       [
         user.phone || null,
         user.email || null,
@@ -189,7 +298,14 @@ export async function updateUser(user: UserRecord): Promise<void> {
         user.usePersianDigits == null ? null : user.usePersianDigits ? 1 : 0,
         user.debtReminders == null ? null : user.debtReminders ? 1 : 0,
         user.calendarMode || null,
+        user.autoSync == null ? null : user.autoSync ? 1 : 0,
         user.prefsUpdatedAt ? new Date(user.prefsUpdatedAt) : null,
+        user.avatarPreset || null,
+        user.avatarDataUrl || null,
+        user.avatarUpdatedAt ? new Date(user.avatarUpdatedAt) : null,
+        user.username || null,
+        user.profileCoverPreset || null,
+        user.profileCoverDataUrl || null,
         user.id,
       ],
     );
@@ -269,6 +385,44 @@ export async function consumeOtp(phone: string, code: string): Promise<boolean> 
   });
 }
 
+export type EmailOtpPurpose = 'login' | 'link';
+
+export async function storeEmailOtp(
+  email: string,
+  purpose: EmailOtpPurpose,
+  code: string,
+  expiresAt: number,
+  userId?: string,
+): Promise<void> {
+  await getPool().query(
+    `INSERT INTO email_otps (email, purpose, code, user_id, expires_at) VALUES (?,?,?,?,?)
+     ON DUPLICATE KEY UPDATE code=VALUES(code), user_id=VALUES(user_id), expires_at=VALUES(expires_at)`,
+    [email, purpose, code, userId || null, expiresAt],
+  );
+}
+
+export async function consumeEmailOtp(
+  email: string,
+  purpose: EmailOtpPurpose,
+  code: string,
+  userId?: string,
+): Promise<boolean> {
+  return withTx(async (conn) => {
+    const rows = await all(conn, 'SELECT code, expires_at, user_id FROM email_otps WHERE email=? AND purpose=?', [
+      email,
+      purpose,
+    ]);
+    const row = rows[0];
+    if (!row || String(row.code) !== code || Number(row.expires_at) < Date.now()) return false;
+    const storedUser = row.user_id == null ? '' : String(row.user_id);
+    if (purpose === 'link') {
+      if (!userId || storedUser !== userId) return false;
+    }
+    await conn.query('DELETE FROM email_otps WHERE email=? AND purpose=?', [email, purpose]);
+    return true;
+  });
+}
+
 export async function extraAdminPhones(): Promise<string[]> {
   const rows = await all(getPool(), 'SELECT phone FROM platform_admin_phones');
   return rows.map((r) => String(r.phone));
@@ -305,9 +459,10 @@ export async function listPeriodsForUser(userId: string, phone?: string, email?:
 }
 
 export async function insertPeriod(period: PeriodRecord): Promise<void> {
+  const media = periodMediaSql(period);
   await getPool().query(
-    `INSERT INTO periods (id, title, currency, owner_id, created_at, updated_at, version, kind, banker_member_id, template, round_to, building_charge, lunch_turn_member_id, encrypted, visibility)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO periods (id, title, currency, owner_id, created_at, updated_at, version, kind, banker_member_id, template, round_to, building_charge, lunch_turn_member_id, encrypted, visibility, cover_preset, cover_data_url)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       period.id,
       period.title,
@@ -324,14 +479,17 @@ export async function insertPeriod(period: PeriodRecord): Promise<void> {
       period.lunchTurnMemberId || null,
       period.encrypted ? 1 : 0,
       period.visibility || 'private',
+      media.coverPreset,
+      media.coverDataUrl,
     ],
   );
 }
 
 export async function updatePeriod(period: PeriodRecord): Promise<void> {
   const prev = await getPeriod(period.id);
+  const media = periodMediaSql(period);
   await getPool().query(
-    `UPDATE periods SET title=?, currency=?, owner_id=?, updated_at=?, version=?, kind=?, banker_member_id=?, template=?, round_to=?, building_charge=?, lunch_turn_member_id=?, encrypted=?, visibility=? WHERE id=?`,
+    `UPDATE periods SET title=?, currency=?, owner_id=?, updated_at=?, version=?, kind=?, banker_member_id=?, template=?, round_to=?, building_charge=?, lunch_turn_member_id=?, encrypted=?, visibility=?, cover_preset=?, cover_data_url=? WHERE id=?`,
     [
       period.title,
       period.currency,
@@ -346,6 +504,8 @@ export async function updatePeriod(period: PeriodRecord): Promise<void> {
       period.lunchTurnMemberId || null,
       period.encrypted ? 1 : 0,
       period.visibility || 'private',
+      media.coverPreset,
+      media.coverDataUrl,
       period.id,
     ],
   );
@@ -550,13 +710,14 @@ async function writePayment(conn: PoolConnection, p: PaymentRecord, _enc: boolea
   );
 }
 
+/** Idempotent on `id`: the offline outbox may replay the same message after a partial flush. */
 export async function insertChat(msg: ChatMessageRecord): Promise<void> {
   const enc = await periodEncrypted(getPool(), msg.periodId);
-  await getPool().query(
-    'INSERT INTO chat (id, period_id, sender_member_id, body, expense_id, created_at) VALUES (?,?,?,?,?,?)',
+  const [result] = await getPool().query<ResultSetHeader>(
+    'INSERT IGNORE INTO chat (id, period_id, sender_member_id, body, expense_id, created_at) VALUES (?,?,?,?,?,?)',
     [msg.id, msg.periodId, msg.senderMemberId, sealIf(enc, msg.body) || msg.body, msg.expenseId || null, new Date(msg.createdAt)],
   );
-  await bumpPeriodVersion(msg.periodId);
+  if (result.affectedRows > 0) await bumpPeriodVersion(msg.periodId);
 }
 
 export async function listChat(periodId: string): Promise<ChatMessageRecord[]> {
@@ -669,11 +830,20 @@ export async function insertNotification(n: {
   body: string;
   read?: boolean;
   createdAt?: string;
+  url?: string;
 }): Promise<void> {
+  const id = n.id || nanoid();
   await getPool().query(
     'INSERT INTO notifications (id, user_id, title, body, is_read, created_at) VALUES (?,?,?,?,?,?)',
-    [n.id || nanoid(), n.userId, n.title, n.body, n.read ? 1 : 0, new Date(n.createdAt || Date.now())],
+    [id, n.userId, n.title, n.body, n.read ? 1 : 0, new Date(n.createdAt || Date.now())],
   );
+  void sendPushToUser({
+    userId: n.userId,
+    title: n.title,
+    body: n.body,
+    url: n.url || APP_HOME_PATH,
+    notificationId: id,
+  });
 }
 
 export async function markNotificationRead(id: string, userId: string): Promise<void> {
@@ -713,9 +883,10 @@ export async function upsertRecurring(rule: DbShape['recurring'][number], opts?:
   if (opts?.bump !== false) await bumpPeriodVersion(rule.periodId);
 }
 
+/** Idempotent on `id` for the same reason as `insertChat`. */
 export async function insertActivity(a: ActivityRecord): Promise<void> {
   await getPool().query(
-    'INSERT INTO activity (id, period_id, actor_name, action, summary, created_at, entity_id) VALUES (?,?,?,?,?,?,?)',
+    'INSERT IGNORE INTO activity (id, period_id, actor_name, action, summary, created_at, entity_id) VALUES (?,?,?,?,?,?,?)',
     [a.id, a.periodId, a.actorName, a.action, a.summary, new Date(a.createdAt), a.entityId || null],
   );
 }
@@ -842,11 +1013,18 @@ function group(rows: Row[], key: string): Map<string, Row[]> {
   return map;
 }
 
-export async function notifyPeriodMembers(periodId: string, exceptUserId: string, title: string, body: string): Promise<void> {
+export async function notifyPeriodMembers(
+  periodId: string,
+  exceptUserId: string,
+  title: string,
+  body: string,
+  url?: string,
+): Promise<void> {
   const members = await listMembers(periodId);
+  const link = url || `/periods/${periodId}`;
   for (const m of members) {
     if (!m.userId || m.userId === exceptUserId) continue;
-    await insertNotification({ userId: m.userId, title, body });
+    await insertNotification({ userId: m.userId, title, body, url: link });
   }
 }
 
@@ -870,15 +1048,17 @@ export async function listAllPeriods(): Promise<PeriodRecord[]> {
   return rows.map(mapPeriod);
 }
 
+const USER_LIST_COLUMNS = `id, phone, email, password_hash, google_id, display_name, created_at, deleted_at, banned_at, plan, premium_until, use_persian_digits, debt_reminders, calendar_mode, prefs_updated_at, avatar_updated_at, avatar_preset, username, ((avatar_data_url IS NOT NULL AND avatar_data_url <> '') OR (avatar_preset IS NOT NULL AND avatar_preset <> '')) AS has_avatar`;
+
 export async function listUsers(q?: string): Promise<UserRecord[]> {
   const needle = (q || '').trim().toLowerCase();
   const rows = needle
     ? await all(
         getPool(),
-        `SELECT * FROM users WHERE LOWER(CONCAT(id, ' ', display_name, ' ', COALESCE(phone,''), ' ', COALESCE(email,''), ' ', COALESCE(plan,''))) LIKE ? ORDER BY created_at DESC`,
+        `SELECT ${USER_LIST_COLUMNS} FROM users WHERE LOWER(CONCAT(id, ' ', display_name, ' ', COALESCE(phone,''), ' ', COALESCE(email,''), ' ', COALESCE(plan,''), ' ', COALESCE(username,''))) LIKE ? ORDER BY created_at DESC`,
         [`%${needle}%`],
       )
-    : await all(getPool(), 'SELECT * FROM users ORDER BY created_at DESC');
+    : await all(getPool(), `SELECT ${USER_LIST_COLUMNS} FROM users ORDER BY created_at DESC`);
   return rows.map((row) => mapUser(row, [], []));
 }
 
@@ -888,13 +1068,13 @@ export async function listActiveUserIds(): Promise<string[]> {
 }
 
 export async function adminCounts() {
-  const [users, periods, expenses, payments, sessions, zarinpal, telegram] = await Promise.all([
+  const [users, periods, expenses, payments, sessions, zarinpal] = await Promise.all([
     all(
       getPool(),
       `SELECT
         SUM(deleted_at IS NULL AND banned_at IS NULL) AS active,
         SUM(deleted_at IS NOT NULL) AS deleted,
-        SUM(deleted_at IS NULL AND banned_at IS NULL AND plan='premium' AND (premium_until IS NULL OR premium_until > UTC_TIMESTAMP())) AS premium
+        SUM(deleted_at IS NULL AND banned_at IS NULL AND plan='premium' AND premium_until IS NOT NULL AND premium_until > UTC_TIMESTAMP()) AS premium
        FROM users`,
     ),
     all(getPool(), 'SELECT COUNT(*) AS n FROM periods'),
@@ -902,7 +1082,6 @@ export async function adminCounts() {
     all(getPool(), 'SELECT COUNT(*) AS n FROM payments WHERE deleted_at IS NULL'),
     all(getPool(), 'SELECT COUNT(*) AS n FROM sessions'),
     all(getPool(), 'SELECT COUNT(*) AS n FROM zarinpal_pending'),
-    all(getPool(), 'SELECT COUNT(*) AS n FROM telegram_links'),
   ]);
   return {
     usersActive: Number(users[0]?.active || 0),
@@ -913,7 +1092,6 @@ export async function adminCounts() {
     payments: Number(payments[0]?.n || 0),
     sessions: Number(sessions[0]?.n || 0),
     zarinpalPending: Number(zarinpal[0]?.n || 0),
-    telegramLinks: Number(telegram[0]?.n || 0),
   };
 }
 
@@ -1092,8 +1270,11 @@ export async function countSessions(): Promise<number> {
 }
 
 export async function countActiveOtps(now = Date.now()): Promise<number> {
-  const rows = await all(getPool(), 'SELECT COUNT(*) AS n FROM otps WHERE expires_at > ?', [now]);
-  return Number(rows[0]?.n || 0);
+  const [sms, email] = await Promise.all([
+    all(getPool(), 'SELECT COUNT(*) AS n FROM otps WHERE expires_at > ?', [now]),
+    all(getPool(), 'SELECT COUNT(*) AS n FROM email_otps WHERE expires_at > ?', [now]),
+  ]);
+  return Number(sms[0]?.n || 0) + Number(email[0]?.n || 0);
 }
 
 export async function getFxCache(): Promise<DbShape['fxCache']> {
@@ -1207,41 +1388,6 @@ export async function listBillingEvents() {
     until: new Date(row.until_at as Date).toISOString(),
     createdAt: new Date(row.created_at as Date).toISOString(),
   }));
-}
-
-export async function upsertTelegramLink(link: {
-  chatId: string;
-  periodId: string;
-  payerMemberId?: string;
-}): Promise<void> {
-  await getPool().query(
-    `INSERT INTO telegram_links (chat_id, period_id, payer_member_id) VALUES (?,?,?)
-     ON DUPLICATE KEY UPDATE period_id=VALUES(period_id), payer_member_id=VALUES(payer_member_id)`,
-    [link.chatId, link.periodId, link.payerMemberId || null],
-  );
-}
-
-export async function getTelegramLink(chatId: string) {
-  const rows = await all(getPool(), 'SELECT * FROM telegram_links WHERE chat_id=?', [chatId]);
-  if (!rows[0]) return undefined;
-  return {
-    chatId: String(rows[0].chat_id),
-    periodId: String(rows[0].period_id).trim(),
-    payerMemberId: rows[0].payer_member_id ? String(rows[0].payer_member_id) : undefined,
-  };
-}
-
-export async function listTelegramLinks() {
-  const rows = await all(getPool(), 'SELECT * FROM telegram_links');
-  return rows.map((row) => ({
-    chatId: String(row.chat_id),
-    periodId: String(row.period_id).trim(),
-    payerMemberId: row.payer_member_id ? String(row.payer_member_id) : undefined,
-  }));
-}
-
-export async function deleteTelegramLink(chatId: string): Promise<void> {
-  await getPool().query('DELETE FROM telegram_links WHERE chat_id=?', [chatId]);
 }
 
 export async function getShebaDay(identity: string, day: string) {
@@ -1538,9 +1684,11 @@ export async function applyPeriodOps(periodId: string, ops: SyncApplyOp[]): Prom
           if (payload.lunchTurnMemberId) p.lunchTurnMemberId = payload.lunchTurnMemberId;
           if (payload.encrypted !== undefined) p.encrypted = payload.encrypted;
           if (payload.visibility === 'public' || payload.visibility === 'private') p.visibility = payload.visibility;
+          applyPeriodMedia(p, payload);
           p.updatedAt = new Date().toISOString();
+          const media = periodMediaSql(p);
           await conn.query(
-            `UPDATE periods SET title=?, currency=?, owner_id=?, updated_at=?, kind=?, banker_member_id=?, template=?, round_to=?, building_charge=?, lunch_turn_member_id=?, encrypted=?, visibility=? WHERE id=?`,
+            `UPDATE periods SET title=?, currency=?, owner_id=?, updated_at=?, kind=?, banker_member_id=?, template=?, round_to=?, building_charge=?, lunch_turn_member_id=?, encrypted=?, visibility=?, cover_preset=?, cover_data_url=? WHERE id=?`,
             [
               p.title,
               p.currency,
@@ -1554,6 +1702,8 @@ export async function applyPeriodOps(periodId: string, ops: SyncApplyOp[]): Prom
               p.lunchTurnMemberId || null,
               p.encrypted ? 1 : 0,
               p.visibility || 'private',
+              media.coverPreset,
+              media.coverDataUrl,
               p.id,
             ],
           );

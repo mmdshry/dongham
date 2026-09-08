@@ -1,42 +1,65 @@
 import { useLiveQuery } from 'dexie-react-hooks';
+import type { LucideIcon } from 'lucide-react';
+import { ChevronRight } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { AdBanner } from './AdBanner';
+import { AppHeader } from './AppHeader';
+import { ConnectionModeBadge } from './ConnectionModeBadge';
+import { Icon } from './Icon';
 import { db } from '../lib/db';
 import { formatMoney } from '../lib/format';
+import { COVER_EMPTY } from '../lib/periodCover';
 import { useUiStore } from '../store/ui';
+import { ToastBar } from './ToastBar';
+
+export { ConnectionModeBadge } from './ConnectionModeBadge';
 
 export function ToastHost() {
   const toast = useUiStore((s) => s.toast);
+  const setToast = useUiStore((s) => s.setToast);
   if (!toast) return null;
   return (
-    <div
-      role="status"
-      className="toast-bar fixed left-1/2 z-50 max-w-[90vw] -translate-x-1/2 animate-pop bottom-[max(5.5rem,calc(var(--keyboard-inset,0px)+1rem))] md:bottom-[max(2rem,calc(var(--keyboard-inset,0px)+1rem))]"
-    >
-      {toast}
-    </div>
+    <ToastBar
+      key={toast.id}
+      toast={toast}
+      onDismiss={() => setToast(null)}
+      className="fixed left-1/2 z-50 max-w-[90vw] -translate-x-1/2 bottom-[max(7.25rem,calc(var(--keyboard-inset,0px)+1rem))] md:bottom-[max(2rem,calc(var(--keyboard-inset,0px)+1rem))]"
+    />
   );
 }
 
-export function OnlineBadge() {
-  const online = useUiStore((s) => s.online);
+export function EmptyState({
+  title,
+  hint,
+  image,
+  icon,
+  action,
+}: {
+  title: string;
+  hint?: string;
+  image?: boolean;
+  icon?: LucideIcon;
+  action?: ReactNode;
+}) {
   return (
-    <span
-      className={`hidden items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium sm:inline-flex ${
-        online ? 'bg-brand-100 text-brand-800' : 'bg-amber-100 text-amber-900'
-      }`}
-    >
-      <span className={`h-1.5 w-1.5 rounded-full ${online ? 'bg-brand-600' : 'bg-amber-500'}`} />
-      {online ? 'آنلاین' : 'آفلاین'}
-    </span>
-  );
-}
-
-export function EmptyState({ title, hint }: { title: string; hint?: string }) {
-  return (
-    <div className="card-surface animate-rise text-center">
-      <p className="text-base font-semibold text-ink-800">{title}</p>
-      {hint ? <p className="mt-2 text-sm text-ink-700/70">{hint}</p> : null}
+    <div className="card-surface animate-rise overflow-hidden !p-0 text-center">
+      {image ? (
+        <div className="aspect-[16/9] w-full overflow-hidden bg-[rgb(var(--bg))] sm:aspect-[2/1]">
+          <img
+            src={COVER_EMPTY}
+            alt=""
+            className="h-full w-full object-cover object-center"
+          />
+        </div>
+      ) : icon ? (
+        <div className="flex justify-center pt-6 text-brand-700/35">
+          <Icon icon={icon} size={40} strokeWidth={1.6} />
+        </div>
+      ) : null}
+      <div className="p-5 sm:p-6">
+        <p className="text-base font-extrabold text-ink-900">{title}</p>
+        {hint ? <p className="mt-2 text-sm leading-6 text-ink-700/70">{hint}</p> : null}
+        {action ? <div className="mt-4">{action}</div> : null}
+      </div>
     </div>
   );
 }
@@ -56,51 +79,67 @@ export function Money({ amount, currency = 'IRT' }: { amount: number; currency?:
   return <span className="tabular-nums">{formatMoney(amount, currency, persian)}</span>;
 }
 
+export function PageSkeleton({ rows = 3 }: { rows?: number }) {
+  return (
+    <div className="space-y-3" aria-busy="true" aria-live="polite">
+      <span className="sr-only">در حال بارگذاری</span>
+      {Array.from({ length: rows }, (_, i) => (
+        <div key={i} className="card-surface h-28 animate-pulse bg-brand-50" />
+      ))}
+    </div>
+  );
+}
+
 export function Shell({
   title,
   children,
   action,
   back,
+  chrome = 'page',
 }: {
   title: string;
   children: ReactNode;
   action?: ReactNode;
   back?: () => void;
+  chrome?: 'app' | 'page';
 }) {
   return (
-    <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 pb-28 pt-[max(1rem,env(safe-area-inset-top))] md:pb-10 md:pt-6">
+    <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 pb-36 pt-[max(1rem,env(safe-area-inset-top))] md:pb-10 md:pt-6">
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:rounded-xl focus:bg-surface focus:px-3 focus:py-2"
+        className="sr-only focus-visible:not-sr-only focus-visible:absolute focus-visible:z-50 focus-visible:rounded-xl focus-visible:bg-surface focus-visible:px-3 focus-visible:py-2"
       >
         پرش به محتوا
       </a>
-      <header className="mb-5 flex items-center justify-between gap-3 animate-rise">
-        <div className="flex min-w-0 items-center gap-3">
-          {back ? (
-            <button
-              type="button"
-              className="btn-ghost !min-h-11 !min-w-11 shrink-0 !px-0"
-              onClick={back}
-              aria-label="بازگشت"
-            >
-              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
-                <path d="M9 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </button>
-          ) : null}
-          <div className="min-w-0">
-            <p className="text-xs font-semibold tracking-wide text-brand-700 md:hidden">Dongham</p>
-            <h1 className="truncate text-xl font-extrabold text-ink-900 md:text-2xl">{title}</h1>
+      {chrome === 'app' ? (
+        <>
+          <AppHeader />
+          <h1 className="sr-only">{title}</h1>
+        </>
+      ) : (
+        <header className="mb-5 flex items-center justify-between gap-3 animate-rise">
+          <div className="flex min-w-0 items-center gap-3">
+            {back ? (
+              <button
+                type="button"
+                className="btn-ghost !min-h-11 !min-w-11 shrink-0 !px-0"
+                onClick={back}
+                aria-label="بازگشت"
+              >
+                <Icon icon={ChevronRight} size={20} />
+              </button>
+            ) : null}
+            <div className="min-w-0">
+              <h1 className="truncate text-xl font-extrabold text-ink-900 md:text-2xl">{title}</h1>
+            </div>
           </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <OnlineBadge />
-          {action}
-        </div>
-      </header>
-      <div id="main">{children}</div>
-      <AdBanner />
+          <div className="flex shrink-0 items-center gap-2">
+            <ConnectionModeBadge />
+            {action}
+          </div>
+        </header>
+      )}
+      <main id="main">{children}</main>
     </div>
   );
 }
