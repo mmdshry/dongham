@@ -1,6 +1,6 @@
 import { nanoid } from 'nanoid';
-import { api, ensureProfile, updateProfile } from './api';
-import { randomGuestDisplayName } from './memberLabel';
+import { api, ensureProfile, updateProfile, ApiError } from './api';
+import { needsDisplayName, normalizeDisplayName, randomGuestDisplayName } from './memberLabel';
 import { FX_WATCH_META, LAST_USER_META, readCalendarMode, writeCalendarMode } from './calendarPref';
 import type { CloudPayoutMethod, CloudProfile } from '@dongham/ledger';
 import { encryptText } from './crypto';
@@ -17,6 +17,17 @@ import {
 } from './accountSync';
 
 export type { CloudPayoutMethod, CloudProfile };
+
+function quotaFromCloud(cloud: CloudProfile): Pick<
+  LocalProfile,
+  'displayNameChangesUsed' | 'displayNameChangesRemaining' | 'displayNameChangesLimit'
+> {
+  return {
+    displayNameChangesUsed: cloud.displayNameChangesUsed,
+    displayNameChangesRemaining: cloud.displayNameChangesRemaining,
+    displayNameChangesLimit: cloud.displayNameChangesLimit,
+  };
+}
 
 export type AuthUser = {
   id: string;
@@ -93,6 +104,7 @@ async function applyPrefs(cloud: CloudProfile) {
     username: cloud.username,
     profileCoverPreset: cloud.profileCoverPreset,
     profileCoverDataUrl: cloud.profileCoverDataUrl,
+    ...quotaFromCloud(cloud),
   });
 }
 
@@ -166,7 +178,6 @@ export async function pushCloudProfile(opts?: { includePayouts?: boolean }): Pro
   if (!profile.token) return;
   if (typeof navigator !== 'undefined' && !navigator.onLine) return;
   const body: Record<string, unknown> = {
-    displayName: profile.displayName,
     usePersianDigits: profile.usePersianDigits !== false,
     debtReminders: profile.debtReminders !== false,
     calendarMode: profile.calendarMode || readCalendarMode(),
@@ -196,6 +207,7 @@ export async function pushCloudProfile(opts?: { includePayouts?: boolean }): Pro
     prefsUpdatedAt: res.profile.prefsUpdatedAt,
     payoutDirty: opts?.includePayouts ? false : profile.payoutDirty,
     displayName: res.profile.displayName,
+    ...quotaFromCloud(res.profile),
   });
 }
 
@@ -241,6 +253,36 @@ export async function updateAccountPrefs(patch: Partial<LocalProfile>): Promise<
   }
   void pushCloudProfile({ includePayouts: Boolean(patch.payoutDirty) }).catch(() => undefined);
   return next;
+}
+
+export async function saveDisplayName(displayName: string): Promise<LocalProfile> {
+  const name = normalizeDisplayName(displayName);
+  if (needsDisplayName(name)) throw new Error('نام لازم است');
+  const profile = await ensureProfile();
+  if (!profile.token) {
+    return updateAccountPrefs({ displayName: name });
+  }
+  try {
+    const res = await api<{ user: AuthUser; profile: CloudProfile }>('/auth/me/display-name', {
+      method: 'PUT',
+      body: JSON.stringify({ displayName: name }),
+    });
+    const next = await updateProfile({
+      displayName: res.profile.displayName,
+      prefsUpdatedAt: res.profile.prefsUpdatedAt,
+      ...quotaFromCloud(res.profile),
+    });
+    await syncSelfNameToMembers();
+    return next;
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 429 && e.data && typeof e.data === 'object') {
+      const data = e.data as CloudProfile;
+      if (typeof data.displayNameChangesRemaining === 'number') {
+        await updateProfile(quotaFromCloud(data));
+      }
+    }
+    throw e;
+  }
 }
 
 export async function applyAuthSession(

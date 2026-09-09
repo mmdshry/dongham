@@ -10,3 +10,7 @@ export function parsePeriodTab(raw: string | null | undefined): PeriodTab {
 export function periodTabSearch(tab: PeriodTab): string {
   return tab === 'expenses' ? '' : tab;
 }
+
+export function periodChatHref(periodId: string): string {
+  return `/periods/${periodId}?tab=chat`;
+}

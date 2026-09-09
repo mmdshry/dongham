@@ -49,9 +49,9 @@ export default defineConfig({
       injectManifest: {
         globPatterns: ['**/*.{js,css,html,ico,svg,woff2,png,webp}'],
       },
-      // Workbox navigation/precache intercepts Vite HMR if enabled here.
-      // Test the production SW with `vite preview` instead.
-      devOptions: { enabled: false, type: 'module' },
+      // Dev SW skips precache/navigation (see isDevSw in sw.ts) so HMR still works.
+      // Needed for Web Push while running `pnpm dev`.
+      devOptions: { enabled: true, type: 'module' },
     }),
   ],
   resolve: {
@@ -71,6 +71,8 @@ export default defineConfig({
         target: 'http://127.0.0.1:8787',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ''),
+        timeout: 0,
+        proxyTimeout: 0,
       },
     },
   },

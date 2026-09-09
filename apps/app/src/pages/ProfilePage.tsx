@@ -12,7 +12,10 @@ import { Shell } from '../components/ui';
 import { compressAvatar } from '../lib/avatar';
 import { api } from '../lib/api';
 import { pushAvatar, pushAvatarPreset, removeAvatar } from '../lib/avatarCache';
+import { saveDisplayName } from '../lib/cloudProfile';
 import { db } from '../lib/db';
+import { toPersianDigits } from '../lib/format';
+import { DISPLAY_NAME_MAX, needsDisplayName, normalizeDisplayName } from '../lib/memberLabel';
 import { pushProfileCover, pushProfileCoverPreset, removeProfileCover, saveUsername } from '../lib/profileCloud';
 import { hasUserAvatar, userAvatarSrc } from '../lib/userAvatarPresets';
 import { useUiStore } from '../store/ui';
@@ -22,6 +25,7 @@ export function ProfilePage() {
   const setToast = useUiStore((s) => s.setToast);
   const [busy, setBusy] = useState(false);
   const [picker, setPicker] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
   const [usernameDraft, setUsernameDraft] = useState('');
   const [usernameHint, setUsernameHint] = useState<string | null>(null);
   const [usernameOk, setUsernameOk] = useState(false);
@@ -30,6 +34,16 @@ export function ProfilePage() {
   const hasAvatar = hasUserAvatar(profile);
   const loggedIn = Boolean(profile?.token);
   const publicPath = profile?.username ? `/${profile.username}` : '';
+  const persian = profile?.usePersianDigits !== false;
+  const nameLimit = profile?.displayNameChangesLimit || 3;
+  const nameRemaining = loggedIn ? profile?.displayNameChangesRemaining : undefined;
+  const nameQuotaGone = loggedIn && nameRemaining === 0;
+  const nameDirty = normalizeDisplayName(nameDraft) !== normalizeDisplayName(profile?.displayName);
+  const nameInvalid = needsDisplayName(nameDraft);
+
+  useEffect(() => {
+    setNameDraft(profile?.displayName || '');
+  }, [profile?.displayName]);
 
   useEffect(() => {
     setUsernameDraft(profile?.username || '');
@@ -123,6 +137,27 @@ export function ProfilePage() {
     }
   };
 
+  const onSaveName = async () => {
+    if (busy) return;
+    const name = normalizeDisplayName(nameDraft);
+    if (needsDisplayName(name)) {
+      setNameDraft(profile?.displayName || '');
+      setToast('نام لازم است', 'error');
+      return;
+    }
+    if (name === normalizeDisplayName(profile?.displayName)) return;
+    setBusy(true);
+    try {
+      await saveDisplayName(name);
+      setToast('ذخیره شد', 'success');
+    } catch (e) {
+      setNameDraft(profile?.displayName || '');
+      setToast(e instanceof Error ? e.message : 'ذخیره نام ممکن نشد', 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onSaveUsername = async () => {
     if (busy || !loggedIn) return;
     const raw = usernameDraft.trim();
@@ -206,6 +241,41 @@ export function ProfilePage() {
             </div>
           </div>
         </div>
+
+        <section className="card-surface space-y-3">
+          <h2 className="section-title">نام نمایشی</h2>
+          <label className="label" htmlFor="profile-display-name">
+            نام نمایشی
+          </label>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              id="profile-display-name"
+              className="input min-w-0 flex-1"
+              value={nameDraft}
+              maxLength={DISPLAY_NAME_MAX}
+              disabled={busy}
+              onChange={(e) => setNameDraft(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn-primary shrink-0"
+              disabled={busy || nameQuotaGone || !nameDirty || nameInvalid}
+              onClick={() => void onSaveName()}
+            >
+              ذخیره
+            </button>
+          </div>
+          {nameQuotaGone ? (
+            <p className="text-xs text-ink-700/70">این ماه ۳ بار تغییر داده‌اید؛ از اول ماه بعد دوباره.</p>
+          ) : loggedIn && typeof nameRemaining === 'number' ? (
+            <p className="text-xs text-ink-700/70">
+              این ماه {toPersianDigits(nameRemaining, persian)} بار از {toPersianDigits(nameLimit, persian)} بار باقی
+              مانده.
+            </p>
+          ) : loggedIn ? (
+            <p className="text-xs text-ink-700/70">نام نمایشی را حداکثر ۳ بار در ماه می‌توانید عوض کنید.</p>
+          ) : null}
+        </section>
 
         <section className="card-surface space-y-3">
           <h2 className="section-title">یوزرنیم و صفحهٔ عمومی</h2>

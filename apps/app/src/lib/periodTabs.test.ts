@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parsePeriodTab, periodTabSearch } from './periodTabs';
+import { parsePeriodTab, periodChatHref, periodTabSearch } from './periodTabs';
 
 describe('parsePeriodTab', () => {
   it('keeps known tabs', () => {
@@ -21,5 +21,11 @@ describe('periodTabSearch', () => {
     expect(periodTabSearch('expenses')).toBe('');
     expect(periodTabSearch('chat')).toBe('chat');
     expect(periodTabSearch('settings')).toBe('settings');
+  });
+});
+
+describe('periodChatHref', () => {
+  it('opens the chat tab', () => {
+    expect(periodChatHref('abc12xy')).toBe('/periods/abc12xy?tab=chat');
   });
 });

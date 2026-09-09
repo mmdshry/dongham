@@ -8,6 +8,7 @@ export type PushPayload = {
   body: string;
   url?: string;
   notificationId?: string;
+  forceDisplay?: boolean;
 };
 
 type StoredSubscription = {
@@ -83,6 +84,7 @@ export async function sendPushToUser(payload: PushPayload): Promise<void> {
     body: payload.body,
     url: payload.url || APP_HOME_PATH,
     notificationId: payload.notificationId,
+    forceDisplay: payload.forceDisplay || undefined,
   });
   for (const sub of subs) {
     try {

@@ -248,6 +248,10 @@ export async function queueOp(
     try {
       const version = await flushOneOp(periodId, { entity, action, payload });
       await markPeriodSynced(periodId, version);
+      if (entity === 'chat') {
+        const chatId = (payload as { id?: string }).id;
+        if (chatId) await db.chat.update(chatId, { synced: true });
+      }
       return;
     } catch (e) {
       // The server rejected this write for good (auth / validation / duplicate): queuing it would
@@ -731,9 +735,14 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
         deletedAt?: string | null;
         completedAt?: string | null;
         archivedAt?: string | null;
+        chatMutedAt?: string | null;
+        chatLastReadAt?: string | null;
+        lastSeenAt?: string | null;
       }[];
     }>('/periods');
     let serverAhead = false;
+    const { applyServerPeriodPref, flushPeriodAcks } = await import('./periodUserState');
+    await flushPeriodAcks();
     for (const p of periods) {
       const local = await db.periods.get(p.id);
       const pendingRows = await db.outbox.where('periodId').equals(p.id).toArray();
@@ -745,9 +754,8 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
         if (p.completedAt) next.completedAt = p.completedAt;
         else delete next.completedAt;
         await db.periods.put(next);
-        if (p.archivedAt) await db.periodPrefs.put({ periodId: p.id, archivedAt: p.archivedAt });
-        else await db.periodPrefs.delete(p.id);
       }
+      if (!pendingLifecycle) await applyServerPeriodPref(p);
       const upToDate = Boolean(local && typeof p.version === 'number' && local.version >= p.version);
       // Periods with queued local writes are pulled only after those flush (last write wins).
       const pending = pendingRows.length;
@@ -761,16 +769,7 @@ export async function pullCloud(): Promise<{ ok: boolean; error?: string }> {
     }
     useUiStore.getState().setServerAhead(serverAhead);
     try {
-      const { friends } = await api<{ friends: (LocalFriend & { userId?: string })[] }>('/friends');
-      for (const f of friends) {
-        await db.friends.put({
-          id: f.id,
-          displayName: f.displayName,
-          phone: f.phone,
-          email: f.email,
-          friendUserId: f.friendUserId,
-        });
-      }
+      await pullFriends();
     } catch {
       /* optional */
     }
@@ -876,20 +875,63 @@ export async function discardRejectedOps(periodId: string): Promise<number> {
   return stuck.length;
 }
 
+export async function pullFriends(): Promise<void> {
+  const { friends } = await api<{ friends: (LocalFriend & { userId?: string })[] }>('/friends');
+  for (const f of friends) {
+    await db.friends.put({
+      id: f.id,
+      displayName: f.displayName,
+      phone: f.phone,
+      email: f.email,
+      friendUserId: f.friendUserId,
+    });
+  }
+}
+
+export async function pullPeriod(periodId: string): Promise<void> {
+  const pendingRows = await db.outbox.where('periodId').equals(periodId).toArray();
+  if (pendingRows.length) return;
+  const snap = await api<PeriodSnapshot>(`/periods/${periodId}/snapshot`);
+  await applyPeriodSnapshot(snap);
+  await db.periods.update(periodId, { synced: true, version: snap.version ?? snap.period.version });
+}
+
+let liveConnected = false;
+
+export function setLiveConnected(on: boolean): void {
+  liveConnected = on;
+}
+
 export function startSyncLoop() {
+  let inFlight = false;
+  let timer = 0;
+  let stopped = false;
   const tick = () => {
+    if (stopped) return;
     void (async () => {
-      const profile = await ensureProfile();
-      if (!shouldImmediateSync(profile, isOnline())) return;
-      await flushOutbox();
-      await pullCloud();
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const profile = await ensureProfile();
+        if (!shouldImmediateSync(profile, isOnline())) return;
+        await flushOutbox();
+        await pullCloud();
+      } finally {
+        inFlight = false;
+        schedule();
+      }
     })();
+  };
+  const schedule = () => {
+    if (stopped) return;
+    window.clearTimeout(timer);
+    timer = window.setTimeout(tick, liveConnected ? 60_000 : 15_000);
   };
   window.addEventListener('online', tick);
   void tick();
-  const id = window.setInterval(tick, 15_000);
   return () => {
+    stopped = true;
     window.removeEventListener('online', tick);
-    window.clearInterval(id);
+    window.clearTimeout(timer);
   };
 }

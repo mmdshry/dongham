@@ -1,6 +1,7 @@
 import type { PoolConnection, ResultSetHeader } from 'mysql2/promise';
 import { nanoid } from 'nanoid';
 import { openField, sealIf } from './at-rest.js';
+import { publishToUser, type LiveEvent } from './live.js';
 import { sendPushToUser } from './push.js';
 import { APP_HOME_PATH } from './publicUrl.js';
 import { classifyMemberSearchQuery, MEMBER_SEARCH_LIMIT, memberSearchNeedsCloud } from '@dongham/ledger';
@@ -367,8 +368,8 @@ export async function hasFriendByUserId(ownerId: string, friendUserId: string): 
 export async function insertUser(user: UserRecord): Promise<void> {
   await withTx(async (conn) => {
     await conn.query(
-      `INSERT INTO users (id, phone, email, password_hash, google_id, display_name, created_at, deleted_at, banned_at, plan, premium_until, use_persian_digits, debt_reminders, calendar_mode, auto_sync, prefs_updated_at, avatar_preset, avatar_data_url, avatar_updated_at, username, profile_cover_preset, profile_cover_data_url)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO users (id, phone, email, password_hash, google_id, display_name, created_at, deleted_at, banned_at, plan, premium_until, use_persian_digits, debt_reminders, calendar_mode, auto_sync, prefs_updated_at, avatar_preset, avatar_data_url, avatar_updated_at, username, profile_cover_preset, profile_cover_data_url, display_name_month, display_name_changes)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       [
         user.id,
         user.phone || null,
@@ -392,6 +393,8 @@ export async function insertUser(user: UserRecord): Promise<void> {
         user.username || null,
         user.profileCoverPreset || null,
         user.profileCoverDataUrl || null,
+        user.displayNameMonth || null,
+        user.displayNameChanges || 0,
       ],
     );
   });
@@ -400,7 +403,7 @@ export async function insertUser(user: UserRecord): Promise<void> {
 export async function updateUser(user: UserRecord): Promise<void> {
   await withTx(async (conn) => {
     await conn.query(
-      `UPDATE users SET phone=?, email=?, password_hash=?, google_id=?, display_name=?, deleted_at=?, banned_at=?, plan=?, premium_until=?, use_persian_digits=?, debt_reminders=?, calendar_mode=?, auto_sync=?, prefs_updated_at=?, avatar_preset=?, avatar_data_url=?, avatar_updated_at=?, username=?, profile_cover_preset=?, profile_cover_data_url=? WHERE id=?`,
+      `UPDATE users SET phone=?, email=?, password_hash=?, google_id=?, display_name=?, deleted_at=?, banned_at=?, plan=?, premium_until=?, use_persian_digits=?, debt_reminders=?, calendar_mode=?, auto_sync=?, prefs_updated_at=?, avatar_preset=?, avatar_data_url=?, avatar_updated_at=?, username=?, profile_cover_preset=?, profile_cover_data_url=?, display_name_month=?, display_name_changes=? WHERE id=?`,
       [
         user.phone || null,
         user.email || null,
@@ -422,6 +425,8 @@ export async function updateUser(user: UserRecord): Promise<void> {
         user.username || null,
         user.profileCoverPreset || null,
         user.profileCoverDataUrl || null,
+        user.displayNameMonth || null,
+        user.displayNameChanges || 0,
         user.id,
       ],
     );
@@ -657,13 +662,26 @@ async function retargetPeriodEncryption(periodId: string, encrypted: boolean): P
   });
 }
 
-export async function bumpPeriodVersion(periodId: string): Promise<number> {
+export async function bumpPeriodVersion(periodId: string, opts?: { live?: boolean }): Promise<number> {
   await getPool().query('UPDATE periods SET version = version + 1, updated_at = ? WHERE id=?', [
     new Date(),
     periodId,
   ]);
   const p = await getPeriod(periodId);
-  return p?.version ?? 0;
+  const version = p?.version ?? 0;
+  if (opts?.live !== false) await liveToPeriodUsers(periodId, { type: 'period', periodId, version });
+  return version;
+}
+
+async function liveToPeriodUsers(periodId: string, event: LiveEvent | LiveEvent[], exceptUserId?: string): Promise<void> {
+  const events = Array.isArray(event) ? event : [event];
+  const members = await listMembers(periodId);
+  const seen = new Set<string>();
+  for (const m of members) {
+    if (!m.userId || m.userId === exceptUserId || seen.has(m.userId)) continue;
+    seen.add(m.userId);
+    for (const ev of events) publishToUser(m.userId, ev);
+  }
 }
 
 export async function listMembers(periodId: string): Promise<MemberRecord[]> {
@@ -688,6 +706,10 @@ export async function upsertMember(member: MemberRecord): Promise<void> {
     const enc = await periodEncrypted(conn, member.periodId);
     await writeMember(conn, sealMember(member, enc), enc);
   });
+  if (member.userId) {
+    const rows = await all(getPool(), 'SELECT id FROM users WHERE id=?', [member.userId]);
+    if (rows[0]) await touchPeriodUserState(member.userId, member.periodId);
+  }
 }
 
 async function existingUserId(conn: PoolConnection, userId: string | null | undefined): Promise<string | null> {
@@ -835,13 +857,21 @@ async function writePayment(conn: PoolConnection, p: PaymentRecord, _enc: boolea
 }
 
 /** Idempotent on `id`: the offline outbox may replay the same message after a partial flush. */
-export async function insertChat(msg: ChatMessageRecord): Promise<void> {
+export async function insertChat(msg: ChatMessageRecord): Promise<boolean> {
   const enc = await periodEncrypted(getPool(), msg.periodId);
   const [result] = await getPool().query<ResultSetHeader>(
     'INSERT IGNORE INTO chat (id, period_id, sender_member_id, body, expense_id, created_at) VALUES (?,?,?,?,?,?)',
     [msg.id, msg.periodId, msg.senderMemberId, sealIf(enc, msg.body) || msg.body, msg.expenseId || null, new Date(msg.createdAt)],
   );
-  if (result.affectedRows > 0) await bumpPeriodVersion(msg.periodId);
+  if (result.affectedRows > 0) {
+    const version = await bumpPeriodVersion(msg.periodId, { live: false });
+    await liveToPeriodUsers(msg.periodId, [
+      { type: 'period', periodId: msg.periodId, version },
+      { type: 'chat', periodId: msg.periodId, message: msg },
+    ]);
+    return true;
+  }
+  return false;
 }
 
 export async function listChat(periodId: string): Promise<ChatMessageRecord[]> {
@@ -925,10 +955,16 @@ export async function upsertFriend(f: FriendRecord): Promise<void> {
      ON DUPLICATE KEY UPDATE display_name=VALUES(display_name), phone=VALUES(phone), email=VALUES(email), friend_user_id=VALUES(friend_user_id)`,
     [f.id, f.userId, f.friendUserId || null, f.displayName, f.phone || null, f.email || null],
   );
+  publishToUser(f.userId, { type: 'friends' });
+  if (f.friendUserId) publishToUser(f.friendUserId, { type: 'friends' });
 }
 
 export async function deleteFriend(id: string, userId: string): Promise<void> {
+  const rows = await all(getPool(), 'SELECT friend_user_id FROM friends WHERE id=? AND user_id=?', [id, userId]);
   await getPool().query('DELETE FROM friends WHERE id=? AND user_id=?', [id, userId]);
+  publishToUser(userId, { type: 'friends' });
+  const other = rows[0]?.friend_user_id ? String(rows[0].friend_user_id) : '';
+  if (other) publishToUser(other, { type: 'friends' });
 }
 
 export async function listNotifications(userId: string, limit = 100) {
@@ -955,18 +991,25 @@ export async function insertNotification(n: {
   read?: boolean;
   createdAt?: string;
   url?: string;
+  forceDisplay?: boolean;
 }): Promise<void> {
   const id = n.id || nanoid();
+  const createdAt = n.createdAt || new Date().toISOString();
   await getPool().query(
     'INSERT INTO notifications (id, user_id, title, body, is_read, created_at) VALUES (?,?,?,?,?,?)',
-    [id, n.userId, n.title, n.body, n.read ? 1 : 0, new Date(n.createdAt || Date.now())],
+    [id, n.userId, n.title, n.body, n.read ? 1 : 0, new Date(createdAt)],
   );
+  publishToUser(n.userId, {
+    type: 'notification',
+    notification: { id, title: n.title, body: n.body, read: Boolean(n.read), createdAt },
+  });
   void sendPushToUser({
     userId: n.userId,
     title: n.title,
     body: n.body,
     url: n.url || APP_HOME_PATH,
     notificationId: id,
+    forceDisplay: n.forceDisplay,
   });
 }
 
@@ -1149,6 +1192,31 @@ export async function notifyPeriodMembers(
   for (const m of members) {
     if (!m.userId || m.userId === exceptUserId) continue;
     await insertNotification({ userId: m.userId, title, body, url: link });
+  }
+}
+
+export function periodChatUrl(periodId: string): string {
+  return `/periods/${periodId}?tab=chat`;
+}
+
+/** OS push only — chat must not create inbox rows. */
+export async function pushChatToPeriodMembers(opts: {
+  periodId: string;
+  exceptUserId: string;
+  senderMemberId: string;
+  periodTitle: string;
+}): Promise<void> {
+  const members = await listMembers(opts.periodId);
+  const muted = await listMutedChatUserIds(opts.periodId);
+  const sender = members.find((m) => m.id === opts.senderMemberId);
+  const title = `پیام جدید در «${opts.periodTitle}»`;
+  const body = `از ${sender?.displayName || 'عضو'}`;
+  const url = periodChatUrl(opts.periodId);
+  const seen = new Set<string>();
+  for (const m of members) {
+    if (!m.userId || m.userId === opts.exceptUserId || muted.has(m.userId) || seen.has(m.userId)) continue;
+    seen.add(m.userId);
+    await sendPushToUser({ userId: m.userId, title, body, url });
   }
 }
 
@@ -1446,6 +1514,92 @@ export async function setPeriodArchived(userId: string, periodId: string, archiv
     [userId, periodId, now],
   );
   return (await getPeriodArchivedAt(userId, periodId)) || now.toISOString();
+}
+
+export type PeriodUserState = {
+  periodId: string;
+  chatMutedAt?: string;
+  chatLastReadAt?: string;
+  lastSeenAt?: string;
+};
+
+function mapPeriodUserState(periodId: string, row: Row): PeriodUserState {
+  const muted = row.chat_muted_at ? new Date(row.chat_muted_at as Date).toISOString() : undefined;
+  const read = row.chat_last_read_at ? new Date(row.chat_last_read_at as Date).toISOString() : undefined;
+  const seen = row.last_seen_at ? new Date(row.last_seen_at as Date).toISOString() : undefined;
+  return { periodId, chatMutedAt: muted, chatLastReadAt: read, lastSeenAt: seen };
+}
+
+export async function listPeriodUserState(userId: string): Promise<Map<string, PeriodUserState>> {
+  const rows = await all(
+    getPool(),
+    'SELECT period_id, chat_muted_at, chat_last_read_at, last_seen_at FROM period_user_state WHERE user_id=?',
+    [userId],
+  );
+  const map = new Map<string, PeriodUserState>();
+  for (const row of rows) {
+    const periodId = String(row.period_id);
+    map.set(periodId, mapPeriodUserState(periodId, row));
+  }
+  return map;
+}
+
+export async function ensurePeriodUserStates(userId: string, periodIds: string[]): Promise<Map<string, PeriodUserState>> {
+  const state = await listPeriodUserState(userId);
+  const missing = periodIds.filter((id) => !state.has(id));
+  for (const id of missing) await touchPeriodUserState(userId, id);
+  if (!missing.length) return state;
+  return listPeriodUserState(userId);
+}
+
+async function touchPeriodUserState(userId: string, periodId: string): Promise<void> {
+  const now = new Date();
+  await getPool().query(
+    `INSERT INTO period_user_state (user_id, period_id, chat_last_read_at, last_seen_at) VALUES (?,?,?,?)
+     ON DUPLICATE KEY UPDATE user_id=user_id`,
+    [userId, periodId, now, now],
+  );
+}
+
+export async function listMutedChatUserIds(periodId: string): Promise<Set<string>> {
+  const rows = await all(
+    getPool(),
+    'SELECT user_id FROM period_user_state WHERE period_id=? AND chat_muted_at IS NOT NULL',
+    [periodId],
+  );
+  return new Set(rows.map((row) => String(row.user_id)));
+}
+
+export async function setPeriodChatMuted(userId: string, periodId: string, muted: boolean): Promise<string | undefined> {
+  await touchPeriodUserState(userId, periodId);
+  const at = muted ? new Date() : null;
+  await getPool().query('UPDATE period_user_state SET chat_muted_at=? WHERE user_id=? AND period_id=?', [
+    at,
+    userId,
+    periodId,
+  ]);
+  if (!at) return undefined;
+  return at.toISOString();
+}
+
+export async function setPeriodChatReadAt(userId: string, periodId: string, lastReadAt: Date): Promise<string> {
+  await touchPeriodUserState(userId, periodId);
+  await getPool().query('UPDATE period_user_state SET chat_last_read_at=? WHERE user_id=? AND period_id=?', [
+    lastReadAt,
+    userId,
+    periodId,
+  ]);
+  return lastReadAt.toISOString();
+}
+
+export async function setPeriodLastSeenAt(userId: string, periodId: string, lastSeenAt: Date): Promise<string> {
+  await touchPeriodUserState(userId, periodId);
+  await getPool().query('UPDATE period_user_state SET last_seen_at=? WHERE user_id=? AND period_id=?', [
+    lastSeenAt,
+    userId,
+    periodId,
+  ]);
+  return lastSeenAt.toISOString();
 }
 
 export async function transferPeriodOwner(periodId: string, newOwnerUserId: string): Promise<void> {

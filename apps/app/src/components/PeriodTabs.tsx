@@ -2,6 +2,7 @@ import { History, MessageCircle, Receipt, Scale, Settings, type LucideIcon } fro
 import { useRef, type KeyboardEvent, type ReactNode } from 'react';
 import { PERIOD_TABS, type PeriodTab } from '../lib/periodTabs';
 import { Icon } from './Icon';
+import { UnreadDot } from './UnreadDot';
 
 const ITEMS: { id: PeriodTab; label: string; icon: LucideIcon }[] = [
   { id: 'expenses', label: 'هزینه‌ها', icon: Receipt },
@@ -11,7 +12,15 @@ const ITEMS: { id: PeriodTab; label: string; icon: LucideIcon }[] = [
   { id: 'settings', label: 'تنظیمات', icon: Settings },
 ];
 
-export function PeriodTabs({ tab, onChange }: { tab: PeriodTab; onChange: (tab: PeriodTab) => void }) {
+export function PeriodTabs({
+  tab,
+  onChange,
+  chatUnread,
+}: {
+  tab: PeriodTab;
+  onChange: (tab: PeriodTab) => void;
+  chatUnread?: boolean;
+}) {
   const btns = useRef<Partial<Record<PeriodTab, HTMLButtonElement | null>>>({});
 
   const move = (next: PeriodTab) => {
@@ -46,6 +55,7 @@ export function PeriodTabs({ tab, onChange }: { tab: PeriodTab; onChange: (tab: 
       <div className="flex w-max min-w-full gap-2">
         {ITEMS.map((t) => {
           const selected = tab === t.id;
+          const unread = t.id === 'chat' && chatUnread;
           return (
             <button
               key={t.id}
@@ -57,14 +67,16 @@ export function PeriodTabs({ tab, onChange }: { tab: PeriodTab; onChange: (tab: 
               id={`period-tab-${t.id}`}
               aria-controls={`period-panel-${t.id}`}
               aria-selected={selected}
+              aria-label={unread ? 'چت، خوانده‌نشده' : undefined}
               tabIndex={selected ? 0 : -1}
-              className={`chip inline-flex items-center gap-1.5 ${
+              className={`chip relative inline-flex items-center gap-1.5 ${
                 selected ? 'bg-brand-700 text-on-brand' : 'bg-surface/80 text-ink-800 ring-1 ring-brand-800/20'
               }`}
               onClick={() => onChange(t.id)}
             >
               <Icon icon={t.icon} size={16} strokeWidth={selected ? 2.2 : 1.8} />
               {t.label}
+              {unread ? <UnreadDot className="absolute end-1.5 top-1.5" /> : null}
             </button>
           );
         })}

@@ -20,11 +20,6 @@ async function clearServiceWorkersAndCaches(): Promise<boolean> {
   return hadController || registrations.length > 0;
 }
 
-async function resetDevServiceWorker(reload: () => void): Promise<void> {
-  const hadSw = await clearServiceWorkersAndCaches();
-  if (hadSw) reload();
-}
-
 async function checkForSwUpdate(swUrl: string, registration: ServiceWorkerRegistration): Promise<void> {
   if (registration.installing || typeof navigator === 'undefined') return;
   if ('onLine' in navigator && !navigator.onLine) return;
@@ -62,18 +57,11 @@ function registerWebPwa(): void {
   });
 }
 
-export function initPwa(options: InitPwaOptions = {}): void {
+export function initPwa(_options: InitPwaOptions = {}): void {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
 
   if (Capacitor.isNativePlatform()) {
     void clearServiceWorkersAndCaches();
-    return;
-  }
-
-  const isDev = options.isDev ?? import.meta.env.DEV;
-  if (isDev) {
-    const reload = options.reload ?? (() => window.location.reload());
-    void resetDevServiceWorker(reload);
     return;
   }
 

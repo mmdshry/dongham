@@ -10,6 +10,7 @@ import { formatMoney } from '../lib/format';
 import { COVER_EMPTY } from '../lib/periodCover';
 import { useUiStore } from '../store/ui';
 import { ToastBar } from './ToastBar';
+import { UnreadDot } from './UnreadDot';
 
 export { ConnectionModeBadge } from './ConnectionModeBadge';
 
@@ -96,12 +97,14 @@ export function Shell({
   action,
   back,
   chrome = 'page',
+  attention,
 }: {
   title: string;
   children: ReactNode;
   action?: ReactNode;
   back?: () => void;
   chrome?: 'app' | 'page';
+  attention?: boolean;
 }) {
   return (
     <div className="mx-auto flex min-h-dvh w-full max-w-6xl flex-col px-4 pb-36 pt-[max(1rem,env(safe-area-inset-top))] md:pb-10 md:pt-6">
@@ -130,7 +133,10 @@ export function Shell({
               </button>
             ) : null}
             <div className="min-w-0">
-              <h1 className="truncate text-xl font-extrabold text-ink-900 md:text-2xl">{title}</h1>
+              <div className="flex min-w-0 items-center gap-2">
+                <h1 className="truncate text-xl font-extrabold text-ink-900 md:text-2xl">{title}</h1>
+                {attention ? <UnreadDot /> : null}
+              </div>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">

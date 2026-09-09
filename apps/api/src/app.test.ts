@@ -904,6 +904,124 @@ async function signup(phone: string, displayName: string, deviceId: string) {
   return json(verify) as Promise<{ token: string; user: { id: string } }>;
 }
 
+describe('display name quota', () => {
+  beforeAll(async () => {
+    await initStore();
+  });
+
+  beforeEach(async () => {
+    await resetDb();
+  });
+
+  it('counts three real changes per Jalali month and ignores prefs PUT', async () => {
+    const session = await signup('09123330001', 'سارا', 'quota-dev');
+    type RenameBody = {
+      error?: string;
+      user: { displayName: string };
+      profile: {
+        displayName: string;
+        displayNameChangesUsed: number;
+        displayNameChangesRemaining: number;
+        displayNameChangesLimit: number;
+      };
+    };
+
+    const me = await app.request('/auth/me', { headers: { Authorization: `Bearer ${session.token}` } });
+    expect(((await json(me)) as RenameBody).profile.displayNameChangesRemaining).toBe(3);
+
+    const prefs = await app.request('/auth/me', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({ displayName: 'سارا ک.', usePersianDigits: false }),
+    });
+    expect(prefs.status).toBe(200);
+    const prefsBody = (await json(prefs)) as RenameBody;
+    expect(prefsBody.user.displayName).toBe('سارا');
+    expect(prefsBody.profile.displayNameChangesUsed).toBe(0);
+
+    const same = await app.request('/auth/me/display-name', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({ displayName: 'سارا' }),
+    });
+    expect(same.status).toBe(200);
+    expect(((await json(same)) as RenameBody).profile.displayNameChangesUsed).toBe(0);
+
+    const invalid = await app.request('/auth/me/display-name', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({ displayName: 'من' }),
+    });
+    expect(invalid.status).toBe(400);
+
+    for (const [i, name] of ['سارا یک', 'سارا دو', 'سارا سه'].entries()) {
+      const renamed = await app.request('/auth/me/display-name', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.token}`,
+        },
+        body: JSON.stringify({ displayName: name }),
+      });
+      expect(renamed.status).toBe(200);
+      const body = (await json(renamed)) as RenameBody;
+      expect(body.user.displayName).toBe(name);
+      expect(body.profile.displayNameChangesUsed).toBe(i + 1);
+      expect(body.profile.displayNameChangesRemaining).toBe(2 - i);
+      expect(body.profile.displayNameChangesLimit).toBe(3);
+    }
+
+    const fourth = await app.request('/auth/me/display-name', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({ displayName: 'سارا چهار' }),
+    });
+    expect(fourth.status).toBe(429);
+    const denied = (await json(fourth)) as {
+      error: string;
+      displayNameChangesRemaining: number;
+    };
+    expect(denied.error).toContain('این ماه ۳ بار');
+    expect(denied.displayNameChangesRemaining).toBe(0);
+
+    const after = await app.request('/auth/me', { headers: { Authorization: `Bearer ${session.token}` } });
+    expect(((await json(after)) as RenameBody).user.displayName).toBe('سارا سه');
+
+    await mutate((d) => {
+      const row = d.users.find((u) => u.id === session.user.id);
+      if (row) {
+        row.displayNameMonth = '1400-01';
+        row.displayNameChanges = 3;
+      }
+    });
+    const rolled = await app.request('/auth/me/display-name', {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.token}`,
+      },
+      body: JSON.stringify({ displayName: 'سارا ماه بعد' }),
+    });
+    expect(rolled.status).toBe(200);
+    const rolledBody = (await json(rolled)) as RenameBody;
+    expect(rolledBody.user.displayName).toBe('سارا ماه بعد');
+    expect(rolledBody.profile.displayNameChangesUsed).toBe(1);
+    expect(rolledBody.profile.displayNameChangesRemaining).toBe(2);
+  });
+});
+
 function expensePayload(id: string, title: string, extra: Record<string, unknown> = {}) {
   const now = new Date().toISOString();
   return {
@@ -1162,7 +1280,7 @@ describe('period conflict and tombstones', () => {
         prefsUpdatedAt?: string;
       };
     };
-    expect(saved.user.displayName).toBe('سارا ک.');
+    expect(saved.user.displayName).toBe('سارا');
     expect(saved.profile.usePersianDigits).toBe(false);
     expect(saved.profile.debtReminders).toBe(false);
     expect(saved.profile.calendarMode).toBe('gregorian');
@@ -2305,6 +2423,83 @@ describe('username and public profile', () => {
       await app.request('/periods', { headers: { Authorization: `Bearer ${member.token}` } }),
     )) as { periods: { id: string; deletedAt?: string | null }[] };
     expect(restored.periods.find((p) => p.id === period.id)?.deletedAt).toBeFalsy();
+  });
+
+  it('stores per-user chat mute, last read, and last seen on GET /periods', async () => {
+    const owner = await signup('09127771011', 'مالک', 'chat-pref-own');
+    const member = await signup('09127771012', 'عضو', 'chat-pref-mem');
+    const created = await app.request('/periods', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${owner.token}` },
+      body: JSON.stringify({
+        title: 'چت ترجیحات',
+        currency: 'IRT',
+        members: [
+          { id: 'own', displayName: 'مالک', userId: owner.user.id, role: 'owner' },
+          { id: 'mem', displayName: 'عضو', userId: member.user.id, role: 'member' },
+        ],
+      }),
+    });
+    expect(created.status).toBe(200);
+    const { period } = (await json(created)) as { period: { id: string } };
+
+    const mute = await app.request(`/periods/${period.id}/chat/mute`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${member.token}` },
+    });
+    expect(mute.status).toBe(200);
+    const muteBody = (await json(mute)) as { chatMutedAt?: string };
+    expect(muteBody.chatMutedAt).toBeTruthy();
+
+    const readAt = '2026-09-08T10:00:00.000Z';
+    const read = await app.request(`/periods/${period.id}/chat/read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${member.token}` },
+      body: JSON.stringify({ lastReadAt: readAt }),
+    });
+    expect(read.status).toBe(200);
+    const seenAt = '2026-09-08T11:00:00.000Z';
+    const seen = await app.request(`/periods/${period.id}/seen`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${member.token}` },
+      body: JSON.stringify({ lastSeenAt: seenAt }),
+    });
+    expect(seen.status).toBe(200);
+
+    type Listed = {
+      id: string;
+      chatMutedAt?: string | null;
+      chatLastReadAt?: string | null;
+      lastSeenAt?: string | null;
+    };
+    const memberList = (await json(
+      await app.request('/periods', { headers: { Authorization: `Bearer ${member.token}` } }),
+    )) as { periods: Listed[] };
+    const ownerList = (await json(
+      await app.request('/periods', { headers: { Authorization: `Bearer ${owner.token}` } }),
+    )) as { periods: Listed[] };
+    const memberRow = memberList.periods.find((p) => p.id === period.id);
+    const ownerRow = ownerList.periods.find((p) => p.id === period.id);
+    expect(memberRow?.chatMutedAt).toBeTruthy();
+    expect(Date.parse(memberRow?.chatLastReadAt || '')).toBe(Date.parse(readAt));
+    expect(Date.parse(memberRow?.lastSeenAt || '')).toBe(Date.parse(seenAt));
+    expect(ownerRow?.chatMutedAt).toBeFalsy();
+    expect(ownerRow?.chatLastReadAt).toBeTruthy();
+    expect(ownerRow?.lastSeenAt).toBeTruthy();
+
+    const unmute = await app.request(`/periods/${period.id}/chat/unmute`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${member.token}` },
+    });
+    expect(unmute.status).toBe(200);
+    const afterUnmute = (await json(
+      await app.request('/periods', { headers: { Authorization: `Bearer ${member.token}` } }),
+    )) as { periods: Listed[] };
+    expect(afterUnmute.periods.find((p) => p.id === period.id)?.chatMutedAt).toBeFalsy();
+    expect(Date.parse(afterUnmute.periods.find((p) => p.id === period.id)?.chatLastReadAt || '')).toBe(Date.parse(readAt));
+
+    const denied = await app.request(`/periods/${period.id}/chat/mute`, { method: 'POST' });
+    expect(denied.status).toBe(401);
   });
 });
 

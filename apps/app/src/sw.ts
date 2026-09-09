@@ -50,6 +50,7 @@ type PushData = {
   body?: string;
   url?: string;
   notificationId?: string;
+  forceDisplay?: boolean;
 };
 
 self.addEventListener('push', (event) => {
@@ -72,7 +73,7 @@ async function handlePush(event: PushEvent): Promise<void> {
     for (const client of windows) {
       client.postMessage({ type: 'push', url, notificationId: data.notificationId });
     }
-    return;
+    if (!data.forceDisplay) return;
   }
   await self.registration.showNotification(title, {
     body,

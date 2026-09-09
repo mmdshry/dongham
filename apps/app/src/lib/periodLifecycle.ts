@@ -12,6 +12,7 @@ import {
 } from '@dongham/ledger';
 import { db, type LocalExpense, type LocalMember, type LocalPayment, type LocalPeriod, type LocalProfile } from './db';
 import { isSelfMember } from './memberLabel';
+import { putPeriodPref } from './periodUserState';
 import { logActivity, queueOp } from './sync';
 
 export {
@@ -73,11 +74,11 @@ async function actorName(profile: LocalProfile | null | undefined): Promise<stri
 
 export async function setPeriodArchivedLocal(periodId: string, archived: boolean): Promise<void> {
   if (archived) {
-    await db.periodPrefs.put({ periodId, archivedAt: new Date().toISOString() });
+    await putPeriodPref(periodId, { archivedAt: new Date().toISOString() });
     await queueOp(periodId, 'periodLifecycle', 'archive', {});
     return;
   }
-  await db.periodPrefs.delete(periodId);
+  await putPeriodPref(periodId, { archivedAt: null });
   await queueOp(periodId, 'periodLifecycle', 'unarchive', {});
 }
 

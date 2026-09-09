@@ -1,4 +1,7 @@
 import { ApiError, api, ensureProfile } from './api';
+import { db } from './db';
+
+const PUSH_OPT_OUT = 'pushOptOut';
 
 export function isPushSupported(): boolean {
   return (
@@ -29,8 +32,19 @@ async function readyRegistration(): Promise<ServiceWorkerRegistration | null> {
   ]);
 }
 
+async function isPushOptedOut(): Promise<boolean> {
+  const row = await db.meta.get(PUSH_OPT_OUT);
+  return row?.value === '1';
+}
+
+async function setPushOptOut(on: boolean): Promise<void> {
+  if (on) await db.meta.put({ key: PUSH_OPT_OUT, value: '1' });
+  else await db.meta.delete(PUSH_OPT_OUT);
+}
+
 export async function isWebPushEnabled(): Promise<boolean> {
   if (!isPushSupported()) return false;
+  if (await isPushOptedOut()) return false;
   if (Notification.permission !== 'granted') return false;
   const profile = await ensureProfile();
   if (!profile.token) return false;
@@ -70,9 +84,11 @@ export async function enableWebPush(): Promise<void> {
     method: 'POST',
     body: JSON.stringify({ endpoint: json.endpoint, keys: json.keys }),
   });
+  await setPushOptOut(false);
 }
 
 export async function disableWebPush(): Promise<void> {
+  await setPushOptOut(true);
   if (!isPushSupported()) return;
   try {
     const registration = await readyRegistration();
@@ -95,6 +111,7 @@ export async function disableWebPush(): Promise<void> {
 
 export async function syncPushSubscription(): Promise<void> {
   if (!isPushSupported()) return;
+  if (await isPushOptedOut()) return;
   if (Notification.permission !== 'granted') return;
   const profile = await ensureProfile();
   if (!profile.token) return;

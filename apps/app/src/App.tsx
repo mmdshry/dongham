@@ -11,6 +11,7 @@ import { APP_HOME, isPublicProfilePath } from './lib/paths';
 import { useKeyboardInset } from './lib/keyboard';
 import { startFxLoop } from './lib/fx';
 import { startSyncLoop, pullCloud } from './lib/sync';
+import { startLiveLoop } from './lib/live';
 import { startPushListener, syncPushSubscription } from './lib/webPush';
 import { useDebtReminders } from './lib/useDebtReminders';
 import { AuthPage } from './pages/AuthPage';
@@ -49,6 +50,7 @@ function AppShell() {
   useEffect(() => {
     let stop: (() => void) | undefined;
     let stopFx: (() => void) | undefined;
+    let stopLive: (() => void) | undefined;
     const on = () => setOnline(true);
     const off = () => setOnline(false);
     window.addEventListener('online', on);
@@ -58,11 +60,13 @@ function AppShell() {
       await migrateLocalPeriodIds();
       await ensureProfile();
       stop = startSyncLoop();
+      stopLive = startLiveLoop();
       stopFx = startFxLoop();
       await syncPushSubscription();
     })();
     return () => {
       stop?.();
+      stopLive?.();
       stopFx?.();
       window.removeEventListener('online', on);
       window.removeEventListener('offline', off);

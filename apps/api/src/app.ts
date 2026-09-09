@@ -32,7 +32,19 @@ import { actorMemberIds, canAccessPeriod, periodRole } from './access.js';
 import { adminApp, consumeImpersonation } from './admin.js';
 import { parseAvatarIds, parseAvatarWrite } from './avatar.js';
 import { applyPeriodMedia, parseCoverWrite } from './periodMedia.js';
-import { applyUserProfilePatch, authSession, cloudProfile, parseRequiredDisplayName, persistPremiumExpiry, publicUser, signupDisplayName, wipePublicProfile } from './profile.js';
+import {
+  applyDisplayNameChange,
+  applyUserProfilePatch,
+  authSession,
+  cloudProfile,
+  DisplayNameInvalidError,
+  DisplayNameQuotaError,
+  parseRequiredDisplayName,
+  persistPremiumExpiry,
+  publicUser,
+  signupDisplayName,
+  wipePublicProfile,
+} from './profile.js';
 import {
   claimListedMemberships,
   createUser,
@@ -59,6 +71,7 @@ import type { ExpenseRecord, MemberRecord, MemberRole, PaymentRecord, PeriodKind
 import { skuPrices, zarinpalRequest, zarinpalVerify } from './zarinpal.js';
 import { appPublicUrl, inviteExpiresAt, isInviteExpired } from './publicUrl.js';
 import { deleteSubscription, getVapidPublicKey, upsertSubscription } from './push.js';
+import { liveWaitMs, waitForLiveEvents } from './live.js';
 import {
   bumpPeriodVersion,
   completePeriod,
@@ -90,15 +103,20 @@ import {
   listPeriodArchives,
   listPeriodIds,
   listPeriodsForUser,
+  ensurePeriodUserStates,
   listPublicPeriodsForProfile,
   listVisibleAvatars,
   loadPeriodSnapshot,
   markNotificationRead,
   notifyPeriodMembers,
   publicProfileStats,
+  pushChatToPeriodMembers,
   reopenPeriod,
   restorePeriod,
   setPeriodArchived,
+  setPeriodChatMuted,
+  setPeriodChatReadAt,
+  setPeriodLastSeenAt,
   updatePeriod,
   updateUser,
   upsertExpense,
@@ -206,6 +224,23 @@ async function requireManage(
     return { error: c.json({ error: 'فقط مالک یا مدیر اجازهٔ این کار را دارد' }, 403) };
   }
   return gate;
+}
+
+async function requirePeriodAccess(c: Context<{ Variables: Variables }>, periodId: string) {
+  const userId = requireUser(c);
+  if (!userId) return { error: c.json({ error: 'وارد نشده‌اید' }, 401) };
+  if (!(await canAccessPeriod(userId, periodId))) {
+    return { error: c.json({ error: 'اجازه ندارید' }, 403) };
+  }
+  return { userId };
+}
+
+function parseDateOrNow(raw: unknown): Date {
+  if (typeof raw === 'string') {
+    const t = Date.parse(raw);
+    if (Number.isFinite(t)) return new Date(t);
+  }
+  return new Date();
 }
 
 function lifecycleWriteError(
@@ -539,7 +574,6 @@ app.put('/auth/me', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
   let body: {
-    displayName?: string;
     usePersianDigits?: boolean;
     debtReminders?: boolean;
     calendarMode?: 'jalali' | 'gregorian';
@@ -553,7 +587,6 @@ app.put('/auth/me', async (c) => {
     return c.json({ error: 'بدنه نامعتبر است' }, 400);
   }
   const next = await applyUserProfilePatch(userId, {
-    displayName: body.displayName,
     usePersianDigits: body.usePersianDigits,
     debtReminders: body.debtReminders,
     calendarMode: body.calendarMode,
@@ -563,6 +596,36 @@ app.put('/auth/me', async (c) => {
   });
   if (!next) return c.json({ error: 'پیدا نشد' }, 404);
   return c.json({ user: publicUser(next), profile: cloudProfile(next) });
+});
+
+app.put('/auth/me/display-name', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  let body: { displayName?: unknown };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'بدنه نامعتبر است' }, 400);
+  }
+  try {
+    const next = await applyDisplayNameChange(userId, body.displayName);
+    if (!next) return c.json({ error: 'پیدا نشد' }, 404);
+    return c.json({ user: publicUser(next), profile: cloudProfile(next) });
+  } catch (e) {
+    if (e instanceof DisplayNameInvalidError) return c.json({ error: e.message }, 400);
+    if (e instanceof DisplayNameQuotaError) {
+      return c.json(
+        {
+          error: e.message,
+          displayNameChangesUsed: e.quota.used,
+          displayNameChangesRemaining: e.quota.remaining,
+          displayNameChangesLimit: e.quota.limit,
+        },
+        429,
+      );
+    }
+    throw e;
+  }
 });
 
 app.post('/auth/me/avatar', async (c) => {
@@ -794,18 +857,28 @@ app.get('/periods', async (c) => {
   const user = await getUserById(userId);
   const periods = await listPeriodsForUser(userId, user?.phone, user?.email);
   const archived = await listPeriodArchives(userId);
+  const state = await ensurePeriodUserStates(
+    userId,
+    periods.map((p) => p.id),
+  );
   return c.json({
-    periods: periods.map((p) => ({
-      id: p.id,
-      title: p.title,
-      currency: p.currency,
-      version: p.version,
-      updatedAt: p.updatedAt,
-      visibility: p.visibility || 'private',
-      deletedAt: p.deletedAt || null,
-      completedAt: p.completedAt || null,
-      archivedAt: archived.get(p.id) || null,
-    })),
+    periods: periods.map((p) => {
+      const row = state.get(p.id);
+      return {
+        id: p.id,
+        title: p.title,
+        currency: p.currency,
+        version: p.version,
+        updatedAt: p.updatedAt,
+        visibility: p.visibility || 'private',
+        deletedAt: p.deletedAt || null,
+        completedAt: p.completedAt || null,
+        archivedAt: archived.get(p.id) || null,
+        chatMutedAt: row?.chatMutedAt || null,
+        chatLastReadAt: row?.chatLastReadAt || null,
+        lastSeenAt: row?.lastSeenAt || null,
+      };
+    }),
   });
 });
 
@@ -1015,6 +1088,50 @@ app.post('/periods/:id/unarchive', async (c) => {
   if ('error' in gate) return gate.error;
   await setPeriodArchived(gate.userId, periodId, false);
   return c.json({ ok: true, archivedAt: null });
+});
+
+app.post('/periods/:id/chat/mute', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requirePeriodAccess(c, periodId);
+  if ('error' in gate) return gate.error;
+  const chatMutedAt = await setPeriodChatMuted(gate.userId, periodId, true);
+  return c.json({ ok: true, chatMutedAt });
+});
+
+app.post('/periods/:id/chat/unmute', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requirePeriodAccess(c, periodId);
+  if ('error' in gate) return gate.error;
+  await setPeriodChatMuted(gate.userId, periodId, false);
+  return c.json({ ok: true, chatMutedAt: null });
+});
+
+app.post('/periods/:id/chat/read', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requirePeriodAccess(c, periodId);
+  if ('error' in gate) return gate.error;
+  let lastReadAt: unknown;
+  try {
+    lastReadAt = ((await c.req.json()) as { lastReadAt?: unknown }).lastReadAt;
+  } catch {
+    lastReadAt = undefined;
+  }
+  const at = await setPeriodChatReadAt(gate.userId, periodId, parseDateOrNow(lastReadAt));
+  return c.json({ ok: true, chatLastReadAt: at });
+});
+
+app.post('/periods/:id/seen', async (c) => {
+  const periodId = c.req.param('id');
+  const gate = await requirePeriodAccess(c, periodId);
+  if ('error' in gate) return gate.error;
+  let lastSeenAt: unknown;
+  try {
+    lastSeenAt = ((await c.req.json()) as { lastSeenAt?: unknown }).lastSeenAt;
+  } catch {
+    lastSeenAt = undefined;
+  }
+  const at = await setPeriodLastSeenAt(gate.userId, periodId, parseDateOrNow(lastSeenAt));
+  return c.json({ ok: true, lastSeenAt: at });
 });
 
 app.delete('/periods/:id', async (c) => {
@@ -1628,6 +1745,13 @@ app.get('/notifications', async (c) => {
   return c.json({ notifications: await listNotifications(userId) });
 });
 
+app.get('/live', async (c) => {
+  const userId = requireUser(c);
+  if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
+  const events = await waitForLiveEvents(userId, liveWaitMs(c.req.query('wait')), c.req.raw.signal);
+  return c.json({ events });
+});
+
 app.post('/notifications/:id/read', async (c) => {
   const userId = requireUser(c);
   if (!userId) return c.json({ error: 'وارد نشده‌اید' }, 401);
@@ -1682,6 +1806,7 @@ app.post('/push/test', async (c) => {
     userId,
     title: 'دونگ‌هام',
     body: 'نوتیفیکیشن آزمایشی',
+    forceDisplay: true,
   });
   return c.json({ ok: true, push: Boolean(getVapidPublicKey()) });
 });
@@ -1806,7 +1931,15 @@ app.post('/periods/:id/chat', async (c) => {
     expenseId,
     createdAt: new Date().toISOString(),
   };
-  await insertChat(msg);
+  const inserted = await insertChat(msg);
+  if (inserted) {
+    await pushChatToPeriodMembers({
+      periodId,
+      exceptUserId: gate.userId,
+      senderMemberId: sender,
+      periodTitle: gate.period.title || '',
+    });
+  }
   const period = await getPeriod(periodId);
   return c.json({ message: msg, chat: msg, version: period?.version ?? 0 });
 });
@@ -1834,8 +1967,8 @@ app.post('/periods/:id/activity', async (c) => {
     entityId: body.entityId,
   };
   await insertActivity(row);
-  const period = await getPeriod(periodId);
-  return c.json({ activity: row, version: period?.version ?? 0 });
+  const version = await bumpPeriodVersion(periodId);
+  return c.json({ activity: row, version });
 });
 
 app.get('/fx', async (c) => {

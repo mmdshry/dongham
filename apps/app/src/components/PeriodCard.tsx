@@ -5,13 +5,20 @@ import { CircleCheck, EllipsisVertical, List, Users } from 'lucide-react';
 import { ConfirmDialog } from './Dialog';
 import { Icon } from './Icon';
 import { PeriodStatusBadge } from './PeriodStatusBadge';
+import { UnreadDot } from './UnreadDot';
 import { Money } from './ui';
 import { UserAvatar } from './UserAvatar';
 import { periodAnalytics } from '../lib/analytics';
 import { memberAvatarSrc } from '../lib/avatarCache';
-import { db, type LocalExpense, type LocalMember, type LocalPayment, type LocalPeriod, type LocalProfile } from '../lib/db';
+import { db, type LocalActivity, type LocalChat, type LocalExpense, type LocalMember, type LocalPayment, type LocalPeriod, type LocalProfile } from '../lib/db';
 import { copyText, toPersianDigits } from '../lib/format';
 import { isSelfMember } from '../lib/memberLabel';
+import {
+  hasUnreadChat,
+  hasUnseenPeriodActivity,
+  periodActivityTimestamps,
+  periodHasAttention,
+} from '../lib/periodAttention';
 import { periodCoverSrc } from '../lib/periodCover';
 import {
   actorRoleOf,
@@ -30,6 +37,8 @@ export function PeriodCard({
   members,
   expenses = [],
   payments = [],
+  chat = [],
+  activity = [],
   persianDigits = true,
   avatarByUserId = {},
   profile,
@@ -38,6 +47,8 @@ export function PeriodCard({
   members: LocalMember[];
   expenses?: LocalExpense[];
   payments?: LocalPayment[];
+  chat?: LocalChat[];
+  activity?: LocalActivity[];
   persianDigits?: boolean;
   avatarByUserId?: Record<string, string>;
   profile?: LocalProfile | null;
@@ -58,6 +69,24 @@ export function PeriodCard({
     [expenses, payments, members, period.roundTo],
   );
   const me = members.find((m) => isSelfMember(m, profile));
+  const selfMemberIds = members.filter((m) => isSelfMember(m, profile)).map((m) => m.id);
+  const unreadChat = hasUnreadChat({
+    messages: chat,
+    selfMemberIds,
+    lastReadAt: pref?.chatLastReadAt,
+    muted: Boolean(pref?.chatMutedAt),
+  });
+  const unseenActivity = hasUnseenPeriodActivity({
+    lastSeenAt: pref?.lastSeenAt,
+    timestamps: periodActivityTimestamps({
+      expenses,
+      payments,
+      activity,
+      completedAt: period.completedAt,
+      deletedAt: period.deletedAt,
+    }),
+  });
+  const attention = periodHasAttention(unreadChat, unseenActivity);
   const myBalance = me ? analytics.balances[me.id] ?? 0 : null;
   const settled = myBalance != null && Math.abs(myBalance) <= 0.5;
   const role = actorRoleOf(period, members, profile);
@@ -193,7 +222,11 @@ export function PeriodCard({
         </div>
         <Link to={`/periods/${period.id}`} className="flex min-w-0 flex-1 flex-col gap-2 py-1 sm:flex-row sm:items-stretch">
           <div className="min-w-0 flex-1">
-            <p className="truncate text-base font-extrabold text-ink-900">{period.title}</p>
+            <p className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-base font-extrabold text-ink-900">{period.title}</span>
+              {attention ? <UnreadDot /> : null}
+              {attention ? <span className="sr-only">خوانده‌نشده</span> : null}
+            </p>
             <p className="mt-1">
               <PeriodStatusBadge status={status} />
             </p>

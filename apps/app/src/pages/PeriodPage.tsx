@@ -1,9 +1,9 @@
 import { useLiveQuery } from 'dexie-react-hooks';
 import { nanoid } from 'nanoid';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import QRCode from 'qrcode';
-import { History, Receipt, Search } from 'lucide-react';
+import { History, Receipt, Search, Bell, BellOff } from 'lucide-react';
 import {
   canAssignMemberRole,
   canManagePeriod,
@@ -37,7 +37,7 @@ import { loanEquivalentNow } from '../lib/goldIndex';
 import { defaultPayout } from '../lib/payout';
 import { shareCardImage, settlementPaySentence } from '../lib/share';
 import { buildPeriodSnapshot, serializeSnapshot, snapshotQrDataUrl } from '../lib/snapshot';
-import { applyPeriodSnapshot, flushOutbox, logActivity, queueOp, savePeriodMedia, upsertPayment, upsertRecurring } from '../lib/sync';
+import { applyPeriodSnapshot, flushOutbox, logActivity, pullCloud, queueOp, savePeriodMedia, upsertPayment, upsertRecurring } from '../lib/sync';
 import {
   canConfirmPayment,
   canMarkPaid,
@@ -49,6 +49,13 @@ import { CADENCE_OPTIONS } from '../lib/templates';
 import { periodCoverSrc, stripPeriodCustomMedia } from '../lib/periodCover';
 import { displayNameWithMe, isSelfMember } from '../lib/memberLabel';
 import { chatOfflineHint, isCloudMode } from '../lib/connectionMode';
+import {
+  hasUnreadChat,
+  hasUnseenPeriodActivity,
+  periodActivityTimestamps,
+  periodHasAttention,
+} from '../lib/periodAttention';
+import { markPeriodChatRead, markPeriodSeen, setPeriodChatMutedLocal } from '../lib/periodUserState';
 import { APP_HOME } from '../lib/paths';
 import {
   PERIOD_COMPLETED_REOPEN_HINT,
@@ -122,6 +129,7 @@ export function PeriodPage() {
     useLiveQuery(() => db.payments.where('periodId').equals(id).toArray(), [id])?.filter((p) => !p.deletedAt) ||
     [];
   const chat = useLiveQuery(() => db.chat.where('periodId').equals(id).sortBy('createdAt'), [id]) || [];
+  const chatListRef = useRef<HTMLUListElement>(null);
   const recurring = useLiveQuery(() => db.recurring.where('periodId').equals(id).toArray(), [id]) || [];
   const activity = useLiveQuery(() => db.activity.where('periodId').equals(id).sortBy('createdAt'), [id]) || [];
   const profile = useLiveQuery(() => db.profile.get('self'));
@@ -175,6 +183,42 @@ export function PeriodPage() {
   const canAddExpense = !isViewer && !periodLocked && (!periodCompleted || canManage);
   const canEditSeat = (m: LocalMember) => !isViewer && (canManage || isSelfMember(m, profile));
   const chatHint = chatOfflineHint(profile, online);
+  const selfMemberIds = members.filter((m) => isSelfMember(m, profile)).map((m) => m.id);
+  const chatMuted = Boolean(periodPref?.chatMutedAt);
+  const unreadChat = hasUnreadChat({
+    messages: chat,
+    selfMemberIds,
+    lastReadAt: periodPref?.chatLastReadAt,
+    muted: chatMuted,
+  });
+  const unseenActivity = hasUnseenPeriodActivity({
+    lastSeenAt: periodPref?.lastSeenAt,
+    timestamps: periodActivityTimestamps({
+      expenses,
+      payments,
+      activity,
+      completedAt: period?.completedAt,
+      deletedAt: period?.deletedAt,
+    }),
+  });
+  const attention = periodHasAttention(unreadChat, unseenActivity);
+
+  useEffect(() => {
+    if (!id || !period) return;
+    void markPeriodSeen(id);
+  }, [id, period?.id]);
+
+  const lastChatId = chat[chat.length - 1]?.id;
+  useEffect(() => {
+    if (!id || tab !== 'chat' || !period) return;
+    void markPeriodChatRead(id);
+  }, [id, tab, period?.id, lastChatId]);
+
+  useEffect(() => {
+    const el = chatListRef.current;
+    if (!el || tab !== 'chat') return;
+    el.scrollTop = el.scrollHeight;
+  }, [tab, lastChatId, chat.length]);
 
   const analytics = useMemo(
     () => periodAnalytics(expenses, payments, members, period?.roundTo || 0),
@@ -446,7 +490,12 @@ export function PeriodPage() {
 
   const syncNow = async () => {
     const res = await flushOutbox(id);
-    setToast(res.ok ? 'همگام شد' : res.error || 'خطا', res.ok ? 'success' : 'error');
+    if (res.ok) {
+      const pulled = await pullCloud();
+      setToast(pulled.ok ? 'همگام شد' : pulled.error || 'خطا', pulled.ok ? 'success' : 'error');
+      return;
+    }
+    setToast(res.error || 'خطا', 'error');
   };
 
   const addRecurring = async () => {
@@ -584,6 +633,7 @@ export function PeriodPage() {
     <Shell
       title={period.title}
       back={() => navigate(APP_HOME)}
+      attention={attention}
       action={
         canAddExpense ? (
           <Link to={`/periods/${id}/expenses/new`} className="btn-primary btn-sm">
@@ -656,7 +706,7 @@ export function PeriodPage() {
           />
         )}
       </div>
-      <PeriodTabs tab={tab} onChange={setTab} />
+      <PeriodTabs tab={tab} onChange={setTab} chatUnread={unreadChat} />
 
       <div className="grid gap-4 md:grid-cols-[1.1fr_0.9fr]">
         <div>
@@ -951,7 +1001,19 @@ export function PeriodPage() {
               tab={tab}
               className="card-surface flex h-[min(55dvh,calc(100dvh-13rem-var(--keyboard-inset,0px)))] flex-col animate-rise"
             >
-              <ul className="flex-1 space-y-2 overflow-y-auto">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-sm font-bold">چت</p>
+                <button
+                  type="button"
+                  className="btn-ghost btn-sm inline-flex items-center gap-1.5"
+                  aria-pressed={chatMuted}
+                  onClick={() => void setPeriodChatMutedLocal(id, !chatMuted)}
+                >
+                  <Icon icon={chatMuted ? BellOff : Bell} size={16} />
+                  {chatMuted ? 'صدادار کردن چت' : 'بی‌صدا کردن چت'}
+                </button>
+              </div>
+              <ul ref={chatListRef} className="flex-1 space-y-2 overflow-y-auto">
                 {chat.map((m) => (
                   <li key={m.id} className="rounded-2xl bg-brand-50 px-3 py-2 text-sm">
                     <p className="text-[11px] text-brand-800">{analytics.nameOf(m.senderMemberId)}</p>

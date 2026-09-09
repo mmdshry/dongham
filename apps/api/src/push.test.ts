@@ -206,14 +206,99 @@ describe('web push', () => {
     });
   });
 
-  it('writes a test inbox row', async () => {
-    vi.spyOn(webpush, 'sendNotification').mockResolvedValue({ statusCode: 201 } as never);
+  it('pushes chat to other members without an inbox row and skips muted users', async () => {
+    const send = vi.spyOn(webpush, 'sendNotification').mockResolvedValue({ statusCode: 201 } as never);
+    const owner = await login('09121110006', 'مالک چت', 'push-chat-own');
+    const member = await login('09121110007', 'عضو چت', 'push-chat-mem');
+    await app.request('/push/subscribe', {
+      method: 'POST',
+      headers: auth(member.token),
+      body: JSON.stringify({
+        endpoint: 'https://push.example/chat-member',
+        keys: { p256dh: 'p256', auth: 'auth1' },
+      }),
+    });
+    await app.request('/push/subscribe', {
+      method: 'POST',
+      headers: auth(owner.token),
+      body: JSON.stringify({
+        endpoint: 'https://push.example/chat-owner',
+        keys: { p256dh: 'p256', auth: 'auth1' },
+      }),
+    });
+
+    const periodRes = await app.request('/periods', {
+      method: 'POST',
+      headers: auth(owner.token),
+      body: JSON.stringify({
+        title: 'سفر چت',
+        currency: 'IRT',
+        members: [
+          { id: 'own', displayName: 'مالک چت', userId: owner.user.id, role: 'owner' },
+          { id: 'mem', displayName: 'عضو چت', userId: member.user.id, role: 'member' },
+        ],
+      }),
+    });
+    const { period } = (await json(periodRes)) as { period: { id: string } };
+    send.mockClear();
+
+    const first = await app.request(`/periods/${period.id}/chat`, {
+      method: 'POST',
+      headers: auth(owner.token),
+      body: JSON.stringify({ senderMemberId: 'own', body: 'سلام' }),
+    });
+    expect(first.status).toBe(200);
+
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled();
+    });
+    const payloads = send.mock.calls.map((call) => JSON.parse(String(call[1])) as { title: string; body: string; url: string });
+    expect(payloads.some((p) => p.url === `/periods/${period.id}?tab=chat` && p.title.includes('سفر چت'))).toBe(true);
+    expect(payloads.every((p) => !String(p.body || '').includes('سلام'))).toBe(true);
+
+    const memberInbox = (await json(
+      await app.request('/notifications', { headers: { Authorization: `Bearer ${member.token}` } }),
+    )) as { notifications: { title: string }[] };
+    expect(memberInbox.notifications.some((n) => n.title.includes('پیام'))).toBe(false);
+
+    send.mockClear();
+    const mute = await app.request(`/periods/${period.id}/chat/mute`, {
+      method: 'POST',
+      headers: auth(member.token),
+    });
+    expect(mute.status).toBe(200);
+
+    const second = await app.request(`/periods/${period.id}/chat`, {
+      method: 'POST',
+      headers: auth(owner.token),
+      body: JSON.stringify({ senderMemberId: 'own', body: 'بعد از mute' }),
+    });
+    expect(second.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('writes a test inbox row and forces an OS banner', async () => {
+    const send = vi.spyOn(webpush, 'sendNotification').mockResolvedValue({ statusCode: 201 } as never);
     const { token } = await login('09121110005', 'تست', 'push-test');
+    await app.request('/push/subscribe', {
+      method: 'POST',
+      headers: auth(token),
+      body: JSON.stringify({
+        endpoint: 'https://push.example/test-device',
+        keys: { p256dh: 'p256', auth: 'auth1' },
+      }),
+    });
     const res = await app.request('/push/test', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
     expect(res.status).toBe(200);
     const list = await app.request('/notifications', { headers: { Authorization: `Bearer ${token}` } });
     const body = (await json(list)) as { notifications: { title: string; body: string }[] };
     expect(body.notifications[0]?.title).toBe('دونگ‌هام');
     expect(body.notifications[0]?.body).toBe('نوتیفیکیشن آزمایشی');
+    await vi.waitFor(() => {
+      expect(send).toHaveBeenCalled();
+    });
+    const payload = JSON.parse(String(send.mock.calls[0]?.[1])) as { forceDisplay?: boolean };
+    expect(payload.forceDisplay).toBe(true);
   });
 });

@@ -57,6 +57,8 @@ export interface UserRecord {
   username?: string;
   profileCoverPreset?: string;
   profileCoverDataUrl?: string;
+  displayNameMonth?: string;
+  displayNameChanges?: number;
 }
 
 export interface DeviceSession {

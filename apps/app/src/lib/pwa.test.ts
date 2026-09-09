@@ -62,21 +62,11 @@ describe('initPwa', () => {
     expect(mocks.unregister).not.toHaveBeenCalled();
   });
 
-  it('unregisters leftover service workers in Vite dev and reloads', async () => {
-    mocks.getRegistrations.mockResolvedValue([{ unregister: mocks.unregister }]);
+  it('registers the service worker in Vite web dev so push can subscribe', async () => {
     const { initPwa } = await import('./pwa');
     initPwa({ isDev: true, reload: mocks.reload });
-    await vi.waitFor(() => expect(mocks.unregister).toHaveBeenCalled());
-    expect(mocks.registerSW).not.toHaveBeenCalled();
-    expect(mocks.cachesDelete).toHaveBeenCalledWith('stale-runtime');
-    expect(mocks.reload).toHaveBeenCalled();
-  });
-
-  it('does not reload in Vite dev when no service worker is registered', async () => {
-    const { initPwa } = await import('./pwa');
-    initPwa({ isDev: true, reload: mocks.reload });
-    await vi.waitFor(() => expect(mocks.getRegistrations).toHaveBeenCalled());
-    expect(mocks.registerSW).not.toHaveBeenCalled();
+    expect(mocks.registerSW).toHaveBeenCalledWith(expect.objectContaining({ immediate: true }));
+    expect(mocks.unregister).not.toHaveBeenCalled();
     expect(mocks.reload).not.toHaveBeenCalled();
   });
 

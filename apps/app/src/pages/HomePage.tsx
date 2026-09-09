@@ -17,6 +17,8 @@ export function HomePage() {
   const members = useLiveQuery(() => db.members.toArray(), []) || [];
   const expenses = useLiveQuery(() => db.expenses.toArray(), []) || [];
   const payments = useLiveQuery(() => db.payments.toArray(), []) || [];
+  const chat = useLiveQuery(() => db.chat.toArray(), []) || [];
+  const activity = useLiveQuery(() => db.activity.toArray(), []) || [];
   const prefs = useLiveQuery(() => db.periodPrefs.toArray(), []) || [];
   const profile = useLiveQuery(() => db.profile.get('self'));
   const persian = profile?.usePersianDigits ?? true;
@@ -55,6 +57,8 @@ export function HomePage() {
             members={row.members}
             expenses={expenses.filter((e) => e.periodId === row.period.id)}
             payments={payments.filter((pay) => pay.periodId === row.period.id)}
+            chat={chat.filter((msg) => msg.periodId === row.period.id)}
+            activity={activity.filter((rowAct) => rowAct.periodId === row.period.id)}
             avatarByUserId={avatarByUserId}
             profile={profile}
             persianDigits={persian}

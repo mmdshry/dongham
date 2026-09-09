@@ -23,7 +23,6 @@ import { downloadJson, exportBackup, importBackup } from '../lib/backup';
 import { api } from '../lib/api';
 import { db } from '../lib/db';
 import { formatMoney, toPersianDigits } from '../lib/format';
-import { DISPLAY_NAME_MAX, needsDisplayName, normalizeDisplayName } from '../lib/memberLabel';
 import { importPeriodSnapshot, parseSnapshot } from '../lib/snapshot';
 import { flushOutbox, markNotificationRead, pullCloud } from '../lib/sync';
 import { useUiStore } from '../store/ui';
@@ -54,7 +53,6 @@ export function MorePage() {
   const [overwriteOpen, setOverwriteOpen] = useState(false);
   const [pushOn, setPushOn] = useState(false);
   const pushSupported = isPushSupported();
-  const [nameDraft, setNameDraft] = useState('');
   const [plans, setPlans] = useState<PremiumPlan[]>([]);
   const persian = profile?.usePersianDigits !== false;
   const planLabel = (sku: string, fallback: string) => {
@@ -79,10 +77,6 @@ export function MorePage() {
   }, [params, setParams, setToast]);
 
   useEffect(() => {
-    setNameDraft(profile?.displayName || '');
-  }, [profile?.displayName]);
-
-  useEffect(() => {
     void isWebPushEnabled().then(setPushOn);
   }, [profile?.token]);
 
@@ -91,17 +85,6 @@ export function MorePage() {
     if (!id) return;
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth' });
   }, []);
-
-  const saveName = async (displayName: string) => {
-    const name = normalizeDisplayName(displayName);
-    if (needsDisplayName(name)) {
-      setNameDraft(profile?.displayName || '');
-      setToast('نام لازم است', 'error');
-      return;
-    }
-    await updateAccountPrefs({ displayName: name });
-    setToast('ذخیره شد', 'success');
-  };
 
   const toggleDigits = async () => {
     await updateAccountPrefs({ usePersianDigits: !profile?.usePersianDigits });
@@ -222,15 +205,6 @@ export function MorePage() {
         <SyncBanner />
         <div className="card-surface space-y-3">
           <h2 className="section-title">پروفایل</h2>
-          <label className="label" htmlFor="more-display-name">نام نمایشی</label>
-          <input
-            id="more-display-name"
-            className="input"
-            value={nameDraft}
-            maxLength={DISPLAY_NAME_MAX}
-            onChange={(e) => setNameDraft(e.target.value)}
-            onBlur={(e) => saveName(e.target.value)}
-          />
           <label className="flex min-h-11 items-center gap-2 text-sm">
             <input type="checkbox" checked={!!profile?.usePersianDigits} onChange={toggleDigits} />
             اعداد فارسی

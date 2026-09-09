@@ -1,8 +1,34 @@
 import { nanoid } from 'nanoid';
-import { expirePremium, sanitizeFxWatchlist, toLatinDigits } from '@dongham/ledger';
+import { expirePremium, gregorianToJalali, sanitizeFxWatchlist, toLatinDigits } from '@dongham/ledger';
 import type { CloudPayoutMethod, CloudProfile } from '@dongham/ledger';
 import { getUserById, updateUser } from './repo.js';
 import type { UserRecord } from './types.js';
+
+export const DISPLAY_NAME_CHANGE_LIMIT = 3;
+export const DISPLAY_NAME_QUOTA_MESSAGE = 'این ماه ۳ بار تغییر داده‌اید؛ از اول ماه بعد دوباره.';
+
+export type DisplayNameQuota = {
+  month: string;
+  used: number;
+  limit: number;
+  remaining: number;
+};
+
+export class DisplayNameQuotaError extends Error {
+  quota: DisplayNameQuota;
+  constructor(quota: DisplayNameQuota) {
+    super(DISPLAY_NAME_QUOTA_MESSAGE);
+    this.name = 'DisplayNameQuotaError';
+    this.quota = quota;
+  }
+}
+
+export class DisplayNameInvalidError extends Error {
+  constructor() {
+    super('نام نمایشی لازم است');
+    this.name = 'DisplayNameInvalidError';
+  }
+}
 
 export type { CloudPayoutMethod, CloudProfile };
 
@@ -49,8 +75,44 @@ export function publicUser(u: UserRecord) {
   };
 }
 
+export function tehranJalaliMonth(now = Date.now()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tehran',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date(now));
+  const gy = Number(parts.find((p) => p.type === 'year')?.value);
+  const gm = Number(parts.find((p) => p.type === 'month')?.value);
+  const gd = Number(parts.find((p) => p.type === 'day')?.value);
+  const [jy, jm] = gregorianToJalali(gy, gm, gd);
+  return `${jy}-${String(jm).padStart(2, '0')}`;
+}
+
+export function displayNameQuota(
+  user: Pick<UserRecord, 'displayNameMonth' | 'displayNameChanges'>,
+  now = Date.now(),
+): DisplayNameQuota {
+  const month = tehranJalaliMonth(now);
+  const used = user.displayNameMonth === month ? Math.max(0, user.displayNameChanges || 0) : 0;
+  return {
+    month,
+    used,
+    limit: DISPLAY_NAME_CHANGE_LIMIT,
+    remaining: Math.max(0, DISPLAY_NAME_CHANGE_LIMIT - used),
+  };
+}
+
+export function cloudDisplayNameQuota(user: UserRecord, now = Date.now()) {
+  const quota = displayNameQuota(user, now);
+  return {
+    displayNameChangesUsed: quota.used,
+    displayNameChangesRemaining: quota.remaining,
+    displayNameChangesLimit: quota.limit,
+  };
+}
+
 export type UserProfilePatch = {
-  displayName?: string;
   usePersianDigits?: boolean;
   debtReminders?: boolean;
   calendarMode?: 'jalali' | 'gregorian';
@@ -133,6 +195,7 @@ export function cloudProfile(u: UserRecord): CloudProfile {
     username: u.username,
     profileCoverPreset: u.profileCoverPreset,
     profileCoverDataUrl: u.profileCoverDataUrl,
+    ...cloudDisplayNameQuota(u),
   };
 }
 
@@ -141,14 +204,29 @@ export async function authSession(token: string, user: UserRecord) {
   return { token, user: publicUser(user), profile: cloudProfile(user) };
 }
 
+export async function applyDisplayNameChange(
+  userId: string,
+  raw: unknown,
+  now = Date.now(),
+): Promise<UserRecord | null> {
+  const row = await getUserById(userId);
+  if (!row || row.deletedAt) return null;
+  const name = parseRequiredDisplayName(typeof raw === 'string' ? raw : '', 80);
+  if (!name) throw new DisplayNameInvalidError();
+  if (name === row.displayName) return row;
+  const quota = displayNameQuota(row, now);
+  if (quota.remaining <= 0) throw new DisplayNameQuotaError(quota);
+  row.displayName = name;
+  row.displayNameMonth = quota.month;
+  row.displayNameChanges = quota.used + 1;
+  row.prefsUpdatedAt = new Date(now).toISOString();
+  await updateUser(row);
+  return row;
+}
+
 export async function applyUserProfilePatch(userId: string, patch: UserProfilePatch): Promise<UserRecord | null> {
   const row = await getUserById(userId);
   if (!row || row.deletedAt) return null;
-  if (typeof patch.displayName === 'string') {
-    // Same ceiling as the client's DISPLAY_NAME_MAX and users.display_name VARCHAR(80).
-    const name = parseRequiredDisplayName(patch.displayName, 80);
-    if (name) row.displayName = name;
-  }
   if (typeof patch.usePersianDigits === 'boolean') row.usePersianDigits = patch.usePersianDigits;
   if (typeof patch.debtReminders === 'boolean') row.debtReminders = patch.debtReminders;
   if (patch.calendarMode === 'jalali' || patch.calendarMode === 'gregorian') {

@@ -53,6 +53,9 @@ export interface LocalProfile {
   username?: string;
   profileCoverPreset?: string;
   profileCoverDataUrl?: string;
+  displayNameChangesUsed?: number;
+  displayNameChangesRemaining?: number;
+  displayNameChangesLimit?: number;
 }
 
 export interface LocalPeriod {
@@ -85,6 +88,9 @@ export interface LocalPeriod {
 export interface LocalPeriodPref {
   periodId: string;
   archivedAt?: string;
+  chatMutedAt?: string;
+  chatLastReadAt?: string;
+  lastSeenAt?: string;
 }
 
 export interface LocalMember {

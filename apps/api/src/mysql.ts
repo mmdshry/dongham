@@ -54,6 +54,7 @@ const CLEAR_TABLES = [
   'sheba_lookup_days',
   'members',
   'period_archives',
+  'period_user_state',
   'periods',
   'users',
   'fx_cache',
@@ -420,6 +421,8 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
       'username',
       'profile_cover_preset',
       'profile_cover_data_url',
+      'display_name_month',
+      'display_name_changes',
     ],
     db.users.map((u) => [
       clip(u.id, 32),
@@ -444,6 +447,8 @@ async function insertAll(conn: PoolConnection, db: DbShape): Promise<void> {
       nullStr(u.username, 20),
       nullStr(u.profileCoverPreset, 32),
       u.profileCoverDataUrl || null,
+      nullStr(u.displayNameMonth, 7),
+      Math.max(0, Math.min(255, Math.floor(u.displayNameChanges || 0))),
     ]),
   );
 
@@ -1151,6 +1156,9 @@ export function mapUser(row: Row, payouts: Row[], watch: Row[]): UserRecord {
   if (profileCoverPreset) user.profileCoverPreset = profileCoverPreset;
   const profileCover = strOpt(row.profile_cover_data_url);
   if (profileCover) user.profileCoverDataUrl = profileCover;
+  const displayNameMonth = strOpt(row.display_name_month);
+  if (displayNameMonth) user.displayNameMonth = displayNameMonth;
+  if (row.display_name_changes != null) user.displayNameChanges = num(row.display_name_changes);
   if (payouts.length) {
     user.payoutMethods = payouts.map((m) => ({
       id: str(m.id),

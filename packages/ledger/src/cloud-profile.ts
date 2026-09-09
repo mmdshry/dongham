@@ -28,4 +28,7 @@ export type CloudProfile = {
   username?: string;
   profileCoverPreset?: string;
   profileCoverDataUrl?: string;
+  displayNameChangesUsed: number;
+  displayNameChangesRemaining: number;
+  displayNameChangesLimit: number;
 };

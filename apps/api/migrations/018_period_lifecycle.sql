@@ -8,7 +8,7 @@ ALTER TABLE periods
 
 CREATE TABLE period_archives (
   user_id     VARCHAR(32)  NOT NULL,
-  period_id   CHAR(7)      NOT NULL,
+  period_id   VARCHAR(7)   CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
   archived_at DATETIME(3)  NOT NULL,
   PRIMARY KEY (user_id, period_id),
   KEY ix_period_archives_period (period_id),

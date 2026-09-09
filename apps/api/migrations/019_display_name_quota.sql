@@ -1,0 +1,3 @@
+ALTER TABLE users
+  ADD COLUMN display_name_month VARCHAR(7) NULL,
+  ADD COLUMN display_name_changes TINYINT UNSIGNED NOT NULL DEFAULT 0;
